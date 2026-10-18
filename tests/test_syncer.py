@@ -992,7 +992,11 @@ class TestStreamMode:
             art_cache_dir: object = None,
             batch_indexed_callback: object = None,
             apply_bandcamp_genres: bool = True,
+            **_kwargs: object,
         ) -> tuple[int, int, list[tuple[str, str]]]:
+            # **_kwargs so this fake survives new optional parameters on the
+            # real function (stop_event/sleep arrived with KAMP-729) without
+            # the test failing for a reason unrelated to what it asserts.
             if batch_indexed_callback is not None:
                 batch_indexed_callback()
                 batch_indexed_callback()

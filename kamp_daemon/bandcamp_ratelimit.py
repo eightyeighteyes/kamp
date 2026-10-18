@@ -61,6 +61,22 @@ _DEFAULT_SPACING = 2.0
 _COOLDOWNS = (60.0, 120.0, 300.0)
 
 
+def min_spacing(endpoint_class: str) -> float:
+    """The measured minimum gap between two requests of *endpoint_class*.
+
+    Public so code that cannot use the governor itself still honours one set
+    of numbers. The stream sync is the case in point: it runs in a spawn
+    subprocess, where BandcampGovernor refuses to be constructed, but it hits
+    the same album-page endpoint and must respect the same ceiling (KAMP-729).
+    """
+    return _MIN_SPACING.get(endpoint_class, _DEFAULT_SPACING)
+
+
+def cooldowns() -> tuple[float, ...]:
+    """The escalating post-429 pause ladder, shared with the download drain."""
+    return _COOLDOWNS
+
+
 class Clock(Protocol):
     """Time source and interruptible wait, injected so tests never really sleep.
 

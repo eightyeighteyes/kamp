@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pytest_mock import MockerFixture
 
+from kamp_daemon.bandcamp_ratelimit import cooldowns
 from kamp_daemon.bandcamp import (
     BandcampAPIError,
     CookieError,
@@ -46,6 +47,7 @@ from kamp_daemon.bandcamp import (
     parse_tralbum,
     prefetch_redownload_urls,
     refresh_stream_url,
+    RateLimited,
     sync_collection_stream,
     sync_new_purchases,
 )
@@ -2716,6 +2718,9 @@ class TestSyncCollectionStream:
                 watch_folder,
                 index,
                 apply_bandcamp_genres=apply_bandcamp_genres,
+                # The walk spaces album-page requests at the measured 1.5s
+                # (KAMP-729); tests must not actually wait it out.
+                sleep=lambda _seconds: None,
             )
 
         return result, index
@@ -2755,7 +2760,12 @@ class TestSyncCollectionStream:
             ),
             patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]) as fetch,
         ):
-            sync_collection_stream(_bc_config(tmp_path), tmp_path / "watch", index)
+            sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                sleep=lambda _seconds: None,
+            )
 
         # Neither is fetched: sale item 1 already owns its tracks, and sale
         # item 2 is the duplicate the guard exists to stop.
@@ -2792,7 +2802,12 @@ class TestSyncCollectionStream:
             ),
             patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]) as fetch,
         ):
-            sync_collection_stream(_bc_config(tmp_path), tmp_path / "watch", index)
+            sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                sleep=lambda _seconds: None,
+            )
 
         assert fetch.call_count == 2
 
@@ -2900,7 +2915,7 @@ class TestSyncCollectionStream:
             ),
         ):
             album_count, track_count, _keys = sync_collection_stream(
-                config, watch_folder, index
+                config, watch_folder, index, sleep=lambda _seconds: None
             )
 
         assert album_count == 2  # both albums counted in bandcamp_collection
@@ -3160,6 +3175,7 @@ class TestSyncCollectionStream:
                 watch_folder,
                 index,
                 batch_indexed_callback=lambda: fired.append(True),
+                sleep=lambda _seconds: None,
             )
 
         assert len(fired) == 3  # one call per album with new tracks
@@ -3194,6 +3210,7 @@ class TestSyncCollectionStream:
                 watch_folder,
                 index,
                 batch_indexed_callback=lambda: fired.append(True),
+                sleep=lambda _seconds: None,
             )
 
         assert fired == []
@@ -3274,7 +3291,9 @@ class TestSyncCollectionStream:
             ),
             patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[fake_track]),
         ):
-            sync_collection_stream(config, watch_folder, index)
+            sync_collection_stream(
+                config, watch_folder, index, sleep=lambda _seconds: None
+            )
         return index
 
     def test_bumps_new_content_when_available_count_increases(
@@ -3300,6 +3319,77 @@ class TestSyncCollectionStream:
         """
         index = self._run_with_counts(tmp_path, _item(1), counts=[0, 3])
         index.bump_album_new_content.assert_not_called()
+
+
+class TestStreamSyncBackoff:
+    """The walk retries a rate-limited album rather than dropping it (KAMP-729).
+
+    A 429 used to fall into the blanket `except Exception` that logs "skipping
+    tracks", so a stale-library catch-up silently lost roughly half its albums
+    and hit the same wall on every later poll.
+    """
+
+    def _run(self, tmp_path: Path, items: list[dict[str, Any]], **kw: Any) -> MagicMock:
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False
+        index.has_remote_tracks_needing_date_backfill.return_value = False
+        index.count_available_remote_tracks.return_value = 0
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", **kw) as fetch,
+        ):
+            sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                sleep=lambda _seconds: None,
+            )
+        return fetch
+
+    def test_a_429_retries_the_same_album_instead_of_skipping_it(
+        self, tmp_path: Path
+    ) -> None:
+        """The limit is account-wide, so moving on just burns the next album."""
+        fetch = self._run(
+            tmp_path,
+            [_item(1, tralbum_id=11)],
+            side_effect=[RateLimited("429"), []],
+        )
+        assert fetch.call_count == 2
+
+    def test_a_non_429_failure_still_skips_that_album(self, tmp_path: Path) -> None:
+        """Only rate limits retry — a broken album must not block the walk."""
+        fetch = self._run(
+            tmp_path,
+            [_item(1, tralbum_id=11), _item(2, tralbum_id=22)],
+            side_effect=[BandcampAPIError("bad page"), []],
+        )
+        # One attempt each: the first was skipped, the second proceeded.
+        assert fetch.call_count == 2
+
+    def test_a_persistent_429_stops_the_walk_with_partial_progress(
+        self, tmp_path: Path
+    ) -> None:
+        """Aborting beats skipping.
+
+        Upserted albums persist and the next poll resumes from there, whereas a
+        skip drops the album until something else marks it new again.
+        """
+        fetch = self._run(
+            tmp_path,
+            [_item(n, tralbum_id=n * 11) for n in range(1, 6)],
+            side_effect=RateLimited("429"),
+        )
+        # Bounded by the ladder rather than attempting all five albums.
+        assert fetch.call_count <= len(cooldowns()) + 1
 
 
 class TestStreamSyncArtPrefetch:
@@ -3333,7 +3423,11 @@ class TestStreamSyncArtPrefetch:
             ) as mock_fetch_art,
         ):
             sync_collection_stream(
-                config, watch_folder, index, art_cache_dir=art_cache_dir
+                config,
+                watch_folder,
+                index,
+                art_cache_dir=art_cache_dir,
+                sleep=lambda _seconds: None,
             )
             return mock_fetch_art
 
@@ -3697,7 +3791,9 @@ class TestSyncCollectionStreamPreorder:
             ),
             patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=fake_tracks),
         ):
-            sync_collection_stream(config, watch_folder, index)
+            sync_collection_stream(
+                config, watch_folder, index, sleep=lambda _seconds: None
+            )
 
         return index
 

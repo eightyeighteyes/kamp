@@ -40,7 +40,9 @@ from typing import TYPE_CHECKING, Any, Union
 
 import requests as _requests
 
+from .bandcamp_ratelimit import cooldowns, min_spacing
 from .config import BandcampConfig, token_path
+from .discovery import ALBUM_PAGE
 
 if TYPE_CHECKING:
     from kamp_core.library import LibraryIndex, Track
@@ -255,6 +257,16 @@ class CookieError(Exception):
 
 class BandcampAPIError(Exception):
     pass
+
+
+class RateLimited(BandcampAPIError):
+    """Bandcamp answered 429 (KAMP-729).
+
+    A subclass of BandcampAPIError so existing handlers keep catching it, but
+    distinguishable so the stream sync can pause and retry the same album
+    instead of skipping it. The limit is account-wide, not per-album, so
+    skipping and moving on just burns the next album's attempt too.
+    """
 
 
 class NeedsLoginError(Exception):
@@ -518,6 +530,144 @@ def sync_new_purchases(
     return downloaded
 
 
+# Give up on a walk once the cumulative 429 pause passes this. The ladder alone
+# is unbounded: a long walk hitting a limit every few albums could pause for
+# hours, and the sync subprocess is NOT a daemon, so multiprocessing joins it at
+# interpreter exit with no timeout — an unbounded pause is an unbounded quit
+# hang. Partial progress persists and the next poll resumes (KAMP-729).
+_MAX_TOTAL_PAUSE_SECONDS = 600.0
+
+
+class _WalkAborted(Exception):
+    """Internal: stop the collection walk and keep the progress made so far."""
+
+
+class _Pacer:
+    """Spaces album-page requests and backs off when Bandcamp answers 429.
+
+    Spacing is not a guess: KAMP-644 measured album pages returning 429 after
+    57 requests in 39s (~87/min), and bandcamp_ratelimit pins the safe rate at
+    <=40/min with ~2x headroom. The stream sync used to run at roughly 120/min,
+    above the measured ceiling, which is why it provoked the 429s it then
+    silently skipped (KAMP-729).
+
+    Waits on the stop event where one is available so a quitting daemon does
+    not sit out a five-minute cooldown.
+    """
+
+    def __init__(
+        self,
+        *,
+        stop_event: Any | None = None,
+        status_callback: Callable[[str], None] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._spacing = min_spacing(ALBUM_PAGE)
+        self._cooldowns = cooldowns()
+        self._status_callback = status_callback
+        self._stop_event = stop_event
+        self._sleep = sleep
+        self._strikes = 0
+        self._total_paused = 0.0
+        self._first = True
+
+    @property
+    def stopping(self) -> bool:
+        return self._stop_event is not None and self._stop_event.is_set()
+
+    def _wait(self, seconds: float) -> None:
+        # The event's wait IS the sleep when we have one — it returns early on
+        # shutdown instead of blocking the subprocess past the parent's exit.
+        if self._stop_event is not None:
+            self._stop_event.wait(seconds)
+        else:
+            self._sleep(seconds)
+
+    def wait_turn(self) -> None:
+        """Space this request from the previous one."""
+        if self._first:
+            self._first = False
+            return
+        self._wait(self._spacing)
+
+    def report_ok(self) -> None:
+        """A clean fetch resets the ladder.
+
+        Without this, scattered 429s across a long walk would each cost the
+        full escalated pause rather than starting over.
+        """
+        self._strikes = 0
+
+    def report_rate_limited(self) -> bool:
+        """Pause after a 429. False means the walk should give up."""
+        if self._strikes >= len(self._cooldowns):
+            return False
+        pause = self._cooldowns[self._strikes]
+        self._strikes += 1
+        if self._total_paused + pause > _MAX_TOTAL_PAUSE_SECONDS:
+            return False
+        self._total_paused += pause
+        logger.warning("Bandcamp rate limit hit; pausing the sync for %.0fs.", pause)
+        if self._status_callback is not None:
+            # A pause with no UI signal gets reported as a hang (KAMP-639).
+            self._status_callback(
+                f"Rate limited by Bandcamp, resuming in {int(pause)}s…"
+            )
+        self._wait(pause)
+        return not self.stopping
+
+
+def _fetch_tracks_paced(
+    pacer: _Pacer,
+    *,
+    album_url: str,
+    sale_item_id: int,
+    band_name: str,
+    item_title: str,
+    session: "_AnySession",
+    date_added: float | None,
+    page_out: dict[str, Any],
+) -> "list[Track] | None":
+    """Fetch an album's tracks, spaced and retried on 429.
+
+    Returns the tracks, or None when this album should be skipped for a reason
+    that is actually about this album. Raises _WalkAborted when the rate limit
+    is not clearing and the whole walk should stop.
+
+    Retrying the SAME album rather than moving on is the point: a 429 is
+    account-wide, so the next album would fail too — and skipping is what left
+    roughly half a stale library unindexed (KAMP-729).
+    """
+    while True:
+        pacer.wait_turn()
+        if pacer.stopping:
+            raise _WalkAborted
+        try:
+            tracks = fetch_album_tracks(
+                album_url,
+                sale_item_id,
+                band_name,
+                item_title,
+                session,
+                date_added=date_added,
+                page_out=page_out,
+            )
+            pacer.report_ok()
+            return tracks
+        except RateLimited:
+            if not pacer.report_rate_limited():
+                raise _WalkAborted from None
+        except Exception as exc:
+            logger.warning(
+                "fetch_album_tracks: skipping tracks for %r by %r (%s): %s",
+                item_title,
+                band_name,
+                album_url,
+                exc,
+            )
+            return None
+
+
 def sync_collection_stream(
     bc_config: BandcampConfig,
     watch_dir: Path,
@@ -526,6 +676,8 @@ def sync_collection_stream(
     art_cache_dir: Path | None = None,
     batch_indexed_callback: Callable[[], None] | None = None,
     apply_bandcamp_genres: bool = True,
+    stop_event: Any | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[int, int, list[tuple[str, str]]]:
     """Index all Bandcamp purchases as remote rows — no ZIP download.
 
@@ -562,7 +714,7 @@ def sync_collection_stream(
     # (album_artist, album) of albums newly indexed this run — the streaming-add
     # Last.fm genre-enrichment set (KAMP-618).
     new_album_keys: list[tuple[str, str]] = []
-    fetch_index = 0  # throttle counter for album-page requests
+    pacer = _Pacer(stop_event=stop_event, status_callback=status_callback, sleep=sleep)
     for item in collection:
         sid = item.get("sale_item_id")
         if sid is None:
@@ -579,6 +731,10 @@ def sync_collection_stream(
         is_preorder_already = current_mode == "preorder"
         # Use is_preorder from the API as the authoritative signal when available.
         api_says_preorder = bool(item.get("is_preorder"))
+
+        # Receives art_id from the album page when we fetch it, so the art
+        # prefetch below does not have to fetch the same page again (KAMP-729).
+        page_data: dict[str, Any] = {}
 
         if status_callback:
             status_callback(f"{item_title} by {band_name}")
@@ -638,22 +794,23 @@ def sync_collection_stream(
                 or needs_backfill
             )
         ):
-            if fetch_index > 0:
-                time.sleep(0.5)
-            fetch_index += 1
             # KAMP-544: snapshot how many streamable tracks this album has BEFORE
             # the re-sync. If it rises, a pre-order gained a newly-released track
             # (incremental release or full graduation) and the album should jump
             # back to the top of "date added" with the new-arrival highlight.
+            # Read outside the retry: re-reading it after a partial write would
+            # misfire the bump below.
             available_before = index.count_available_remote_tracks(str(sid))
             try:
-                tracks = fetch_album_tracks(
-                    album_url,
-                    int(sid),
-                    band_name,
-                    item_title,
-                    session,
+                tracks = _fetch_tracks_paced(
+                    pacer,
+                    album_url=album_url,
+                    sale_item_id=int(sid),
+                    band_name=band_name,
+                    item_title=item_title,
+                    session=session,
                     date_added=purchased_ts,
+                    page_out=page_data,
                 )
                 if tracks:
                     # KAMP-588: cache the album's Bandcamp tags so a later download
@@ -697,6 +854,13 @@ def sync_collection_stream(
                     available_after = index.count_available_remote_tracks(str(sid))
                     if available_before > 0 and available_after > available_before:
                         index.bump_album_new_content(str(sid), time.time())
+            except _WalkAborted:
+                logger.warning(
+                    "Stream sync stopped early: Bandcamp is still rate limiting. "
+                    "%d album(s) indexed so far; the next sync resumes from here.",
+                    album_count,
+                )
+                break
             except Exception as exc:
                 logger.warning(
                     "fetch_album_tracks: skipping tracks for %r by %r (%s): %s",
@@ -713,14 +877,32 @@ def sync_collection_stream(
             cache_key = tralbum if tralbum else f"sid_{sid}"
             cache_path = art_cache_dir / f"{cache_key}.jpg"
             if not cache_path.exists():
-                if fetch_index > 0:
-                    time.sleep(0.5)
-                fetch_index += 1
+                art_id = page_data.get("art_id")
+                # With an art_id in hand the only request is to the art CDN,
+                # which is a different host and not what rate-limits — so it
+                # needs no album-page spacing. Without one we fall back to
+                # fetching the page, which does.
+                if art_id is None:
+                    pacer.wait_turn()
                 try:
-                    data = fetch_album_art_bytes(album_url, session_data)
+                    data = fetch_album_art_bytes(album_url, session_data, art_id=art_id)
                     if data:
                         art_cache_dir.mkdir(parents=True, exist_ok=True)
                         cache_path.write_bytes(data)
+                except RateLimited:
+                    # Art is cosmetic and the endpoint serves it on demand
+                    # later, so this does not retry — but it must still cost a
+                    # strike, or the walk keeps provoking the limit.
+                    logger.warning(
+                        "art prefetch rate limited for %r by %r", item_title, band_name
+                    )
+                    if not pacer.report_rate_limited():
+                        logger.warning(
+                            "Stream sync stopped early: Bandcamp is still rate "
+                            "limiting. %d album(s) indexed so far.",
+                            album_count,
+                        )
+                        break
                 except Exception as exc:
                     logger.warning(
                         "art prefetch failed for %r by %r: %s",
@@ -1392,6 +1574,7 @@ def fetch_album_tracks(
     item_title: str,
     session: "_AnySession",
     date_added: float | None = None,
+    page_out: dict[str, Any] | None = None,
 ) -> "list[Track]":
     """Fetch track metadata from a Bandcamp album page without downloading CDN URLs.
 
@@ -1399,16 +1582,32 @@ def fetch_album_tracks(
     upsert into the tracks table.  CDN stream URLs are fetched on demand at
     play time by _resolve_playback().
 
-    Raises BandcampAPIError if the page cannot be parsed.
+    When *page_out* is supplied it receives ``art_id`` from the parsed page, so
+    a caller that also wants album art can skip re-fetching the same URL. The
+    stream sync used to fetch every album page twice — once here and once in
+    fetch_album_art_bytes, purely to re-read art_id — which doubled its request
+    rate against the endpoint that rate-limits hardest (KAMP-729).
+
+    Raises BandcampAPIError if the page cannot be parsed, and RateLimited on a
+    429 so callers can back off rather than treat it as a dead album.
     """
     from kamp_core.library import Track
 
     resp = session.get(album_url, timeout=30)
+    # Read the status explicitly rather than relying on raise_for_status: a
+    # relayed response is a _ProxyResponse whose HTTPError carries no .response,
+    # and a 429 has to be distinguishable from a 404. Same call, and the same
+    # reasoning, as discovery_sources (KAMP-729).
+    if resp.status_code == 429:
+        raise RateLimited(f"HTTP 429 for {album_url}")
     resp.raise_for_status()
 
     tralbum = parse_tralbum(resp.text)
     if tralbum is None:
         raise BandcampAPIError(f"fetch_album_tracks: no data-tralbum in {album_url}")
+
+    if page_out is not None:
+        page_out["art_id"] = tralbum.get("art_id")
 
     trackinfo: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
@@ -1508,28 +1707,47 @@ def check_stream_url(url: str) -> int:
         return 0
 
 
-def fetch_album_art_bytes(album_url: str, session_data: dict[str, Any]) -> bytes | None:
+def fetch_album_art_bytes(
+    album_url: str,
+    session_data: dict[str, Any],
+    art_id: str | int | None = None,
+) -> bytes | None:
     """Download album art JPEG for *album_url*, authenticated via *session_data*.
 
     Returns raw JPEG bytes, or None if art cannot be found or fetched.
     The album page fetch is proxy-aware (Cloudflare-safe on PyInstaller/Windows).
     The CDN image download uses a plain unauthenticated session — f4.bcbits.com
     serves art publicly with no cookies required.
+
+    Pass *art_id* to skip the album-page fetch entirely. A caller that has just
+    run fetch_album_tracks already has it, and re-fetching the same page to
+    re-read one field doubled the stream sync's request rate (KAMP-729).
+
+    Raises RateLimited on a 429 rather than returning None: "rate limited" and
+    "this album has no art" are different answers, and conflating them made
+    429s invisible in the log and left the cache empty so every later poll
+    retried forever.
     """
     try:
-        session = _make_requests_session(session_data)
-        resp = session.get(album_url, timeout=30)
-        resp.raise_for_status()
-        tralbum = parse_tralbum(resp.text)
-        if tralbum is None:
-            return None
-        art_id = tralbum.get("art_id")
+        if art_id is None:
+            session = _make_requests_session(session_data)
+            resp = session.get(album_url, timeout=30)
+            if resp.status_code == 429:
+                raise RateLimited(f"HTTP 429 for {album_url}")
+            resp.raise_for_status()
+            tralbum = parse_tralbum(resp.text)
+            if tralbum is None:
+                return None
+            art_id = tralbum.get("art_id")
         if not art_id:
             return None
         cdn_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg"
         cdn_resp = _requests.get(cdn_url, timeout=30)
         cdn_resp.raise_for_status()
         return cdn_resp.content
+    except RateLimited:
+        # Deliberately not swallowed — see the docstring.
+        raise
     except Exception:
         return None
 

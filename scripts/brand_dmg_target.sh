@@ -16,17 +16,28 @@
 # so the swap has to happen on the finished image. See kamp_ui/native/
 # DmgTargetIcon.swift for the full set of routes that were measured.
 #
-# == Why a shadow file rather than a UDRW round trip ==
-# A DMG is read-only, so the obvious way to edit one is to convert it to UDRW,
-# mount that, and convert back. Measured in CI, that cost 17s on the arm64
-# runner and 159s-then-failure on the Intel one, because it materialises an
-# uncompressed copy of the whole image — several hundred megabytes — on a
-# runner that does not have much room to spare.
+# == Detaching is the slow, fragile step — do not un-guard it ==
+# The first CI run of this script failed on the Intel runner and passed on
+# arm64. The obvious theory was disk: editing a read-only DMG by converting it
+# to UDRW materialises an uncompressed copy of the whole image. That theory was
+# wrong — the next run logged 105Gi free on the Intel runner.
 #
+# What the logs actually show is that detaching a writable mount of this image
+# takes under a second on arm64 and ~164 SECONDS on the Intel runner. The
+# original code ran a bare `hdiutil detach -quiet` under `set -e`, so a detach
+# that slow timing out or reporting "resource busy" exited the script with no
+# message at all, which is exactly the signature the failure had. The retry and
+# -force fallback below are therefore the load-bearing part of the fix, not an
+# optimisation. Keep them.
+#
+# == Why a shadow file anyway ==
 # `-shadow` makes a read-only image writable by diverting writes to a sidecar
-# holding only the changed blocks. For this edit that sidecar is about 5MB
-# instead of ~700MB, and the whole operation drops to a few seconds. The big
-# intermediate never exists.
+# of changed blocks, so the uncompressed intermediate never exists. It is still
+# worth having — it removes a whole-image copy and a second convert — but note
+# the sidecar is NOT small in practice: about 5MB locally against an unsigned
+# build, and ~205MB in CI against the signed one, on a ~220MB image. Mounting
+# read-write appears to dirty most of the volume's blocks. Budget for roughly
+# image-sized, not a few megabytes.
 #
 # == Why this is safe with respect to signing ==
 # The .app inside is what gets signed and notarized — notarizeIfProvided()

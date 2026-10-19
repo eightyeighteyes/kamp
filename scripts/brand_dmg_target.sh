@@ -16,12 +16,24 @@
 # so the swap has to happen on the finished image. See kamp_ui/native/
 # DmgTargetIcon.swift for the full set of routes that were measured.
 #
+# == Why a shadow file rather than a UDRW round trip ==
+# A DMG is read-only, so the obvious way to edit one is to convert it to UDRW,
+# mount that, and convert back. Measured in CI, that cost 17s on the arm64
+# runner and 159s-then-failure on the Intel one, because it materialises an
+# uncompressed copy of the whole image — several hundred megabytes — on a
+# runner that does not have much room to spare.
+#
+# `-shadow` makes a read-only image writable by diverting writes to a sidecar
+# holding only the changed blocks. For this edit that sidecar is about 5MB
+# instead of ~700MB, and the whole operation drops to a few seconds. The big
+# intermediate never exists.
+#
 # == Why this is safe with respect to signing ==
 # The .app inside is what gets signed and notarized — notarizeIfProvided()
 # targets the app bundle, and dmg.sign is unset so electron-builder never signs
-# the image itself. Repacking the image does not touch the app's bytes. That is
-# not taken on trust: the app's signature is verified before and after, and a
-# regression fails the script.
+# the image itself. Repacking does not touch the app's bytes. That is not taken
+# on trust: the app's signature is verified before and after, and a regression
+# fails the script.
 
 set -euo pipefail
 
@@ -42,31 +54,68 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "→ branding install target in $(basename "$DMG")"
-swiftc -O -o "$WORK/dmg-target-icon" "$HELPER_SRC"
-
-# Record the app's signing state before we touch anything, so the comparison
-# afterwards is against reality rather than an assumption about whether this
-# build was signed at all.
-probe_signature() {
-  local vol="$1"
-  codesign --verify --strict "$vol/Kamp.app" >/dev/null 2>&1 && echo "valid" || echo "unsigned-or-invalid"
+# Never let hdiutil fail silently. `-quiet` plus `set -e` is how the first CI
+# run of this script died with no diagnostics at all: the step logged the icon
+# being written and then simply exited 1. Every hdiutil call goes through here
+# so its output is reported on failure, along with free space.
+run_hdiutil() {
+  local desc="$1"; shift
+  local out
+  if ! out=$(hdiutil "$@" 2>&1); then
+    echo "error: hdiutil $desc failed" >&2
+    echo "  command: hdiutil $*" >&2
+    echo "$out" | sed 's/^/  /' >&2
+    echo "  free space:" >&2
+    df -h "$WORK" / 2>&1 | sed 's/^/    /' >&2
+    exit 1
+  fi
+  printf '%s' "$out"
 }
 
-# Writable only for the UDRW working copy: a UDZO image is a read-only format
-# and hdiutil refuses `-readwrite` on one with a bare "Operation not permitted".
+# Detaching is the flaky step in CI: Spotlight and fseventsd can still hold the
+# volume for a moment after the last write, which surfaces as "resource busy".
+# Retry before escalating to -force rather than failing the build over it.
+detach_image() {
+  local dev="$1" i
+  for i in 1 2 3 4 5; do
+    if hdiutil detach -quiet "$dev" >/dev/null 2>&1; then
+      DEV=""
+      return 0
+    fi
+    [ "$i" -lt 5 ] && sleep 2
+  done
+  echo "  detach of $dev needed -force" >&2
+  if hdiutil detach -force "$dev" >/dev/null 2>&1; then
+    DEV=""
+    return 0
+  fi
+  echo "error: could not detach $dev" >&2
+  exit 1
+}
+
 mount_image() {
-  local img="$1" mode="${2:-ro}"
-  local attach args=(attach -noverify -noautoopen)
-  [ "$mode" = "rw" ] && args+=(-readwrite)
-  attach=$(hdiutil "${args[@]}" "$img")
+  local attach
+  attach=$(run_hdiutil "attach" "$@")
   DEV=$(echo "$attach" | grep -o '^/dev/disk[0-9]*' | head -1)
   VOL=$(echo "$attach" | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p' | tail -1 | xargs)
-  [ -n "$DEV" ] && [ -n "$VOL" ] || { echo "error: could not mount $img" >&2; exit 1; }
+  if [ -z "$DEV" ] || [ -z "$VOL" ]; then
+    echo "error: could not parse mount point" >&2
+    echo "$attach" | sed 's/^/  /' >&2
+    exit 1
+  fi
 }
 
-hdiutil convert -quiet "$DMG" -format UDRW -o "$WORK/rw.dmg"
-mount_image "$WORK/rw.dmg" rw
+probe_signature() {
+  codesign --verify --strict "$1/Kamp.app" >/dev/null 2>&1 \
+    && echo "valid" || echo "unsigned-or-invalid"
+}
+
+echo "→ branding install target in $(basename "$DMG")"
+echo "  free space before: $(df -h "$WORK" | awk 'NR==2{print $4}')"
+swiftc -O -o "$WORK/dmg-target-icon" "$HELPER_SRC"
+
+SHADOW="$WORK/brand.shadow"
+mount_image attach -noverify -noautoopen -readwrite -shadow "$SHADOW" "$DMG"
 
 SIG_BEFORE="$(probe_signature "$VOL")"
 echo "  app signature before: $SIG_BEFORE"
@@ -76,15 +125,19 @@ echo "  app signature before: $SIG_BEFORE"
 rm "$VOL/Applications"
 "$WORK/dmg-target-icon" /Applications "$VOL/Applications" "$ICNS" | sed 's/^/  /'
 
-hdiutil detach -quiet "$DEV"; DEV=""
-rm -f "$WORK/out.dmg"
-hdiutil convert -quiet "$WORK/rw.dmg" -format UDZO -o "$WORK/out.dmg"
+detach_image "$DEV"
+echo "  shadow: $(du -h "$SHADOW" | cut -f1) of changed blocks"
 
-# Verify on the repacked image before overwriting the original, so a failure
-# here leaves the known-good DMG in place.
-mount_image "$WORK/out.dmg"
+run_hdiutil "convert with shadow" convert "$DMG" -format UDZO \
+  -shadow "$SHADOW" -o "$WORK/out.dmg" -quiet >/dev/null
+
+# Verify the repacked image before overwriting the original, so a failure here
+# leaves the known-good DMG in place.
+mount_image attach -noverify -noautoopen "$WORK/out.dmg"
 rc=0
-if ! xattr "$VOL/Applications" 2>/dev/null | grep -q ResourceFork; then
+if [ -L "$VOL/Applications" ]; then
+  echo "error: install target is still a symlink — the swap did not take" >&2; rc=1
+elif ! xattr "$VOL/Applications" 2>/dev/null | grep -q ResourceFork; then
   echo "error: custom icon missing after repack" >&2; rc=1
 fi
 if [ ! -d "$VOL/Kamp.app" ]; then
@@ -95,7 +148,7 @@ echo "  app signature after:  $SIG_AFTER"
 if [ "$SIG_BEFORE" = "valid" ] && [ "$SIG_AFTER" != "valid" ]; then
   echo "error: repacking invalidated the app signature" >&2; rc=1
 fi
-hdiutil detach -quiet "$DEV"; DEV=""
+detach_image "$DEV"
 [ "$rc" -eq 0 ] || exit "$rc"
 
 mv "$WORK/out.dmg" "$DMG"

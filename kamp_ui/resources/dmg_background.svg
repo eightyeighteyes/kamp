@@ -7,8 +7,15 @@
   size from the image via sips, then spreads an undefined settings.window over
   it). So this canvas is the window.
 
-  Generate the PNG pair:
-    bash scripts/make_dmg_background.sh
+  Generate the PNG pair and the target icon:
+    bash scripts/make_dmg_assets.sh
+
+  == What is art and what is an icon ==
+  The right-hand side is a turntable with an EMPTY platter recess. The platter
+  itself is the Applications drop target's icon (dmg_target_icon.svg), seated
+  into that recess, so dragging Kamp onto the platter is literally putting the
+  record on the deck. Nothing of the platter is drawn here — drawing it too
+  would double up behind the icon.
 
   == Layout contract with electron-builder.yml ==
   dmg.contents places two items at x=130 and x=410, y=140, where y is measured
@@ -22,28 +29,23 @@
      icon and nothing in electron-builder controls that text's colour. Measured
      off a real mounted build, the glyphs start 11.5px below the icon's bottom
      edge. On this orange a label reads either way (6.0:1 black, 3.5:1 white);
-     over the deck colour black would be 1.1:1, i.e. invisible. So the boxes
-     end at y=188 and the glyphs start at y=191.5.
+     over the deck colour black would be 1.1:1, i.e. invisible. So the deck
+     shapes end at y=188 and the glyphs start at y=191.5.
 
-  2. That caps each box at 100x100 around an 80px icon, and the box must be
-     CENTRED on its icon. An earlier cut sat each box's base on its icon's
-     baseline to satisfy (1), which put the box centre 20px above the icon
-     centre and left the icon reading visibly low.
+  2. Anything enclosing an icon must be CENTRED on it, and the budget above
+     caps that at 100x100 around an 80px icon. An earlier cut sat each box's
+     base on its icon's baseline to satisfy (1), which put the box centre 20px
+     above the icon centre and left the icon reading visibly low.
 
-  3. The Applications icon paints 78x62 of its 80x80 cell, so it covers almost
-     all of any platter that fits inside the box (1) and (2) allow — the usable
-     rim works out at ~9px whatever iconSize is set to, because the box cap and
-     the icon scale together. Nothing is therefore drawn inside r=39: the inner
-     rings and centre label an earlier cut had there were painted entirely
-     behind the folder. The platter reads through its rim alone, so the rim is
-     where the weight goes.
+  3. macOS paints an icon at roughly 97% of its cell — measured at 78x62 for
+     the system folder icon in an 80x80 cell. The platter recess is sized from
+     that: r=45 against a disc landing ~39, so ~6px of deck shows all round.
 
   == Why orange is the ground but never carries the line work ==
-  Measured contrast against #bf7a20: the deck (#1c1a16) is 4.98:1 and the app
-  icon's own #141414 tile is 5.28:1 — both read strongly, which is what makes
-  "background is kamp orange, elements pop" work. But the gold kamp draws line
-  work in (#c4aa78) is 1.56:1 on orange and 7.75:1 on #141414. So dark masses
-  sit on the orange and gold detail only ever sits on the dark.
+  Measured contrast against #bf7a20: the deck (#141414) is 5.28:1, which is
+  what makes "background is kamp orange, elements pop" work. But the gold kamp
+  draws line work in (#c4aa78) is 1.56:1 on orange and 7.75:1 on #141414. So
+  dark masses sit on the orange and gold detail only ever sits on the dark.
 -->
 <svg
   width="540"
@@ -58,13 +60,14 @@
        The app icon is an opaque 80x80 square whose own background is #141414
        (icon.icns is drawn as authored; Finder applies no squircle mask). The
        mat is filled with that exact colour so the tile's edges dissolve into
-       it and only the record remains visible — at the #1c1a16 used for the
-       platter it reads as a square-within-a-square, because 1.06:1 is far too
-       little to see as a colour but quite enough to see as an edge.
+       it and only the record remains visible — at a different dark it reads as
+       a square-within-a-square, because 1.06:1 is far too little to see as a
+       colour but quite enough to see as an edge.
 
-       A disc would suit the metaphor better but cannot work: one large enough
-       to contain the icon's square corners needs r>=57, which reaches past the
-       label. Hence a rounded rect, centred, 8px margin.
+       A disc would suit the metaphor better but cannot work here: one large
+       enough to contain the icon's square corners needs r>=57, which reaches
+       past the label. Hence a rounded rect, centred, 8px margin. The right
+       side has no such problem because its icon is already a disc.
   -->
   <g>
     <rect x="82" y="92" width="96" height="96" rx="12"
@@ -73,49 +76,37 @@
           fill="none" stroke="#c4aa78" stroke-width="0.7" opacity="0.25" />
   </g>
 
-  <!-- ==================== RIGHT: the record player ====================
-       The Applications drop target sits on the platter. Its icon is the system
-       folder and cannot be replaced: electron-builder's DmgContent exposes no
-       per-item icon; NSWorkspace.setIcon follows a symlink to the real
-       /Applications; macOS refuses a resource fork on a symlink outright; and
-       an alias file, which can carry an icon, is not a drop target because it
-       does not stat as a directory. A DMG drop target is therefore necessarily
-       a symlink and necessarily shows this icon.
-
-       So the turntable is drawn around it rather than under it: see note (3)
-       in the header — everything inside r=39 would be hidden.
+  <!-- ==================== RIGHT: the deck, awaiting its record ============
+       The plinth is centred on the drop target so the seated platter sits dead
+       centre. Everything here is the machine; the record is the icon.
   -->
   <g>
-    <!-- Plinth. Same height and vertical position as the mat so the two sides
-         sit on one line, and the same #141414 for one continuous deck colour. -->
     <rect x="320" y="92" width="180" height="96" rx="12"
           fill="#141414" stroke="#c4aa78" stroke-width="1.2" />
 
-    <!-- Platter. A true circle, centred on the drop target and on the plinth.
-         r=46 is the largest that stays inside the plinth's 96px height, which
-         is what makes the rim as wide as it can be. -->
-    <circle cx="410" cy="140" r="46" fill="#1c1a16" stroke="#c4aa78" stroke-width="1.1" />
-    <circle cx="410" cy="140" r="42" fill="none" stroke="#c4aa78" stroke-width="0.6"
-            opacity="0.35" />
+    <!-- Platter recess. Slightly lighter than the plinth so the seated disc
+         reads as sitting IN something, with a gold rim to catch the edge. -->
+    <circle cx="410" cy="140" r="45" fill="#1c1a16" stroke="#c4aa78" stroke-width="1.1" />
+    <!-- Spindle, visible only until the record is dropped on. -->
+    <circle cx="410" cy="140" r="2.5" fill="#c4aa78" opacity="0.5" />
 
-    <!-- Tonearm, in the splash screen's vocabulary — counterweight, pivot post,
-         bent arm, stylus head (SplashScreen.tsx). The counterweight is what
-         makes it legible as a tonearm at this size rather than a stray line.
-         The stylus lands at x=452,y=147: on the platter's visible right rim,
-         clear of the folder's painted edge at x=449. -->
+    <!-- Tonearm — counterweight, pivot post, bent arm, stylus head, in the
+         splash screen's vocabulary (SplashScreen.tsx). The stylus lands at
+         distance ~42 from the platter centre: outside the disc's ~39 so it is
+         not hidden beneath the icon, inside the recess's 45 so it still reads
+         as resting on the record's edge. -->
     <rect x="473" y="102" width="12" height="7" rx="3"
           fill="#141414" stroke="#c4aa78" stroke-width="1.1" />
     <circle cx="479" cy="117" r="5" fill="#141414" stroke="#c4aa78" stroke-width="1.3" />
     <circle cx="479" cy="117" r="1.7" fill="#c4aa78" />
-    <path d="M 479 117 L 475 138 Q 473 146 452 147"
+    <path d="M 479 117 L 474 136 Q 471 146 451 149"
           fill="none" stroke="#c4aa78" stroke-width="2"
           stroke-linecap="round" stroke-linejoin="round" />
-    <circle cx="452" cy="147" r="2.6" fill="none" stroke="#c4aa78" stroke-width="1.1" />
-    <circle cx="452" cy="147" r="1.3" fill="#c4aa78" />
+    <circle cx="451" cy="149" r="2.6" fill="none" stroke="#c4aa78" stroke-width="1.1" />
+    <circle cx="451" cy="149" r="1.3" fill="#c4aa78" />
 
-    <!-- Controls on the plinth's free left edge. At y=170 the platter spans
-         only x 375-445, so these clear it by 14px — an earlier cut had them
-         overlapping, which is what made this side read as a mess. -->
+    <!-- Controls on the plinth's free left edge. At y=170 the recess spans
+         only x 377-443, so these clear it by 16px. -->
     <circle cx="340" cy="170" r="5" fill="none" stroke="#c4aa78" stroke-width="1" />
     <circle cx="356" cy="170" r="5" fill="none" stroke="#c4aa78" stroke-width="1" />
     <rect x="334" y="110" width="4" height="26" rx="2"

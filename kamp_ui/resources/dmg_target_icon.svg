@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Icon for the DMG's install target (KAMP-675).
+
+  This is the PLATTER ONLY, not a whole turntable: the deck — plinth, tonearm,
+  knobs, pitch fader — is drawn in dmg_background.svg, and this disc seats into
+  the recess at its centre. Drawing the whole turntable here instead nests one
+  plinth outline inside another and reads as clutter.
+
+  Two properties are load-bearing:
+
+  * Transparent outside the disc, so the deck drawn behind it shows through and
+    the two read as one object.
+  * OPAQUE where it is painted. The icon is the drop target's hit area: a fully
+    transparent icon gives Finder no painted pixels to hit-test and dragging
+    onto it silently does nothing, which is exactly what an earlier attempt at
+    an "invisible" target hit.
+
+  The disc is drawn nearly edge to edge because macOS paints an icon at about
+  97% of its cell; at iconSize 80 this lands ~78px across, inside the 90px
+  recess, leaving a ~6px rim of deck visible all round.
+
+  Rendered to .icns by scripts/make_dmg_assets.sh.
+-->
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- No background rect: everything outside the disc stays transparent. -->
+
+  <!-- Record body -->
+  <circle cx="100" cy="100" r="98" fill="#141414" stroke="#c4aa78" stroke-width="2.5" />
+
+  <!-- Pressed grooves, matching icon_source.svg's vocabulary -->
+  <circle cx="100" cy="100" r="88" fill="none" stroke="#2a2620" stroke-width="1.6" />
+  <circle cx="100" cy="100" r="79" fill="none" stroke="#2a2620" stroke-width="1.6" />
+  <circle cx="100" cy="100" r="70" fill="none" stroke="#2a2620" stroke-width="1.6" />
+  <circle cx="100" cy="100" r="61" fill="none" stroke="#2a2620" stroke-width="1.6" />
+  <circle cx="100" cy="100" r="52" fill="none" stroke="#2a2620" stroke-width="1.6" />
+  <circle cx="100" cy="100" r="43" fill="none" stroke="#2a2620" stroke-width="1.6" />
+
+  <!-- Centre label, in the record-label orange -->
+  <circle cx="100" cy="100" r="33" fill="#bf7a20" />
+  <circle cx="100" cy="100" r="33" fill="none" stroke="#8a5515" stroke-width="1.6" />
+  <circle cx="100" cy="100" r="28" fill="none" stroke="#8a5515" stroke-width="1"
+          stroke-dasharray="3 2.5" />
+
+  <!-- Spindle hole -->
+  <circle cx="100" cy="100" r="4.5" fill="#141414" />
+</svg>

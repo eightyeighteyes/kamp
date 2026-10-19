@@ -37,9 +37,10 @@ kamp_ui/resources/mpv
 kamp_ui/resources/node
 kamp_ui/resources/npm/
 kamp_ui/resources/icon_1024.png
-# Rendered from dmg_background.svg by scripts/make_dmg_background.sh (KAMP-675),
-# the same way icon_1024.png is rendered from icon_source.svg. CI regenerates
-# both in the build-bundle job; the SVG is the source of truth.
+# Rendered by scripts/make_dmg_assets.sh (KAMP-675), the same way icon_1024.png
+# is rendered from icon_source.svg. CI regenerates them in the build-bundle job;
+# the SVGs beside them are the source of truth.
 kamp_ui/resources/dmg_background.png
 kamp_ui/resources/dmg_background@2x.png
+kamp_ui/resources/dmg_target_icon.icns
 kamp_ui/dist/

@@ -160,6 +160,15 @@ dmg:
   # dir; the @2x sibling is picked up automatically and the pair is fused into
   # a multi-resolution TIFF by tiffutil.
   background: resources/dmg_background.png
+  # scripts/brand_dmg_target.sh repacks the image after electron-builder
+  # finishes, to give the install target a custom icon. createBlockmap runs
+  # BEFORE that (dmg-builder dmg.js, just ahead of emitArtifactBuildCompleted),
+  # so a blockmap written here would describe bytes that no longer exist.
+  # Nothing consumes it today — there is no electron-updater dependency and CI
+  # uploads only *.dmg — so it is turned off rather than left to lie. Whoever
+  # wires up auto-update needs to regenerate it after branding, not re-enable
+  # this flag on its own.
+  writeUpdateInfo: false
   # Both entries are required. dmg-builder only injects the default app +
   # /Applications pair when `contents` is absent entirely, so a partial list
   # silently ships a DMG with no drop target.

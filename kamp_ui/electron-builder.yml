@@ -165,7 +165,7 @@ dmg:
   # silently ships a DMG with no drop target.
   #
   # x/y are the icon CENTRE, y measured from the top of the window. The window
-  # is 540x320 because that is the background's own size — dmg.window is
+  # is 540x300 because that is the background's own size — dmg.window is
   # ignored whenever a background image is set, so it is deliberately not set
   # here. iconSize is likewise left to its default of 80; the art is drawn to
   # that number, so changing either means redrawing the SVG.
@@ -174,11 +174,11 @@ dmg:
     # is omitted, and an absolute path outside the workspace root is rejected
     # outright.
     - x: 130
-      y: 170
+      y: 140
       type: file
       name: Kamp.app
     - x: 410
-      y: 170
+      y: 140
       type: link
       path: /Applications
 linux:

@@ -25,7 +25,7 @@ OUT_2X="kamp_ui/resources/dmg_background@2x.png"
 
 # Must match the SVG's own canvas, which is in turn the DMG window size.
 WIDTH=540
-HEIGHT=320
+HEIGHT=300
 
 if ! command -v rsvg-convert >/dev/null 2>&1; then
   echo "error: rsvg-convert not found. Install it with: brew install librsvg" >&2

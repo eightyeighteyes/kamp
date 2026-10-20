@@ -319,6 +319,17 @@ jobs:
       - name: Generate icon.icns
         run: bash scripts/make_icns.sh kamp_ui/resources/icon_1024.png
 
+      - name: Render DMG assets from SVG
+        # KAMP-675: the installer background pair and the platter icon used for
+        # the install target. Rendered here rather than in sign-and-package so
+        # it reuses the librsvg install above, and written into
+        # kamp_ui/resources/ so it rides the existing bundle artifact — the
+        # upload below is a single `path:`, and adding a second one would move
+        # the artifact's least common ancestor and strip the prefix (see the
+        # Windows note further down). The outputs are gitignored; the SVGs are
+        # the source of truth.
+        run: bash scripts/make_dmg_assets.sh
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
@@ -492,6 +503,27 @@ jobs:
           "
           echo "→ Version: $(python3 -c "import json; print(json.load(open('kamp_ui/package.json'))['version'])")"
 
+      - name: Verify DMG assets arrived
+        # Pre-flight, mirroring the Windows bundle check further down. These are
+        # rendered in build-bundle and reach this job only via the bundle
+        # artifact, so a break in that chain is otherwise invisible until
+        # someone mounts the finished DMG. electron-builder would in fact fail
+        # on a missing explicit dmg.background, but it fails deep inside a
+        # signing build; this says which file and why, before any of that.
+        run: |
+          missing=0
+          for f in kamp_ui/resources/dmg_background.png \
+                   kamp_ui/resources/dmg_background@2x.png \
+                   kamp_ui/resources/dmg_target_icon.icns; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing DMG asset: $f"
+              missing=1
+            else
+              echo "→ $f ($(du -h "$f" | cut -f1))"
+            fi
+          done
+          exit $missing
+
       - name: Build DMG
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -503,10 +535,72 @@ jobs:
         run: npm run build:mac -- --${{ matrix.arch }}
         working-directory: kamp_ui
 
+      - name: Brand the DMG install target
+        # KAMP-675: swap the /Applications symlink for a Finder alias carrying
+        # the platter icon, so the drop target seats into the turntable drawn
+        # on the background instead of showing a blue folder. Must run after
+        # the build and before the artifact is uploaded. The script verifies
+        # the app's signature across the repack and fails on a regression; see
+        # its header for why repacking is safe at all.
+        run: bash scripts/brand_dmg_target.sh "$(ls kamp_ui/dist/*.dmg | head -1)"
+
       - name: Verify DMG contents
+        # Mounts the finished image and asserts the things this setup can lose
+        # silently (KAMP-675): the background art, the install target, and the
+        # target's custom icon. The drop target is a real risk — dmg-builder
+        # only injects the default app + link pair when `contents` is omitted
+        # entirely, so an edit that drops one entry produces a perfectly valid
+        # DMG you cannot install from. None of this is catchable by a test:
+        # kamp_ui has no unit-test runner and appearance is not assertable, but
+        # presence is.
         run: |
+          set -euo pipefail
           DMG=$(ls kamp_ui/dist/*.dmg | head -1)
           echo "→ DMG: $DMG ($(du -sh "$DMG" | cut -f1))"
+
+          ATTACH=$(hdiutil attach -noverify -noautoopen -readonly "$DMG")
+          echo "$ATTACH"
+          DEV=$(echo "$ATTACH" | grep -o '^/dev/disk[0-9]*' | head -1)
+          VOL=$(echo "$ATTACH" | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p' | tail -1 | xargs)
+          trap 'hdiutil detach -quiet "$DEV" || hdiutil detach -force "$DEV"' EXIT
+
+          rc=0
+          # electron-builder 26 drives the vendored Python dmgbuild, which
+          # writes the fused 1x/2x art as a `.background.tiff` FILE at the
+          # volume root. The older appdmg layout was a `.background/` directory,
+          # and some electron-builder versions still produce that, so accept
+          # either rather than pinning to today's toolchain.
+          BG=$(ls -d "$VOL"/.background* 2>/dev/null | head -1 || true)
+          if [ -n "$BG" ]; then
+            echo "→ background: $(basename "$BG") ($(du -h "$BG" | cut -f1))"
+          else
+            echo "::error::DMG has no background — it shipped with the stock art"
+            rc=1
+          fi
+
+          # After branding this is an alias, NOT a symlink. The distinction is
+          # the whole point: a symlink cannot carry a custom icon (macOS refuses
+          # a resource fork on one), and an alias can. If the branding step were
+          # skipped this would still be a symlink and the check below would say
+          # so rather than passing quietly on a blue folder.
+          if [ -e "$VOL/Applications" ] && [ ! -L "$VOL/Applications" ] \
+             && xattr "$VOL/Applications" 2>/dev/null | grep -q ResourceFork; then
+            echo "→ drop target: branded alias with a custom icon"
+          elif [ -L "$VOL/Applications" ]; then
+            echo "::error::drop target is still a plain symlink — branding did not run"
+            rc=1
+          else
+            echo "::error::DMG has no /Applications entry — nothing to drag onto"
+            rc=1
+          fi
+
+          if [ -d "$VOL/Kamp.app" ]; then
+            echo "→ app: Kamp.app present"
+          else
+            echo "::error::DMG has no Kamp.app"
+            rc=1
+          fi
+          exit $rc
 
       - name: Compute artifact name
         id: artifact

@@ -147,6 +147,49 @@ mac:
         - '**/*'
 dmg:
   artifactName: ${name}-${version}-${arch}.${ext}
+  # KAMP-675: the mount window as a turntable — see kamp_ui/resources/
+  # dmg_background.svg, which carries the full layout rationale.
+  #
+  # Named explicitly rather than relying on the implicit build/background.png
+  # lookup, and that is deliberate: getResource (app-builder-lib
+  # platformPackager.js) THROWS InvalidConfigurationError when an explicit path
+  # is missing, whereas the implicit lookup falls through to electron-builder's
+  # own stock template (dmg-builder dmgUtil.js computeBackground). The implicit
+  # form would therefore ship an unbranded DMG on green CI if the render step
+  # ever stopped producing the file. This path is resolved against the project
+  # dir; the @2x sibling is picked up automatically and the pair is fused into
+  # a multi-resolution TIFF by tiffutil.
+  background: resources/dmg_background.png
+  # scripts/brand_dmg_target.sh repacks the image after electron-builder
+  # finishes, to give the install target a custom icon. createBlockmap runs
+  # BEFORE that (dmg-builder dmg.js, just ahead of emitArtifactBuildCompleted),
+  # so a blockmap written here would describe bytes that no longer exist.
+  # Nothing consumes it today — there is no electron-updater dependency and CI
+  # uploads only *.dmg — so it is turned off rather than left to lie. Whoever
+  # wires up auto-update needs to regenerate it after branding, not re-enable
+  # this flag on its own.
+  writeUpdateInfo: false
+  # Both entries are required. dmg-builder only injects the default app +
+  # /Applications pair when `contents` is absent entirely, so a partial list
+  # silently ships a DMG with no drop target.
+  #
+  # x/y are the icon CENTRE, y measured from the top of the window. The window
+  # is 540x300 because that is the background's own size — dmg.window is
+  # ignored whenever a background image is set, so it is deliberately not set
+  # here. iconSize is likewise left to its default of 80; the art is drawn to
+  # that number, so changing either means redrawing the SVG.
+  contents:
+    # No `path` on this entry: dmg-builder substitutes the built .app when it
+    # is omitted, and an absolute path outside the workspace root is rejected
+    # outright.
+    - x: 130
+      y: 140
+      type: file
+      name: Kamp.app
+    - x: 410
+      y: 140
+      type: link
+      path: /Applications
 linux:
   target:
     - AppImage

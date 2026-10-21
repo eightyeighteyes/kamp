@@ -122,7 +122,6 @@ _INITIAL_STATUS: dict[str, Any] = {
     # resets to False on a restart rather than being restated from stale data.
     "exhausted": False,
     "paused_until": 0.0,
-    "hints": [],
     "thin": False,
     # What the gather is looking at right now, in the clerk's voice (KAMP-693).
     # Declared here so the shape always carries it — the builder's own `detail`

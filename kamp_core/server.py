@@ -59,6 +59,7 @@ from kamp_core.discovery_api import (
 )
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 from kamp_core.proxy_hosts import ALLOWED_PROXY_HOSTS, host_allowed
+from kamp_core.transport_floor import MAIN, PREVIEW, FloorClaim
 
 # ---------------------------------------------------------------------------
 # Playback URI resolution
@@ -454,6 +455,18 @@ class PlayFilesRequest(BaseModel):
 
 class SeekRequest(BaseModel):
     position: float
+
+
+class TransportRequest(BaseModel):
+    """An ambiguous transport press — the spacebar, an arrow key, a media key.
+
+    The action rides in the body rather than the path so there is ONE route to
+    exempt from the floor-demand middleware. Three sibling routes would be three
+    entries in an exact-match tuple, which is three chances to add a fourth and
+    forget.
+    """
+
+    action: Literal["play", "pause", "toggle", "next", "prev"]
 
 
 class VolumeRequest(BaseModel):
@@ -1172,6 +1185,42 @@ def _materialize_stream_tracks_or_422(
     index.materialize_stream_tracks(sale_item_id, tracks)
 
 
+#: POSTs under /api/v1/player/ that do NOT claim the floor from a Crate preview.
+#:
+#: The middleware that uses this (``_preview_yields_to_transport``) parks the
+#: preview on everything it is not told to spare, and that default is right:
+#: ~15 endpoints there can start playback, several only conditionally, and
+#: forgetting one leaves preview audio playing under the user's own music. The
+#: list below is the set that starts nothing, so parking for them is a false
+#: positive.
+#:
+#: * **volume / mute** — not a demand for the floor but a change to how loud
+#:   everything is, so they are mirrored onto the preview instead.
+#: * **transport** — arbitrates for itself (KAMP-736) and parks the preview on
+#:   its own whenever it decides main wins. It has to: being listed here means
+#:   nothing does it on its behalf.
+#: * **the queue group** — a shipped bug (KAMP-736). Each only reorders rows and
+#:   re-primes the lookahead; none calls play or resume. They were parking a
+#:   playing preview, so dragging a queue row or toggling shuffle silently
+#:   killed the record the user was listening to.
+#:
+#: At module scope, and pinned by ``TestFloorDemandExemptions``, so that adding
+#: a path is a visible diff rather than a quiet widening of the rule. The
+#: membership test is exact: a trailing slash or a sub-path is NOT exempt, which
+#: is the safe direction to be wrong in.
+_PREVIEW_SAFE_PLAYER_PATHS = (
+    "/api/v1/player/volume",
+    "/api/v1/player/mute",
+    "/api/v1/player/transport",
+    "/api/v1/player/queue/move",
+    "/api/v1/player/queue/reorder",
+    "/api/v1/player/queue/remove",
+    "/api/v1/player/queue/insert",
+    "/api/v1/player/shuffle",
+    "/api/v1/player/repeat",
+)
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -1233,6 +1282,15 @@ def create_app(
     makes the app easy to test: pass mock objects, use TestClient, done.
     """
     app = FastAPI(title="Kamp", version="1")
+
+    # Which of the two players the ambiguous controls address (KAMP-736). Built
+    # here because both writers need the same instance: main's claim is made in
+    # _notify_play_state_changed below, the preview's in discovery_api's
+    # _push_preview, and the /transport route reads it. Exposed on app.state so
+    # register_discovery_routes can reach it without a second constructor
+    # argument threading through every caller.
+    _floor = FloorClaim()
+    app.state.transport_floor = _floor
 
     # Mutable containers for runtime-updatable state.
     # library_path can be changed via POST /api/v1/config/library-path.
@@ -1312,6 +1370,11 @@ def create_app(
         # already cleared it) but harmless.
         if engine.state.playing:
             _state["buffering"] = False
+            # The main player's half of the floor claim (KAMP-736). This hook is
+            # the single place mpv's pause property turns into `state.playing`
+            # and it already fires only on a real change, so the claim lands
+            # once per transition rather than per event.
+            _floor.claim(MAIN)
         _broadcast({"type": "play_state.changed", **_state_snapshot().model_dump()})
 
     def _notify_album_download_status(sale_item_id: str, state: str) -> None:
@@ -1656,10 +1719,8 @@ def create_app(
     # underneath the user's own music with no obvious cause. One rule cannot be
     # forgotten by the next endpoint anyone adds.
     #
-    # Volume and mute are the deliberate exceptions: they are not a demand for
-    # the floor, they are a change to how loud everything is, so they are
-    # mirrored onto the preview instead of stopping it.
-    _PREVIEW_SAFE_PLAYER_PATHS = ("/api/v1/player/volume", "/api/v1/player/mute")
+    # The exceptions are in _PREVIEW_SAFE_PLAYER_PATHS at module scope, where a
+    # test can import and pin them.
 
     @app.middleware("http")
     async def _preview_yields_to_transport(request: Request, call_next: Any) -> Any:
@@ -4312,6 +4373,85 @@ def create_app(
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
+
+    def _preview_state() -> str:
+        """The preview's state name, or "idle" when there is no preview at all.
+
+        preview_player is None whenever the Crate is unavailable, and the
+        spacebar has to keep working rather than 500 (KAMP-736).
+        """
+        if preview_player is None:
+            return "idle"
+        try:
+            return str(preview_player.snapshot().get("state", "idle"))
+        except Exception:  # noqa: BLE001 - a broken preview must not wedge the keys
+            logger.warning("could not read the preview state", exc_info=True)
+            return "idle"
+
+    def _resume_most_recent() -> None:
+        """Give the floor back to whichever player was audible last."""
+        if _floor.holder() == PREVIEW and preview_player is not None:
+            preview_player.resume()
+            return
+        # Main wins. This route is exempt from _preview_yields_to_transport, so
+        # nothing parks the preview on our behalf -- without this the queue
+        # resumes with a paused preview still loaded and able to speak up.
+        if preview_player is not None:
+            try:
+                preview_player.release_for_main()
+            except Exception:  # noqa: BLE001 - never break the transport
+                logger.warning("could not park the preview", exc_info=True)
+        engine.resume()
+
+    @app.post("/api/v1/player/transport")
+    def transport(req: TransportRequest) -> dict[str, Any]:
+        """Act on whichever player the user actually means (KAMP-736).
+
+        The spacebar, the arrow keys and the media keys name neither player, and
+        every client used to resolve that locally from the MAIN player's state
+        -- so pressing pause during a Crate preview sent `resume` and started
+        the user's queue underneath the record they were listening to.
+
+        The rule, from the ticket: explicit controls address their own transport
+        (the main transport's play button still recovers the main queue, and
+        does not come through here), while ambiguous ones follow whoever was
+        last audible.
+        """
+        action = req.action
+        preview_playing = _preview_state() == "playing"
+
+        if action in ("pause", "toggle"):
+            # Whoever is audible stops. `pause` deliberately stops there and
+            # never starts anything: Windows sends a bare `pause` from the
+            # physical key (the SMTC helper has no togglePlayPause button), and
+            # falling through to a resume would start playback from silence.
+            if preview_playing and preview_player is not None:
+                preview_player.pause()
+            elif engine.state.playing:
+                engine.pause()
+            elif action == "toggle":
+                _resume_most_recent()
+            return {"ok": True}
+
+        if action == "play":
+            # Not "resume main". On Windows this is what the physical key sends
+            # whenever the queue is idle, which is exactly the bug scenario, so
+            # routing it to the main queue would leave that platform broken.
+            if not preview_playing and not engine.state.playing:
+                _resume_most_recent()
+            return {"ok": True}
+
+        # next / prev: skip within whatever is playing rather than parking it
+        # and advancing the other player's queue.
+        if preview_playing and preview_player is not None:
+            preview_player.step(1 if action == "next" else -1)
+            return {"ok": True}
+        if preview_player is not None:
+            try:
+                preview_player.release_for_main()
+            except Exception:  # noqa: BLE001 - never break the transport
+                logger.warning("could not park the preview", exc_info=True)
+        return next_track() if action == "next" else prev_track()
 
     @app.post("/api/v1/player/pause")
     def pause() -> dict[str, Any]:

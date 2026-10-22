@@ -28,6 +28,7 @@ from typing import Any, Callable, TYPE_CHECKING, cast
 from fastapi import FastAPI, HTTPException, Response
 
 from kamp_core.proxy_hosts import ART_HOSTS, host_allowed
+from kamp_core.transport_floor import PREVIEW
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from kamp_core.library import LibraryIndex
@@ -475,6 +476,19 @@ def register_discovery_routes(
         return preview
 
     def _push_preview(snapshot: dict[str, Any]) -> None:
+        # The preview's half of the floor claim (KAMP-736). This sees every
+        # snapshot the player publishes, which is what makes it the right place:
+        # claiming on the transition INTO playing alone would let a ten-minute
+        # record expire its own claim while it was still going, and claiming on
+        # `paused` too is what makes the stamp mean "last moment this was
+        # audible" rather than "when it started".
+        #
+        # Deliberately not `idle`: a parked or stopped preview has no claim, and
+        # parking happens for reasons that are not the user choosing the main
+        # queue (see _PREVIEW_SAFE_PLAYER_PATHS in server.py).
+        floor = getattr(app.state, "transport_floor", None)
+        if floor is not None and snapshot.get("state") in ("playing", "paused"):
+            floor.claim(PREVIEW)
         broadcast({"type": PREVIEW_EVENT, **snapshot})
 
     # The player is built before create_app, so it cannot be handed this

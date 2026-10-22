@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from kamp_core.library import AlbumInfo, ArtistInfo, LibraryStats, Track
 from kamp_core.playback import PlaybackState
 from kamp_core.server import TrackOut, create_app, resolve_playback_uri
+from kamp_core.transport_floor import MAIN, PREVIEW
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -7919,3 +7920,357 @@ class TestFetchAlbumGenresEndpoint:
             params={"album_artist": "A", "album": "B"},
         )
         assert res.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Arbitrated transport (KAMP-736)
+# ---------------------------------------------------------------------------
+
+
+class _FakePreview:
+    """The PreviewPlayer surface the arbitrated route touches."""
+
+    def __init__(self, state: str = "idle") -> None:
+        self.calls: list[str] = []
+        self.state_name = state
+        self.raise_on_snapshot = False
+        self.raise_on_release = False
+
+    def snapshot(self) -> dict[str, Any]:
+        if self.raise_on_snapshot:
+            raise RuntimeError("preview engine is gone")
+        return {"state": self.state_name}
+
+    def pause(self) -> dict[str, Any]:
+        self.calls.append("pause")
+        self.state_name = "paused"
+        return {"state": self.state_name}
+
+    def resume(self) -> dict[str, Any]:
+        self.calls.append("resume")
+        self.state_name = "playing"
+        return {"state": self.state_name}
+
+    def step(self, delta: int) -> dict[str, Any]:
+        self.calls.append(f"step:{delta}")
+        return {"state": self.state_name}
+
+    def release_for_main(self) -> None:
+        if self.raise_on_release:
+            raise RuntimeError("could not park")
+        self.calls.append("release_for_main")
+        self.state_name = "idle"
+
+    def set_volume(self, v: int) -> None:  # pragma: no cover - unused here
+        pass
+
+    def set_muted(self, m: bool) -> None:  # pragma: no cover - unused here
+        pass
+
+
+class TestArbitratedTransport:
+    """Spacebar, arrow keys and media keys name neither player (KAMP-736).
+
+    Before this, every client picked pause-or-resume from the MAIN player's
+    state alone, so pressing pause during a crate preview sent `resume` and
+    started the user's queue underneath the record they were listening to.
+    """
+
+    def _app(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        preview: Any,
+    ) -> Any:
+        return create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            preview_player=preview,
+        )
+
+    def _client(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        preview: Any,
+    ) -> TestClient:
+        return TestClient(self._app(mock_index, mock_engine, mock_queue, preview))
+
+    # -- pause ------------------------------------------------------------
+
+    def test_pause_addresses_the_preview_when_it_holds_the_floor(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The reported bug, in one assertion: the main queue must stay put."""
+        preview = _FakePreview("playing")
+        mock_engine.state.playing = False
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        assert (
+            client.post(
+                "/api/v1/player/transport", json={"action": "pause"}
+            ).status_code
+            == 200
+        )
+
+        assert preview.calls == ["pause"]
+        mock_engine.resume.assert_not_called()
+        mock_engine.pause.assert_not_called()
+
+    def test_pause_addresses_main_when_main_is_playing(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("idle")
+        mock_engine.state.playing = True
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        client.post("/api/v1/player/transport", json={"action": "pause"})
+
+        mock_engine.pause.assert_called_once()
+        assert preview.calls == []
+
+    def test_pause_never_starts_anything(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Windows sends a bare `pause` from the physical key. If that fell
+        through to a toggle it would START playback from silence."""
+        preview = _FakePreview("paused")
+        mock_engine.state.playing = False
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        client.post("/api/v1/player/transport", json={"action": "pause"})
+
+        assert preview.calls == []
+        mock_engine.resume.assert_not_called()
+
+    # -- play / toggle from silence ---------------------------------------
+
+    def test_play_resumes_the_preview_when_it_was_last_audible(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("paused")
+        mock_engine.state.playing = False
+        app = self._app(mock_index, mock_engine, mock_queue, preview)
+        app.state.transport_floor.claim(PREVIEW)
+
+        TestClient(app).post("/api/v1/player/transport", json={"action": "play"})
+
+        assert preview.calls == ["resume"]
+        mock_engine.resume.assert_not_called()
+
+    def test_play_resumes_main_when_main_was_last_audible(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("paused")
+        mock_engine.state.playing = False
+        app = self._app(mock_index, mock_engine, mock_queue, preview)
+        app.state.transport_floor.claim(MAIN)
+
+        TestClient(app).post("/api/v1/player/transport", json={"action": "play"})
+
+        mock_engine.resume.assert_called_once()
+
+    def test_handing_the_floor_to_main_parks_the_preview_itself(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """This route is exempt from _preview_yields_to_transport, so nothing
+        parks the preview on its behalf. Without this the main queue resumes
+        with a paused preview still loaded and able to speak up."""
+        preview = _FakePreview("paused")
+        mock_engine.state.playing = False
+        app = self._app(mock_index, mock_engine, mock_queue, preview)
+        app.state.transport_floor.claim(MAIN)
+
+        TestClient(app).post("/api/v1/player/transport", json={"action": "play"})
+
+        assert "release_for_main" in preview.calls
+
+    def test_toggle_pauses_the_holder_rather_than_starting_the_other(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("playing")
+        mock_engine.state.playing = False
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        client.post("/api/v1/player/transport", json={"action": "toggle"})
+
+        assert preview.calls == ["pause"]
+        mock_engine.resume.assert_not_called()
+
+    def test_toggle_from_silence_resumes_the_most_recent(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("paused")
+        mock_engine.state.playing = False
+        app = self._app(mock_index, mock_engine, mock_queue, preview)
+        app.state.transport_floor.claim(PREVIEW)
+
+        TestClient(app).post("/api/v1/player/transport", json={"action": "toggle"})
+
+        assert preview.calls == ["resume"]
+
+    # -- next / prev -------------------------------------------------------
+
+    def test_next_steps_within_the_preview_when_it_holds_the_floor(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The arrow keys are the same defect as pause (KAMP-736): outside the
+        Crate they parked the preview and advanced the user's queue instead."""
+        preview = _FakePreview("playing")
+        mock_engine.state.playing = False
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        client.post("/api/v1/player/transport", json={"action": "next"})
+
+        assert preview.calls == ["step:1"]
+
+    def test_prev_steps_backwards_within_the_preview(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("playing")
+        mock_engine.state.playing = False
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        client.post("/api/v1/player/transport", json={"action": "prev"})
+
+        assert preview.calls == ["step:-1"]
+
+    def test_next_falls_through_to_the_queue_when_the_preview_is_idle(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("idle")
+        mock_engine.state.playing = True
+        # Nothing queued, so next_track takes its own empty branch rather than
+        # resolving a MagicMock track through the real playback machinery.
+        mock_queue.next.return_value = None
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        res = client.post("/api/v1/player/transport", json={"action": "next"})
+
+        assert res.status_code == 200
+        # Parked on the way through: main is taking the floor, and this route is
+        # exempt from the middleware that would otherwise have done it.
+        assert "release_for_main" in preview.calls
+
+    # -- a preview that misbehaves ----------------------------------------
+
+    def test_a_broken_preview_does_not_wedge_the_keys(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Reading the preview is best-effort. If its snapshot raises, the
+        spacebar must still reach the main player rather than 500 -- the keys
+        are how someone stops audio they cannot otherwise silence."""
+        preview = _FakePreview("playing")
+        preview.raise_on_snapshot = True
+        mock_engine.state.playing = True
+        client = self._client(mock_index, mock_engine, mock_queue, preview)
+
+        res = client.post("/api/v1/player/transport", json={"action": "pause"})
+
+        assert res.status_code == 200
+        mock_engine.pause.assert_called_once()
+
+    def test_a_preview_that_cannot_be_parked_still_lets_main_resume(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("paused")
+        preview.raise_on_release = True
+        mock_engine.state.playing = False
+        app = self._app(mock_index, mock_engine, mock_queue, preview)
+        app.state.transport_floor.claim(MAIN)
+
+        res = TestClient(app).post("/api/v1/player/transport", json={"action": "play"})
+
+        assert res.status_code == 200
+        mock_engine.resume.assert_called_once()
+
+    # -- degenerate shapes -------------------------------------------------
+
+    def test_an_unknown_action_is_refused(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The allowlist is what keeps this from being an arbitrary call."""
+        client = self._client(mock_index, mock_engine, mock_queue, _FakePreview("idle"))
+        res = client.post("/api/v1/player/transport", json={"action": "eject"})
+        assert res.status_code == 422
+
+    def test_it_works_with_no_preview_player_at_all(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """preview_player is None whenever the Crate is unavailable, and the
+        spacebar must keep working rather than 500."""
+        mock_engine.state.playing = True
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+
+        res = TestClient(app).post("/api/v1/player/transport", json={"action": "pause"})
+
+        assert res.status_code == 200
+        mock_engine.pause.assert_called_once()
+
+
+class TestFloorDemandExemptions:
+    """Which POSTs under /api/v1/player/ count as claiming the floor.
+
+    The middleware parks the preview on everything it is not told to spare, and
+    its comment explains why that default is right: ~15 endpoints can start
+    playback and forgetting one leaves preview audio under the user's music.
+    But it fired on six that never start anything, so reordering a queue or
+    toggling shuffle silently killed a playing preview.
+    """
+
+    def test_the_exemption_list_is_what_we_think_it_is(self) -> None:
+        """Pinned so adding a path is a visible diff rather than a quiet
+        widening of the rule."""
+        from kamp_core.server import _PREVIEW_SAFE_PLAYER_PATHS
+
+        assert set(_PREVIEW_SAFE_PLAYER_PATHS) == {
+            "/api/v1/player/volume",
+            "/api/v1/player/mute",
+            # Arbitrates for itself, and parks the preview when main wins.
+            "/api/v1/player/transport",
+            # Queue bookkeeping: none of these starts playback.
+            "/api/v1/player/queue/move",
+            "/api/v1/player/queue/reorder",
+            "/api/v1/player/queue/remove",
+            "/api/v1/player/queue/insert",
+            "/api/v1/player/shuffle",
+            "/api/v1/player/repeat",
+        }
+
+    def test_reordering_the_queue_leaves_a_playing_preview_alone(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        preview = _FakePreview("playing")
+        client = TestClient(
+            create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                preview_player=preview,
+            )
+        )
+
+        client.post("/api/v1/player/queue/move", json={"from_index": 0, "to_index": 1})
+
+        assert "release_for_main" not in preview.calls
+
+    def test_starting_a_track_still_takes_the_floor(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The exemptions must not have widened into anything that plays."""
+        preview = _FakePreview("playing")
+        client = TestClient(
+            create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                preview_player=preview,
+            )
+        )
+
+        client.post("/api/v1/player/resume")
+
+        assert "release_for_main" in preview.calls

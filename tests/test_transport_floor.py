@@ -69,6 +69,48 @@ class TestClaiming:
         assert floor.holder() == PREVIEW
 
 
+class TestRelease:
+    """A player with nothing to resume must not keep the claim.
+
+    Leaving the Crate view stops the preview, which unloads the engine and
+    clears the parked record. Its claim outliving that is how the spacebar
+    became a no-op in Library: the floor still named the preview, so the toggle
+    asked it to resume, and resume() with nothing loaded and nothing parked
+    returns a snapshot and does nothing at all.
+    """
+
+    def test_releasing_hands_the_floor_back_to_main(self) -> None:
+        floor = FloorClaim(now=lambda: 1000.0)
+        floor.claim(PREVIEW)
+        floor.release(PREVIEW)
+        assert floor.holder() == MAIN
+
+    def test_releasing_a_claim_you_do_not_hold_changes_nothing(self) -> None:
+        """An idle preview publish must not evict a queue that just started."""
+        floor = FloorClaim(now=lambda: 1000.0)
+        floor.claim(PREVIEW)
+        floor.claim(MAIN)
+        floor.release(PREVIEW)
+        assert floor.holder() == MAIN
+
+    def test_releasing_is_idempotent(self) -> None:
+        """The preview publishes idle more than once — stop, then the idle
+        timer, then a reconnect's priming snapshot."""
+        floor = FloorClaim(now=lambda: 1000.0)
+        floor.claim(PREVIEW)
+        floor.release(PREVIEW)
+        floor.release(PREVIEW)
+        assert floor.holder() == MAIN
+
+    def test_an_unknown_name_cannot_be_released(self) -> None:
+        floor = FloorClaim()
+        try:
+            floor.release("turntable")
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for an unknown claimant")
+
+
 class TestMainNeverExpires:
     def test_an_old_main_claim_still_wins(self) -> None:
         """Only the preview's claim is bounded. Expiry exists to stop a

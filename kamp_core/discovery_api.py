@@ -483,12 +483,24 @@ def register_discovery_routes(
         # `paused` too is what makes the stamp mean "last moment this was
         # audible" rather than "when it started".
         #
-        # Deliberately not `idle`: a parked or stopped preview has no claim, and
-        # parking happens for reasons that are not the user choosing the main
-        # queue (see _PREVIEW_SAFE_PLAYER_PATHS in server.py).
+        # Going idle RELEASES it rather than merely failing to renew it. A
+        # claim is a promise the player can be resumed, and an idle preview has
+        # been unloaded with its parked record cleared, so it cannot keep one —
+        # leaving the Crate view stops the preview, and a claim surviving that
+        # made the spacebar a silent no-op in every other view: the toggle
+        # asked the preview to resume, and resume() with nothing loaded does
+        # nothing at all.
+        # `preparing` is matched by neither on purpose: it is the preview
+        # starting up, not ending, and releasing on it would open a window where
+        # the spacebar addressed the queue between a record being asked for and
+        # it becoming audible.
         floor = getattr(app.state, "transport_floor", None)
-        if floor is not None and snapshot.get("state") in ("playing", "paused"):
-            floor.claim(PREVIEW)
+        state = snapshot.get("state")
+        if floor is not None:
+            if state in ("playing", "paused"):
+                floor.claim(PREVIEW)
+            elif state == "idle":
+                floor.release(PREVIEW)
         broadcast({"type": PREVIEW_EVENT, **snapshot})
 
     # The player is built before create_app, so it cannot be handed this

@@ -95,6 +95,26 @@ class FloorClaim:
         self._who = who
         self._at = self._now()
 
+    def release(self, who: str) -> None:
+        """Drop *who*'s claim, if they still hold it.
+
+        A claim is a promise that the player can be resumed, and a player with
+        nothing loaded cannot keep one. The preview stops when the user leaves
+        the Crate view, which unloads its engine and clears the parked record —
+        so from that moment there is nothing for it to resume, and holding the
+        floor would make the spacebar a silent no-op: the toggle would ask the
+        preview to resume, and resume() with nothing loaded returns a snapshot
+        and does nothing at all.
+
+        Guarded on still holding it, so an idle publish arriving after the
+        queue has started cannot evict the queue.
+        """
+        if who not in _CLAIMANTS:
+            raise ValueError(f"unknown claimant: {who!r}")
+        if self._who == who:
+            self._who = MAIN
+            self._at = self._now()
+
     def holder(self) -> str:
         """Who the ambiguous controls should address right now.
 

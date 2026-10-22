@@ -8187,6 +8187,36 @@ class TestArbitratedTransport:
         assert res.status_code == 200
         mock_engine.resume.assert_called_once()
 
+    def test_leaving_the_crate_hands_the_keys_back_to_the_queue(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The reported repro: preview something, pause it, leave the Crate,
+        press Space in Library.
+
+        Leaving the view stops the preview, which unloads its engine and clears
+        the parked record. If its claim survived that, the toggle would ask the
+        preview to resume and resume() would return a snapshot having done
+        nothing — the spacebar silently dead, with pressing play on the
+        transport bar as the only way out.
+        """
+        preview = _FakePreview("playing")
+        mock_engine.state.playing = False
+        app = self._app(mock_index, mock_engine, mock_queue, preview)
+        publish = app.state.discovery_preview_publish
+
+        publish({"state": "playing", "title": "A Record"})
+        publish({"state": "paused", "title": "A Record"})
+        assert app.state.transport_floor.holder() == PREVIEW
+
+        # CrateView stops the preview on its way out of the view.
+        preview.state_name = "idle"
+        publish({"state": "idle", "title": ""})
+
+        TestClient(app).post("/api/v1/player/transport", json={"action": "toggle"})
+
+        mock_engine.resume.assert_called_once()
+        assert "resume" not in preview.calls
+
     # -- degenerate shapes -------------------------------------------------
 
     def test_an_unknown_action_is_refused(

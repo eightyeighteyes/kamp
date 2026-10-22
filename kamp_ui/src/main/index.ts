@@ -81,7 +81,38 @@ let _heartbeatInterval: NodeJS.Timeout | null = null
 // The Crate preview's live state, forwarded by the preload (KAMP-736). Main
 // needs it for the SMTC status below; the daemon decides what a key MEANS.
 let _previewState: { state: string; title: string } = { state: 'idle', title: '' }
-const _previewAudible = (): boolean => _previewState.state === 'playing'
+
+// The preview owns the OS widget while it is playing OR PAUSED, not only while
+// audible. A paused preview is still the thing the user is looking at, and
+// handing the widget back to a queue that is also paused would just swap one
+// stopped record for another.
+//
+// Getting this wrong is what made the first cut of KAMP-736 half-work: pausing
+// a preview with the spacebar left the widget advertising `playing: true`, so
+// the control kept showing a pause icon. It looked correct when paused FROM the
+// widget only because macOS flips its own control optimistically on a press —
+// nothing we sent was involved.
+const _previewHoldsWidget = (): boolean =>
+  _previewState.state === 'playing' || _previewState.state === 'paused'
+
+type MainPlayerState = {
+  current_track: {
+    title: string
+    artist: string
+    album_artist: string
+    album: string
+    embedded_art: boolean
+  } | null
+  playing: boolean
+  position: number
+  duration: number
+}
+
+// Main's last known state, remembered even while the preview owns the widget so
+// it can be re-asserted the moment the preview lets go. Nothing else re-asserts
+// it: the preview took the floor by PAUSING main, so when it stops there is no
+// play_state.changed to ride back in on.
+let _lastMainState: MainPlayerState | null = null
 // Cache artwork as base64 strings keyed by "album_artist|album" so we only
 // fetch once per album rather than on every position-tick update.
 const _artworkCache = new Map<string, string>()
@@ -131,6 +162,100 @@ function postToPlayer(path: string, body?: unknown): void {
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     })
     .catch(() => {})
+}
+
+/** Tell the OS about the main queue, from the last state we were given. */
+function advertiseMain(): void {
+  const state = _lastMainState
+  if (!state?.current_track) {
+    _currentAlbumKey = ''
+    sendToHelper({ cmd: 'stop' })
+    return
+  }
+  const track = state.current_track
+
+  // Build the update synchronously from whatever artwork is already cached, so
+  // position and playback state stay in sync without waiting on a round trip.
+  const artKey = `${track.album_artist}|${track.album}`
+  _currentAlbumKey = artKey
+  const cachedArtwork = _artworkCache.get(artKey)
+
+  sendToHelper({
+    cmd: 'update',
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    position: state.position,
+    duration: state.duration,
+    playing: state.playing,
+    ...(cachedArtwork !== undefined ? { artworkBase64: cachedArtwork } : {})
+  })
+
+  // Fetch artwork in the background on a cache miss so later updates for the
+  // same album include it. net.fetch routes through Chromium's stack
+  // (session.defaultSession), which already allows the kamp server and avoids
+  // the Cloudflare TLS fingerprint issue for local requests.
+  if (track.embedded_art && cachedArtwork === undefined) {
+    const url =
+      `http://127.0.0.1:47483/api/v1/album-art` +
+      `?album_artist=${encodeURIComponent(track.album_artist)}` +
+      `&album=${encodeURIComponent(track.album)}`
+    net
+      .fetch(url, { headers: authHeaders() })
+      .then((res) => {
+        if (!res.ok) return
+        return res.arrayBuffer()
+      })
+      .then((buf) => {
+        if (!buf) return
+        const b64 = Buffer.from(buf).toString('base64')
+        _artworkCache.set(artKey, b64)
+        // Re-send the FULL update rather than just the artwork: applyUpdate in
+        // the Swift helper replaces nowPlayingInfo from scratch, so a partial
+        // message would drop title/artist/etc. Guard against a track change
+        // that arrived while the fetch was in flight, and against the preview
+        // having taken the widget in the meantime.
+        if (_currentAlbumKey === artKey && !_previewHoldsWidget()) {
+          sendToHelper({
+            cmd: 'update',
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            position: state.position,
+            duration: state.duration,
+            playing: state.playing,
+            artworkBase64: b64
+          })
+        }
+      })
+      .catch(() => {
+        // Mark the cache so this is not retried on every position tick.
+        _artworkCache.set(artKey, '')
+      })
+  }
+}
+
+/** Tell the OS about whichever player currently owns the widget. */
+function advertiseNowPlaying(): void {
+  if (!_previewHoldsWidget()) {
+    advertiseMain()
+    return
+  }
+  _currentAlbumKey = ''
+  sendToHelper({
+    cmd: 'update',
+    title: _previewState.title || 'Crate preview',
+    // The deck names the record, not the band — the preview snapshot carries
+    // one title string and no separate artist field.
+    artist: 'Kamp — the Crate',
+    album: '',
+    position: 0,
+    duration: 0,
+    // The half that was missing: a paused preview has to advertise itself as
+    // paused, or the OS control keeps offering to pause something that already
+    // stopped.
+    playing: _previewState.state === 'playing'
+  })
 }
 
 function startNowPlayingHelper(): void {
@@ -905,29 +1030,19 @@ app.whenReady().then(async () => {
   // `play` — and no amount of arbitration in the daemon can turn that back into
   // the pause the user pressed.
   //
-  // When the preview stops, main's own state is re-asserted on the next
-  // play_state.changed. Nothing is pushed here for the idle case: the daemon
-  // publishes a preview snapshot and a player state change together, and
-  // guessing ahead of the latter would briefly advertise a queue that is about
-  // to change.
+  // Every transition is re-advertised, including into `paused` and back out to
+  // `idle`. An early return on anything but `playing` was the first cut's bug:
+  // pausing with the spacebar left the control showing a pause icon, because
+  // the last thing the helper had been told was `playing: true` and nothing
+  // ever corrected it. Letting go of the widget re-asserts the queue, which
+  // nothing else does — the preview took the floor by pausing main, so there is
+  // no play_state.changed coming to do it.
   ipcMain.on('preview:state-changed', (_event, snapshot: { state?: string; title?: string }) => {
     _previewState = {
       state: snapshot.state ?? 'idle',
       title: snapshot.title ?? ''
     }
-    if (!_previewAudible()) return
-    _currentAlbumKey = ''
-    sendToHelper({
-      cmd: 'update',
-      title: _previewState.title || 'Crate preview',
-      // The deck names the record, not the band — the preview snapshot
-      // carries one title string and no separate artist.
-      artist: 'Kamp — the Crate',
-      album: '',
-      position: 0,
-      duration: 0,
-      playing: true
-    })
+    advertiseNowPlaying()
   })
 
   // Forward player state from the preload to the Now Playing helper.
@@ -950,79 +1065,19 @@ app.whenReady().then(async () => {
         duration: number
       }
     ) => {
+      // Remembered unconditionally, advertised only when the preview is not
+      // holding the widget. Main's state still CHANGES while a preview runs —
+      // the preview takes the floor by pausing it — and that is exactly the
+      // state we need to re-assert when the preview lets go.
+      _lastMainState = state
+
       // The preview outranks the queue for what the OS is told (KAMP-736). It
-      // is what the user can hear, and on Windows the advertised status is also
-      // what decides whether the physical key arrives as Play or Pause — so
+      // is what the user can hear, and on Windows the advertised status also
+      // decides whether the physical key arrives as Play or Pause — so
       // advertising a Stopped queue while a crate record plays is precisely
       // what made that key unfixable from the daemon side.
-      if (_previewAudible()) return
-      if (!state.current_track) {
-        _currentAlbumKey = ''
-        sendToHelper({ cmd: 'stop' })
-        return
-      }
-      const track = state.current_track
-
-      // Build the update message synchronously from whatever artwork we already
-      // have cached, then dispatch immediately so position/playback state stays
-      // in sync without waiting for a network round-trip.
-      const artKey = `${track.album_artist}|${track.album}`
-      _currentAlbumKey = artKey
-      const cachedArtwork = _artworkCache.get(artKey)
-
-      sendToHelper({
-        cmd: 'update',
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-        position: state.position,
-        duration: state.duration,
-        playing: state.playing,
-        ...(cachedArtwork !== undefined ? { artworkBase64: cachedArtwork } : {})
-      })
-
-      // Fetch artwork in the background on cache miss so subsequent updates for
-      // the same album include it.  net.fetch routes through Chromium's stack
-      // (session.defaultSession) which already has the kamp server in its allow
-      // list and avoids the Cloudflare TLS fingerprint issue for local requests.
-      if (track.embedded_art && cachedArtwork === undefined) {
-        const url =
-          `http://127.0.0.1:47483/api/v1/album-art` +
-          `?album_artist=${encodeURIComponent(track.album_artist)}` +
-          `&album=${encodeURIComponent(track.album)}`
-        net
-          .fetch(url, { headers: authHeaders() })
-          .then((res) => {
-            if (!res.ok) return
-            return res.arrayBuffer()
-          })
-          .then((buf) => {
-            if (!buf) return
-            const b64 = Buffer.from(buf).toString('base64')
-            _artworkCache.set(artKey, b64)
-            // Re-send the full update (not just artworkBase64) because
-            // applyUpdate in the Swift helper always replaces nowPlayingInfo
-            // from scratch — a partial message would drop title/artist/etc.
-            // Guard against a track change that arrived while fetch was
-            // in-flight by comparing against the live _currentAlbumKey.
-            if (_currentAlbumKey === artKey) {
-              sendToHelper({
-                cmd: 'update',
-                title: track.title,
-                artist: track.artist,
-                album: track.album,
-                position: state.position,
-                duration: state.duration,
-                playing: state.playing,
-                artworkBase64: b64
-              })
-            }
-          })
-          .catch(() => {
-            // Mark cache so we don't retry on every position tick.
-            _artworkCache.set(artKey, '')
-          })
-      }
+      if (_previewHoldsWidget()) return
+      advertiseMain()
     }
   )
 

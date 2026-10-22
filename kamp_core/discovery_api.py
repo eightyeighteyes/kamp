@@ -28,6 +28,7 @@ from typing import Any, Callable, TYPE_CHECKING, cast
 from fastapi import FastAPI, HTTPException, Response
 
 from kamp_core.proxy_hosts import ART_HOSTS, host_allowed
+from kamp_core.transport_floor import PREVIEW
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from kamp_core.library import LibraryIndex
@@ -475,6 +476,31 @@ def register_discovery_routes(
         return preview
 
     def _push_preview(snapshot: dict[str, Any]) -> None:
+        # The preview's half of the floor claim (KAMP-736). This sees every
+        # snapshot the player publishes, which is what makes it the right place:
+        # claiming on the transition INTO playing alone would let a ten-minute
+        # record expire its own claim while it was still going, and claiming on
+        # `paused` too is what makes the stamp mean "last moment this was
+        # audible" rather than "when it started".
+        #
+        # Going idle RELEASES it rather than merely failing to renew it. A
+        # claim is a promise the player can be resumed, and an idle preview has
+        # been unloaded with its parked record cleared, so it cannot keep one —
+        # leaving the Crate view stops the preview, and a claim surviving that
+        # made the spacebar a silent no-op in every other view: the toggle
+        # asked the preview to resume, and resume() with nothing loaded does
+        # nothing at all.
+        # `preparing` is matched by neither on purpose: it is the preview
+        # starting up, not ending, and releasing on it would open a window where
+        # the spacebar addressed the queue between a record being asked for and
+        # it becoming audible.
+        floor = getattr(app.state, "transport_floor", None)
+        state = snapshot.get("state")
+        if floor is not None:
+            if state in ("playing", "paused"):
+                floor.claim(PREVIEW)
+            elif state == "idle":
+                floor.release(PREVIEW)
         broadcast({"type": PREVIEW_EVENT, **snapshot})
 
     # The player is built before create_app, so it cannot be handed this

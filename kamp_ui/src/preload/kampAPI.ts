@@ -56,6 +56,14 @@ function ensurePushWs(): void {
       .then((r) => r.json())
       .then((s) => ipcRenderer.send('player:state-changed', s))
       .catch(() => {})
+    // Same for the preview (KAMP-736): a renderer reload mid-preview would
+    // otherwise leave main advertising the queue's state while a crate record
+    // is what is audible, and the media key would address the wrong player
+    // until the next preview transition.
+    fetch(`${SERVER_URL}/api/v1/discovery/preview/state`, { headers: _authHeaders() })
+      .then((r) => r.json())
+      .then((s) => ipcRenderer.send('preview:state-changed', s))
+      .catch(() => {})
   })
   ws.addEventListener('message', (evt) => {
     try {
@@ -66,6 +74,14 @@ function ensurePushWs(): void {
       } else if (msg.type === 'play_state.changed') {
         ipcRenderer.send('player:state-changed', msg)
         playStateChangeCallbacks.forEach((cb) => cb(msg))
+      } else if (msg.type === 'discovery.preview') {
+        // The Crate preview is a second mpv the OS knows nothing about
+        // (KAMP-736). Main needs its state for two reasons: so a media key can
+        // be routed to whichever player is audible, and — on Windows — so the
+        // advertised SMTC PlaybackStatus reflects it. Windows picks Play or
+        // Pause for the physical key from that status, so without this it
+        // advertises Stopped while a record is playing and sends `play`.
+        ipcRenderer.send('preview:state-changed', msg)
       } else if (msg.type === 'bandcamp.needs-login') {
         // Triggered by the Python daemon (via menu bar or sync failure) when no
         // valid session exists.  Route directly to the Electron main process

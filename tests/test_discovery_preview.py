@@ -300,6 +300,40 @@ class TestHandoff:
         h.player.stop()
         assert h.main.calls == []
 
+    def test_a_paused_preview_does_not_hand_playback_back(
+        self, index: LibraryIndex
+    ) -> None:
+        """Giving the floor up is not the same as starting something.
+
+        Leaving the Crate view stops the preview (CrateView's `active` effect),
+        and until KAMP-736 that resumed the main queue even when the user had
+        PAUSED the preview first — so navigating away from a deliberately
+        silenced deck started music. Same principle as
+        test_a_paused_queue_is_left_alone above, one case further along: the
+        hand-back restores what was playing, and by then nothing was.
+        """
+        h = Harness(index, main_playing=True)
+        h.player.play(_item(index))
+        h.main.settle()
+        h.player.pause()
+
+        h.player.stop()
+
+        assert "resume" not in h.main.calls
+
+    def test_a_playing_preview_still_hands_playback_back(
+        self, index: LibraryIndex
+    ) -> None:
+        """The guard above must not cost the ordinary case: a record taken off
+        while it is still spinning gives the queue back."""
+        h = Harness(index, main_playing=True)
+        h.player.play(_item(index))
+        h.main.settle()
+
+        h.player.stop()
+
+        assert "resume" in h.main.calls
+
     def test_the_flag_is_captured_before_the_fade(self, index: LibraryIndex) -> None:
         """pause() only sends a script-message; the Lua applies the real pause
         ~0.4s later, so state.playing still reads True right after the call.

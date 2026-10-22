@@ -470,6 +470,12 @@ class PreviewPlayer:
         not the user asking for silence — it is the shop moving on.
         """
         with self._lock:
+            # Captured before the unload below, which clears the state this
+            # reads. Whether the queue comes back turns on whether anything was
+            # audible at the moment the deck was cleared: a record taken off
+            # while still spinning gives the queue back, one the user had
+            # already paused does not (KAMP-736).
+            was_audible = self._state["state"] == PLAYING
             if self._engine is not None:
                 if fade and self._state["state"] == PLAYING:
                     self._fade_out()
@@ -479,7 +485,7 @@ class PreviewPlayer:
                     except Exception:  # noqa: BLE001
                         logger.warning("preview: unload failed", exc_info=True)
             self._record_listened()
-            self._hand_back_to_main()
+            self._hand_back_to_main(resume=was_audible)
             self._arm_idle_timer()
             return self._publish(
                 state=IDLE,
@@ -537,10 +543,25 @@ class PreviewPlayer:
             self._main_was_playing = True
             self._main.pause()
 
-    def _hand_back_to_main(self) -> None:
+    def _hand_back_to_main(self, *, resume: bool = True) -> None:
+        """Give the floor back, resuming the queue only if it should restart.
+
+        The flag records that WE paused the queue, so it is ours to undo. It
+        does not follow that undoing it is right: if the preview is already
+        paused when the floor is given up, the user has asked for silence, and
+        handing back by starting the queue would answer that by playing music
+        (KAMP-736). Leaving the Crate view does exactly this — the view stops
+        the preview on its way out — so a deliberately silenced deck used to
+        start the queue as soon as you navigated away.
+
+        The flag is cleared either way. It means "we owe the queue a resume",
+        and once we have decided not to resume, we no longer owe it one — a
+        later stop must not pay the debt twice.
+        """
         if self._main_was_playing:
             self._main_was_playing = False
-            self._main.resume()
+            if resume:
+                self._main.resume()
 
     def release_for_main(self) -> None:
         """Cue the record and hand the floor to the main transport.

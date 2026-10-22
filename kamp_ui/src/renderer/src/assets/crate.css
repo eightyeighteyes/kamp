@@ -1402,7 +1402,7 @@
   .bin-sleeve--away .bin-sleeve-art,
   .bin-sleeve--away .bin-sleeve-sticker,
   .bin-sleeve--away .bin-sleeve-badge {
-    animation: bin-sleeve-away-breathing 2.4s ease-in-out infinite;
+    animation: bin-sleeve-away-breathing 5s ease-in-out infinite;
   }
 
   @keyframes bin-sleeve-away-breathing {

@@ -1337,21 +1337,6 @@ class TestPublication:
 
         assert API_CRATE_SIZE == CRATE_SIZE
 
-    def test_hints_carry_the_profile_genres(self, index: LibraryIndex) -> None:
-        """KAMP-650 rotates status lines naming what is being dug through.
-
-        The genres come from the local profile rather than the provider, so the
-        copy stays true without teaching the builder any provider's criteria.
-        """
-        publisher = _Publisher()
-        _build(
-            index,
-            _FakeSource(_spread({"a": 12})),
-            publish=publisher,
-            profile=SeedProfile(top_genres=["dub techno", "ambient"]),
-        )
-        assert publisher.pushes[0]["hints"] == ["dub techno", "ambient"]
-
     def test_the_process_governor_is_used_by_default(
         self, index: LibraryIndex, monkeypatch: pytest.MonkeyPatch
     ) -> None:

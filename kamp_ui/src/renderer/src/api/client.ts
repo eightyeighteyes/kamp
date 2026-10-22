@@ -609,7 +609,6 @@ export type CrateSnapshot = {
   // restating a guess.
   exhausted: boolean
   paused_until: number // Unix seconds; 0 when running
-  hints: string[] // the user's top genres, for the digging status lines
   // What the gather is looking at RIGHT NOW, in the clerk's voice (KAMP-693) —
   // "Seeing what sits next to Kid A…", "Pulling the Acid King shelf…". Pushed
   // once per seed fetched, so it changes every couple of seconds and is the only

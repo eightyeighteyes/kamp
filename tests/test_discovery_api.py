@@ -333,9 +333,16 @@ class TestCrateSnapshot:
         assert harness.client.get("/api/v1/discovery/crate").json()["digging"] == ""
 
     def test_publishing_pushes_to_clients(self, harness: _Harness) -> None:
-        harness.publish({"state": "building", "hints": ["dub techno"]})
+        """A published field reaches subscribers, not just the stored snapshot.
+
+        The carried field is incidental to the point — it only has to be
+        something a `building` publish really sends. It was `hints` until that
+        field was removed as dead (KAMP-703); `digging` is its successor and
+        serves the same purpose here.
+        """
+        harness.publish({"state": "building", "digging": "Pulling the dub shelf…"})
         assert harness.events[-1]["state"] == "building"
-        assert harness.events[-1]["hints"] == ["dub techno"]
+        assert harness.events[-1]["digging"] == "Pulling the dub shelf…"
 
 
 # ---------------------------------------------------------------------------

@@ -978,6 +978,10 @@
  * roving tabindex and focus recovery are untouched; this only ever changed what
  * the sleeve looks like. */
 .bin-sleeve--away .bin-sleeve-art {
+  /* KAMP-735 breathes this between 0.25 and 0.75 inside the motion wrapper at
+     the foot of the file. This static value is what remains under
+     prefers-reduced-motion: reduce, so it is load-bearing — do not fold it into
+     the animation. */
   opacity: 0.28;
   filter: grayscale(1);
   border-style: dashed;
@@ -985,7 +989,9 @@
 }
 
 /* The corner sticker goes with it — a legible year and label floating over a
-   ghosted sleeve reads as the record still being there. */
+   ghosted sleeve reads as the record still being there. KAMP-735 pulses these
+   on the same keyframes as the art for that same reason; this value is the
+   reduced-motion fallback. */
 .bin-sleeve--away .bin-sleeve-sticker,
 .bin-sleeve--away .bin-sleeve-badge {
   opacity: 0.3;
@@ -1360,6 +1366,52 @@
     }
     50% {
       opacity: 0.62;
+    }
+  }
+
+  /* The record out on the deck BREATHES rather than sitting at a flat fade
+     (KAMP-735).
+
+     KAMP-672 drained this sleeve to a static 0.28 so it reads as the space a
+     record came out of. That solved the KAMP-668 problem — an empty slot left
+     nothing to aim at — but created a smaller one: a motionless translucent
+     sleeve over the record behind it reads as a rendering artefact, and people
+     asked why one record was haunted. A pulse is what separates "deliberately
+     different" from "something is wrong with this one".
+
+     One animation for the art and its sticker and badge together, so the sleeve
+     breathes as a single object. Running them on separate cycles — or leaving
+     the sticker static, as it was — puts a legible year and label floating over
+     a sleeve that is moving underneath it, which is the same "the record is
+     still there" misread the sticker rule above was written to avoid.
+
+     Opacity only, like every other pulse here: nothing goes near height (the
+     file header's rule) and nothing touches hue, since --accent swings across
+     eight palettes and a coloured pulse would read as a state.
+
+     The static values outside this wrapper are the `reduce` fallback and are
+     deliberately left in place — under reduced motion the sleeve simply stays
+     drained, which is the honest answer rather than a lesser one.
+
+     NOTE this is the first UNBOUNDED animation in the view. The digging pulse
+     above runs for the 15-30s of a dig and the flight is a single transition,
+     but a record can sit on the deck for a whole album, so this one never stops
+     on its own. Opacity is GPU-composited and cheap, but if KAMP-704 (kamp
+     degrading other applications' draw performance) is ever traced to this
+     view, start here. */
+  .bin-sleeve--away .bin-sleeve-art,
+  .bin-sleeve--away .bin-sleeve-sticker,
+  .bin-sleeve--away .bin-sleeve-badge {
+    animation: bin-sleeve-away-breathing 5s ease-in-out infinite;
+  }
+
+  @keyframes bin-sleeve-away-breathing {
+    0%,
+    100% {
+      opacity: 0.25;
+    }
+    50% {
+      opacity: 0.75;
     }
   }
 

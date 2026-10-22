@@ -338,6 +338,10 @@ type PlayerStore = {
     trackId?: number | null
   ) => Promise<void>
   togglePlayPause: () => Promise<void>
+  // An ambiguous transport press — the spacebar or an arrow key (KAMP-736).
+  // Unlike the four above, this does not assume the main player is the subject:
+  // the daemon decides which of the two engines the user meant.
+  pressTransport: (action: 'play' | 'pause' | 'toggle' | 'next' | 'prev') => Promise<void>
   stop: () => Promise<void>
   next: () => Promise<void>
   prev: () => Promise<void>
@@ -1632,6 +1636,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
+  // The MAIN player's play/pause, and deliberately still decided locally. Its
+  // callers are all explicit: the transport bar's own button, and the play
+  // affordance on a track row. Pressing play there means "my queue", whatever
+  // a Crate preview happens to be doing (KAMP-736).
   togglePlayPause: async () => {
     const { playing } = get().player
     if (playing) {
@@ -1639,6 +1647,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
     } else {
       await api.resume()
     }
+  },
+
+  // The keyboard's play/pause and skips. Routed to the daemon undecided,
+  // because the renderer is the wrong place to answer "which player did they
+  // mean" — it was answering from `player.playing` alone, so pressing pause
+  // during a crate preview sent `resume` and started the queue underneath it.
+  pressTransport: async (action) => {
+    await api.transport(action)
+    // The main queue's position may have moved; a preview step leaves it alone
+    // and this is then a cheap no-op refetch.
+    if (action === 'next' || action === 'prev') void get().loadQueue()
   },
 
   stop: async () => {

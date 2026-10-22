@@ -78,7 +78,10 @@ app.setName('Kamp')
 
 let _helper: ChildProcess | null = null
 let _heartbeatInterval: NodeJS.Timeout | null = null
-let _isPlaying = false // tracks current playback state to correctly handle togglePlayPause
+// The Crate preview's live state, forwarded by the preload (KAMP-736). Main
+// needs it for the SMTC status below; the daemon decides what a key MEANS.
+let _previewState: { state: string; title: string } = { state: 'idle', title: '' }
+const _previewAudible = (): boolean => _previewState.state === 'playing'
 // Cache artwork as base64 strings keyed by "album_artist|album" so we only
 // fetch once per album rather than on every position-tick update.
 const _artworkCache = new Map<string, string>()
@@ -117,9 +120,16 @@ function sendToHelper(msg: object): void {
   _helper.stdin.write(JSON.stringify(msg) + '\n')
 }
 
-function postToPlayer(path: string): void {
+function postToPlayer(path: string, body?: unknown): void {
   net
-    .fetch(`http://127.0.0.1:47483${path}`, { method: 'POST', headers: authHeaders() })
+    .fetch(`http://127.0.0.1:47483${path}`, {
+      method: 'POST',
+      headers:
+        body === undefined
+          ? authHeaders()
+          : { ...authHeaders(), 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    })
     .catch(() => {})
 }
 
@@ -156,22 +166,30 @@ function startNowPlayingHelper(): void {
   rl.on('line', (line) => {
     try {
       const evt = JSON.parse(line) as { event: string }
+      // Every one of these is an AMBIGUOUS press (KAMP-736). A media key names
+      // no transport, and kamp has two mpv engines — the user's queue and the
+      // Crate preview — so the daemon resolves which one is meant. It is the
+      // only process that can see both.
+      //
+      // This used to decide here, from a main-player-only `_isPlaying`: with a
+      // preview playing and the queue idle, the key sent `resume` and started
+      // the user's own music underneath the record they were listening to.
+      //
+      // Note the platforms disagree about which events exist. macOS registers a
+      // real togglePlayPauseCommand; the Windows SMTC helper has no such button
+      // and emits `play` or `pause` depending on the PlaybackStatus we
+      // advertise — which is why that status has to follow the preview (see
+      // the update below) and why `play` is arbitrated rather than meaning
+      // "resume the queue".
       switch (evt.event) {
         case 'play':
-          postToPlayer('/api/v1/player/resume')
-          break
         case 'pause':
-          postToPlayer('/api/v1/player/pause')
-          break
         case 'togglePlayPause':
-          // Physical play/pause key fires togglePlayPause — check actual state to toggle.
-          postToPlayer(_isPlaying ? '/api/v1/player/pause' : '/api/v1/player/resume')
-          break
         case 'next':
-          postToPlayer('/api/v1/player/next')
-          break
         case 'prev':
-          postToPlayer('/api/v1/player/prev')
+          postToPlayer('/api/v1/player/transport', {
+            action: evt.event === 'togglePlayPause' ? 'toggle' : evt.event
+          })
           break
       }
     } catch {
@@ -877,6 +895,41 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // The Crate preview's state, forwarded by the preload on every
+  // discovery.preview event and once on WS open (KAMP-736).
+  //
+  // Two jobs. It decides what the OS is told while a preview is audible, and on
+  // Windows that is load-bearing rather than cosmetic: SMTC resolves the
+  // physical play/pause key to a Play or a Pause event from the PlaybackStatus
+  // we advertise, so a Stopped queue advertised over a playing preview sends
+  // `play` — and no amount of arbitration in the daemon can turn that back into
+  // the pause the user pressed.
+  //
+  // When the preview stops, main's own state is re-asserted on the next
+  // play_state.changed. Nothing is pushed here for the idle case: the daemon
+  // publishes a preview snapshot and a player state change together, and
+  // guessing ahead of the latter would briefly advertise a queue that is about
+  // to change.
+  ipcMain.on('preview:state-changed', (_event, snapshot: { state?: string; title?: string }) => {
+    _previewState = {
+      state: snapshot.state ?? 'idle',
+      title: snapshot.title ?? ''
+    }
+    if (!_previewAudible()) return
+    _currentAlbumKey = ''
+    sendToHelper({
+      cmd: 'update',
+      title: _previewState.title || 'Crate preview',
+      // The deck names the record, not the band — the preview snapshot
+      // carries one title string and no separate artist.
+      artist: 'Kamp — the Crate',
+      album: '',
+      position: 0,
+      duration: 0,
+      playing: true
+    })
+  })
+
   // Forward player state from the preload to the Now Playing helper.
   // The preload sends this on every track.changed / play_state.changed WS event
   // and once on WS open (initial fetch), so the helper stays in sync.
@@ -897,7 +950,12 @@ app.whenReady().then(async () => {
         duration: number
       }
     ) => {
-      _isPlaying = state.playing
+      // The preview outranks the queue for what the OS is told (KAMP-736). It
+      // is what the user can hear, and on Windows the advertised status is also
+      // what decides whether the physical key arrives as Play or Pause — so
+      // advertising a Stopped queue while a crate record plays is precisely
+      // what made that key unfixable from the daemon side.
+      if (_previewAudible()) return
       if (!state.current_track) {
         _currentAlbumKey = ''
         sendToHelper({ cmd: 'stop' })
@@ -1129,9 +1187,7 @@ app.whenReady().then(async () => {
       // > 0xFF (e.g. non-ASCII Content-Disposition filenames from Bandcamp CDN).
       // That exception bypasses our try/catch and crashes the main process.
       const safeHeaders = Object.fromEntries(
-        Object.entries(req.headers).filter(([, v]) =>
-          [...v].every((c) => c.charCodeAt(0) <= 0xff)
-        )
+        Object.entries(req.headers).filter(([, v]) => [...v].every((c) => c.charCodeAt(0) <= 0xff))
       )
       const result = await new Promise<{
         status: number

@@ -763,6 +763,18 @@ export const playAlbum = (
 
 export const pause = (): Promise<unknown> => post('/api/v1/player/pause')
 export const resume = (): Promise<unknown> => post('/api/v1/player/resume')
+
+// An AMBIGUOUS transport press — the spacebar, an arrow key, a media key
+// (KAMP-736). These name neither player, so the daemon decides which of the two
+// engines they mean; it is the only process that can see both.
+//
+// Use this for anything the user pressed without aiming at a transport. The
+// explicit pause/resume/nextTrack/prevTrack above still address the MAIN player
+// and are what the transport bar's own buttons call — pressing play there
+// deliberately recovers your queue whatever was last audible.
+export const transport = (
+  action: 'play' | 'pause' | 'toggle' | 'next' | 'prev'
+): Promise<unknown> => post('/api/v1/player/transport', { action })
 export const stop = (): Promise<unknown> => post('/api/v1/player/stop')
 export const seek = (position: number): Promise<unknown> =>
   post('/api/v1/player/seek', { position })

@@ -156,9 +156,10 @@ export default function App(): React.JSX.Element {
   // distinguish "not loaded yet" from "disconnected".
   const configValuesForCrate = useStore((s) => s.configValues)
   const bandcampConnected = configValuesForCrate?.['bandcamp.connected'] ?? false
-  const togglePlayPause = useStore((s) => s.togglePlayPause)
-  const next = useStore((s) => s.next)
-  const prev = useStore((s) => s.prev)
+  // The keyboard's transport keys go to the daemon undecided (KAMP-736) — see
+  // the handler below. Deliberately NOT togglePlayPause/next/prev, which assume
+  // the main player is the subject and belong to the transport bar's buttons.
+  const pressTransport = useStore((s) => s.pressTransport)
   const searchQuery = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
   const loadQueue = useStore((s) => s.loadQueue)
@@ -521,17 +522,26 @@ export default function App(): React.JSX.Element {
         case '?':
           setShowShortcuts((prev) => !prev)
           break
+        // These three name no transport, so the daemon resolves which player
+        // they mean (KAMP-736). They used to assume the main player: with a
+        // Crate preview playing and the queue idle, Space sent `resume` and
+        // started your own music underneath the record you were listening to,
+        // and the arrows skipped the queue while parking the preview.
+        //
+        // Inside the Crate view none of this is reached — CrateView stops
+        // propagation on all of them, and Space there is that view's primary
+        // action (KAMP-651).
         case ' ':
           e.preventDefault()
-          void togglePlayPause()
+          void pressTransport('toggle')
           break
         case 'ArrowRight':
           e.preventDefault()
-          void next()
+          void pressTransport('next')
           break
         case 'ArrowLeft':
           e.preventDefault()
-          void prev()
+          void pressTransport('prev')
           break
         case 'q':
         case 'Q':
@@ -549,9 +559,7 @@ export default function App(): React.JSX.Element {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
-    togglePlayPause,
-    next,
-    prev,
+    pressTransport,
     setActiveView,
     activeView,
     searchQuery,

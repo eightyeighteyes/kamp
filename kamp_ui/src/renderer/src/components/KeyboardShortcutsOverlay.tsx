@@ -18,7 +18,14 @@ const GROUPS: Group[] = [
   {
     label: 'Playback',
     shortcuts: [
-      { keys: ['Space'], description: 'Play / Pause' },
+      {
+        keys: ['Space'],
+        description: 'Play / Pause',
+        // KAMP-736: these follow the audio rather than the queue. Noted on
+        // Space alone — it is the one people reach for, and repeating it on
+        // all three would cost more in scanning than it buys in precision.
+        note: 'Acts on whatever is playing, including a crate preview'
+      },
       { keys: ['→'], description: 'Next track' },
       { keys: ['←'], description: 'Previous track' }
     ]

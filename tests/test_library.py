@@ -7791,6 +7791,69 @@ class TestBandcampCollection:
 
         assert row["added_at"] == 0.0
 
+    def test_refreshing_source_on_a_trackless_album_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        """A trackless album must survive a source recompute (KAMP-738).
+
+        The source subquery is MIN(eff) over the album's tracks, and MIN over
+        zero rows is NULL, which `albums.source NOT NULL` rejects. Before the
+        COALESCE this raised IntegrityError — reachable from remove_download
+        and from two heal paths — and would surface as a 500 rather than a
+        wrong badge. Worse, AlbumOut.source is typed `str`, so a NULL that did
+        slip through would fail serialisation for the whole /api/v1/albums
+        response and blank the entire library, not just this card.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("55", mode="remote")
+        album_id = index.ensure_album_stub(
+            "55", album_artist="Caroline Rose", album="demos"
+        )
+        assert album_id is not None
+
+        index._refresh_album_source(album_id)
+
+        row = index._conn.execute(
+            "SELECT source FROM albums WHERE id = ?", (album_id,)
+        ).fetchone()
+        index.close()
+
+        assert row["source"] == "bandcamp"
+
+    def test_album_stub_does_not_hijack_an_existing_album(self, tmp_path: Path) -> None:
+        """`albums` is UNIQUE (album_artist, album) COLLATE NOCASE.
+
+        When the name pair already belongs to a different sale item, the stamp
+        must not steal that row. Returning None and logging beats silently
+        re-pointing someone else's album at this collection item.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("1", mode="local")
+        index.upsert_collection_item("2", mode="remote")
+        first = index.ensure_album_stub("1", album_artist="Band", album="Album")
+        second = index.ensure_album_stub("2", album_artist="band", album="album")
+
+        owner = index._conn.execute(
+            "SELECT sale_item_id FROM albums WHERE id = ?", (first,)
+        ).fetchone()
+        index.close()
+
+        assert first is not None
+        assert second is None, "the second item must not take the first's row"
+        assert owner["sale_item_id"] == "1"
+
+    def test_album_stub_is_idempotent(self, tmp_path: Path) -> None:
+        """Re-syncing the same unfetchable release must not pile up rows."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("7", mode="remote")
+        first = index.ensure_album_stub("7", album_artist="Band", album="Album")
+        second = index.ensure_album_stub("7", album_artist="Band", album="Album")
+        count = index._conn.execute("SELECT COUNT(*) AS n FROM albums").fetchone()["n"]
+        index.close()
+
+        assert first == second
+        assert count == 1
+
     def test_upsert_does_not_zero_the_watermark_when_omitted(
         self, tmp_path: Path
     ) -> None:

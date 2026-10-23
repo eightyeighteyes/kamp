@@ -3432,7 +3432,15 @@ def create_app(
                 raise HTTPException(status_code=404, detail="No art found")
             from kamp_daemon.bandcamp import fetch_album_art_bytes  # noqa: PLC0415
 
-            data = fetch_album_art_bytes(item["album_url"], session_data)
+            # KAMP-738: pass the stored art id when we have one. Without it
+            # fetch_album_art_bytes scrapes the album page for an art_id, which
+            # is impossible for a private release whose page 404s — so its
+            # artwork would live only as long as the on-disk cache and vanish
+            # for good on the first miss. Also spares an album-page request for
+            # every other remote album.
+            data = fetch_album_art_bytes(
+                item["album_url"], session_data, art_id=item.get("art_id")
+            )
             if not data:
                 raise HTTPException(status_code=404, detail="No art found")
             art_cache_dir.mkdir(parents=True, exist_ok=True)

@@ -109,6 +109,19 @@ def _item(
     }
 
 
+def _mock_index() -> MagicMock:
+    """A MagicMock LibraryIndex with the lookups the sync reads up front stubbed.
+
+    `unfetchable_pages()` (KAMP-738) must yield a real mapping: a bare
+    MagicMock returns a truthy MagicMock from `.get()`, which the sync then
+    compares against a timestamp — so every album would look recently
+    unfetchable and the page fetch would be skipped everywhere.
+    """
+    index = MagicMock()
+    index.unfetchable_pages.return_value = {}
+    return index
+
+
 def _stream_album_page_html(
     tracks: list[dict[str, Any]] | None = None,
     release_date: str | None = "01 Jan 2020 00:00:00 GMT",
@@ -574,7 +587,7 @@ class TestSyncNewPurchases:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         # get_collection_state returns {sale_item_id: mode}; known IDs are 'local'.
         index.get_collection_state.return_value = {
             k: "local" for k in (known_ids or [])
@@ -699,7 +712,7 @@ class TestSyncNewPurchases:
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         call_num = 0
 
@@ -767,7 +780,7 @@ class TestSyncNewPurchases:
             path.write_bytes(b"fake")
             return path
 
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         with (
             patch(
@@ -802,7 +815,7 @@ class TestSyncNewPurchases:
         assert paths == []
 
         # upsert_collection_item should have been called once for the metadata refresh.
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {"1": "local"}
 
         with (
@@ -831,7 +844,7 @@ class TestSyncNewPurchases:
         purchased_str = "15 Mar 2025 10:00:00 GMT"
         items = [_item(1, purchased=purchased_str)]
         watch_folder = tmp_path / "watch"
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
 
         zip_path = watch_folder / "1.zip"
@@ -865,7 +878,7 @@ class TestSyncNewPurchases:
         """Existing items refreshed during sync get added_at from the purchase date."""
         purchased_str = "20 Feb 2023 12:00:00 GMT"
         items = [_item(1, purchased=purchased_str)]
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {"1": "local"}
 
         with (
@@ -931,7 +944,7 @@ class TestSyncNewPurchasesPreorder:
             p.write_bytes(b"zip")
             return p
 
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = existing_state or {}
         index.get_collection_streamable_counts.return_value = (
             existing_streamable_counts or {}
@@ -1053,7 +1066,7 @@ class TestSyncNewPurchasesPreorder:
         item.pop("redownload_url", None)
 
         mock_dl = MagicMock()
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.get_collection_streamable_counts.return_value = {}
 
@@ -1102,7 +1115,7 @@ class TestMarkCollectionSynced:
         config = _bc_config(tmp_path)
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
 
         with (
@@ -1124,7 +1137,7 @@ class TestMarkCollectionSynced:
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {"1": "local"}
 
         with (
@@ -1189,7 +1202,7 @@ class TestMarkCollectionSynced:
 class TestNeedsLoginError:
     def test_raised_when_no_session_in_db(self, tmp_path: Path) -> None:
         config = _bc_config(tmp_path)
-        index = MagicMock()
+        index = _mock_index()
         index.get_session.return_value = None
         with pytest.raises(NeedsLoginError):
             sync_new_purchases(config, tmp_path / "watch", index)
@@ -1200,7 +1213,7 @@ class TestNeedsLoginError:
         expired_data = {
             "cookies": [{"name": "js_logged_in", "value": "1", "expires": past}]
         }
-        index = MagicMock()
+        index = _mock_index()
         index.get_session.return_value = expired_data
         with pytest.raises(NeedsLoginError):
             sync_new_purchases(config, tmp_path / "watch", index)
@@ -1244,7 +1257,7 @@ class TestMakeRequestsSession:
 
 class TestEnsureSession:
     def _mock_index(self, session_data: dict[str, Any] | None) -> MagicMock:
-        index = MagicMock()
+        index = _mock_index()
         index.get_session.return_value = session_data
         return index
 
@@ -1377,7 +1390,7 @@ class TestPaginate:
     def test_single_page(self) -> None:
         items = [_item(1), _item(2)]
         session = self._make_post_mock([items])
-        index = MagicMock()
+        index = _mock_index()
         result = _paginate(
             "https://bandcamp.com/fancollection/1/collection_items", 123, session, index
         )
@@ -1387,7 +1400,7 @@ class TestPaginate:
         page1 = [_item(i) for i in range(1, 6)]  # 5 items — matches batch size
         page2 = [_item(6)]
         session = self._make_post_mock([page1, page2])
-        index = MagicMock()
+        index = _mock_index()
         with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 5):
             result = _paginate(
                 "https://bandcamp.com/fancollection/1/collection_items",
@@ -1415,7 +1428,7 @@ class TestPaginate:
     def test_requests_the_configured_page_size(self) -> None:
         """The batch constant is what actually goes on the wire as `count`."""
         session = self._make_post_mock([[_item(1)]])
-        index = MagicMock()
+        index = _mock_index()
         with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 100):
             _paginate(
                 "https://bandcamp.com/fancollection/1/collection_items",
@@ -1432,7 +1445,7 @@ class TestPaginate:
         resp.raise_for_status = MagicMock()
         resp.json.return_value = {"items": [], "last_token": ""}
         session.post.return_value = resp
-        index = MagicMock()
+        index = _mock_index()
         with pytest.raises(BandcampAPIError, match="session expired"):
             _paginate(
                 "https://bandcamp.com/fancollection/1/collection_items",
@@ -1453,7 +1466,7 @@ class TestPaginate:
             "items": [],
         }
         session.post.return_value = resp
-        index = MagicMock()
+        index = _mock_index()
         with pytest.raises(BandcampAPIError, match="Collection API error"):
             _paginate(
                 "https://bandcamp.com/fancollection/1/collection_items",
@@ -1467,7 +1480,7 @@ class TestPaginate:
         page1 = [_item(1), _item(2)]
         page2 = [_item(3)]
         session = self._make_post_mock([page1, page2])
-        index = MagicMock()
+        index = _mock_index()
         with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 2):
             result = _paginate(
                 "https://bandcamp.com/fancollection/1/collection_items",
@@ -1492,7 +1505,7 @@ class TestPaginate:
         )
         session = MagicMock()
         session.post.return_value = resp
-        index = MagicMock()
+        index = _mock_index()
         result = _paginate(
             "https://bandcamp.com/fancollection/1/collection_items", 123, session, index
         )
@@ -1511,7 +1524,7 @@ class TestPaginate:
         resp.raise_for_status = MagicMock()
         resp.json.return_value = {"items": page, "last_token": ""}
         session.post.return_value = resp
-        index = MagicMock()
+        index = _mock_index()
         with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 5):
             result = _paginate(
                 "https://bandcamp.com/fancollection/1/collection_items",
@@ -1550,7 +1563,7 @@ class TestFetchCollection:
             return resp
 
         session.post.side_effect = post_side
-        index = MagicMock()
+        index = _mock_index()
         result = _fetch_collection(12345, session, index)
         ids = [r["sale_item_id"] for r in result]
         assert ids.count(99) == 1
@@ -1949,7 +1962,7 @@ class TestSyncStatusCallback:
         config = _bc_config(tmp_path)
         items = [_item(1, "Band A", "Album A"), _item(2, "Band B", "Album B")]
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
 
         statuses: list[str] = []
@@ -2453,7 +2466,7 @@ class TestMarkCollectionSyncedStoresAlbumUrl:
             )
         ]
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
 
         with (
@@ -2507,7 +2520,7 @@ class TestMarkCollectionSyncedAddedAt:
         config = _bc_config(tmp_path)
         items = [_item(1, purchased="01 Jan 2024 00:00:00 GMT")]
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
 
         with (
@@ -2546,7 +2559,7 @@ class TestMarkCollectionSyncedPreservesExistingRows:
     def _run(self, tmp_path: Path, items: list[dict[str, Any]], state: dict[str, str]):
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = state
 
         with (
@@ -2868,6 +2881,242 @@ class TestRefreshStreamUrl:
         assert result is None
 
 
+class TestUnfetchablePrivateRelease:
+    """A private release whose album page 404s must still reach the library (KAMP-738).
+
+    A release gifted to pre-order buyers is in the collection, but its public
+    item_url 404s even for the fan who owns it, so fetch_album_tracks raises
+    and the stream sync's catch-all skips the album. The result is a
+    bandcamp_collection row with no albums row, no tracks and no UI presence:
+    the user owns music kamp will not admit exists. There is no route to the
+    track list short of downloading (the album page 404s, mobile
+    tralbum_details returns tracks: [], and the download page carries only a
+    track_count), so the album cannot be made playable — but it can be made
+    visible, with the existing "Download this album" action.
+
+    Real LibraryIndex throughout: every defect this guards against is at the
+    SQL layer, and the MagicMock-based tests elsewhere in this file cannot see
+    any of them.
+    """
+
+    def _sync(self, tmp_path: Path, index: Any, items: list[dict[str, Any]]) -> Any:
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=BandcampAPIError("404 Client Error for album page"),
+            ),
+        ):
+            return sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                sleep=lambda _seconds: None,
+            )
+
+    def _album_row(self, index: Any, sale_item_id: str) -> Any:
+        return index._conn.execute(
+            "SELECT id, album_artist, album, source, sale_item_id"
+            " FROM albums WHERE sale_item_id = ?",
+            (sale_item_id,),
+        ).fetchone()
+
+    def test_unfetchable_album_still_gets_an_albums_row(self, tmp_path: Path) -> None:
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        self._sync(tmp_path, index, [_item(1, "Caroline Rose", "demos")])
+
+        row = self._album_row(index, "1")
+        index.close()
+
+        assert row is not None, "a collection item we cannot fetch is still owned music"
+        assert row["album_artist"] == "Caroline Rose"
+        assert row["album"] == "demos"
+
+    def test_stub_is_bandcamp_sourced(self, tmp_path: Path) -> None:
+        """source drives has_art and which context menu renders.
+
+        The column defaults to 'local'. A defaulted stub would be shown with
+        has_art=0 (so the art element is never rendered at all) and the local
+        context menu — "Reveal in Finder" on an album with no files.
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        self._sync(tmp_path, index, [_item(1, "Caroline Rose", "demos")])
+
+        row = self._album_row(index, "1")
+        index.close()
+
+        assert row["source"] == "bandcamp"
+
+    def test_stub_carries_sale_item_id_so_the_prune_spares_it(
+        self, tmp_path: Path
+    ) -> None:
+        """prune_empty_albums guards on `sale_item_id IS NULL`.
+
+        Without the id the next scan that removes any track anywhere deletes
+        the stub, and the bug comes back silently.
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        self._sync(tmp_path, index, [_item(1, "Caroline Rose", "demos")])
+
+        assert index.prune_empty_albums() == 0
+        row = self._album_row(index, "1")
+        index.close()
+
+        assert row is not None
+        assert row["sale_item_id"] == "1"
+
+    def test_creating_a_stub_notifies_the_ui(self, tmp_path: Path) -> None:
+        """A new stub must reach the running UI, not just the database.
+
+        batch_indexed_callback is what broadcasts "library changed" (it feeds
+        on_tracks_indexed -> notify_library_changed), and it lived inside
+        `if tracks:`. A stub creates no tracks, so the album appeared in the DB
+        and the open app never refetched: synced, present on disk, invisible
+        until a restart. That is indistinguishable from the bug this ticket
+        fixes, which is how it got missed.
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        notified: list[bool] = []
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock([_item(1, "Caroline Rose", "demos")]),
+            ),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=BandcampAPIError("404 Client Error for album page"),
+            ),
+        ):
+            sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                batch_indexed_callback=lambda: notified.append(True),
+                sleep=lambda _seconds: None,
+            )
+
+        index.close()
+
+        assert notified, "the UI was never told the library changed"
+
+    def test_second_sync_does_not_refetch_the_dead_page(self, tmp_path: Path) -> None:
+        """One retry per window, not one per sync (KAMP-738).
+
+        A trackless album always satisfies `is_new_album`, so without a record
+        of the refusal the sync spends a paced album-page request re-failing on
+        every run, forever — against the endpoint family CLAUDE.md identifies
+        as the scarce resource. Asserts the call count, because the outcome is
+        identical either way and would give a false green.
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        items = [_item(1, "Caroline Rose", "demos")]
+
+        calls: list[str] = []
+
+        def _fetch(*_a: Any, **kwargs: Any) -> Any:
+            calls.append(kwargs.get("album_url", ""))
+            raise BandcampAPIError("404 Client Error for album page")
+
+        for _ in range(2):
+            with (
+                patch(
+                    "kamp_daemon.bandcamp._ensure_session",
+                    return_value=_make_session_data(),
+                ),
+                patch(
+                    "kamp_daemon.bandcamp._make_requests_session",
+                    return_value=_make_requests_mock(items),
+                ),
+                patch("kamp_daemon.bandcamp.fetch_album_tracks", side_effect=_fetch),
+            ):
+                sync_collection_stream(
+                    _bc_config(tmp_path),
+                    tmp_path / "watch",
+                    index,
+                    sleep=lambda _seconds: None,
+                )
+
+        index.close()
+
+        assert len(calls) == 1, f"page re-fetched on the second sync: {calls}"
+
+    def test_a_page_that_recovers_is_fetched_again(self, tmp_path: Path) -> None:
+        """A release made public again must not stay written off forever."""
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        items = [_item(1, "Caroline Rose", "demos")]
+        self._sync(tmp_path, index, items)
+
+        # Age the refusal past the retry window.
+        index._conn.execute(
+            "UPDATE bandcamp_collection SET page_unfetchable_at = ?",
+            (time.time() - (8 * 24 * 60 * 60),),
+        )
+        index._conn.commit()
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]) as fetch,
+        ):
+            sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                sleep=lambda _seconds: None,
+            )
+
+        index.close()
+
+        assert fetch.called
+
+    def test_stub_surfaces_in_albums_with_no_tracks(self, tmp_path: Path) -> None:
+        """End to end through the real albums() query the UI reads."""
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        self._sync(tmp_path, index, [_item(1, "Caroline Rose", "demos")])
+
+        albums = [a for a in index.albums() if a.album == "demos"]
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].track_count == 0
+        assert albums[0].source == "bandcamp"
+        # has_art gates the <img> in AlbumCard; a bandcamp-sourced album always
+        # has CDN art even with no local files.
+        assert albums[0].has_art
+
+
 class TestSyncCollectionStream:
     """Tests for sync_collection_stream — album-level collection indexing."""
 
@@ -2884,7 +3133,7 @@ class TestSyncCollectionStream:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = existing_state or {}
         # By default pretend tracks already exist so fetch_album_tracks is skipped.
         index.has_remote_album_tracks.return_value = already_have_tracks
@@ -2931,7 +3180,7 @@ class TestSyncCollectionStream:
             # The release-wide check sees the sibling that does own them.
             return bool(tralbum_id) and tralbum_id == "3498893942"
 
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.side_effect = _has_tracks
         index.has_remote_tracks_needing_date_backfill.return_value = False
@@ -2973,7 +3222,7 @@ class TestSyncCollectionStream:
             _item(1, "Band A", "Album A", tralbum_id=0),
             _item(2, "Band B", "Album B", tralbum_id=0),
         ]
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.return_value = False
         index.has_remote_tracks_needing_date_backfill.return_value = False
@@ -3084,7 +3333,7 @@ class TestSyncCollectionStream:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.return_value = False
 
@@ -3334,7 +3583,7 @@ class TestSyncCollectionStream:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.return_value = False
 
@@ -3375,7 +3624,7 @@ class TestSyncCollectionStream:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         # Tracks already exist — fetch_album_tracks path is skipped entirely.
         index.has_remote_album_tracks.return_value = True
@@ -3463,7 +3712,7 @@ class TestSyncCollectionStream:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock([item])
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.return_value = False  # force the fetch branch
         index.count_available_remote_tracks.side_effect = counts
@@ -3517,7 +3766,7 @@ class TestStreamSyncBackoff:
     """
 
     def _run(self, tmp_path: Path, items: list[dict[str, Any]], **kw: Any) -> MagicMock:
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.return_value = False
         index.has_remote_tracks_needing_date_backfill.return_value = False
@@ -3592,7 +3841,7 @@ class TestStreamSyncArtPrefetch:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = {}
         index.has_remote_album_tracks.return_value = True
 
@@ -3964,7 +4213,7 @@ class TestSyncCollectionStreamPreorder:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
-        index = MagicMock()
+        index = _mock_index()
         index.get_collection_state.return_value = existing_state or {}
         index.has_remote_album_tracks.return_value = has_remote_tracks
 
@@ -4102,7 +4351,7 @@ class TestDownloadSingleAlbum:
     ) -> Path:
         config = _bc_config(tmp_path)
         watch_folder = tmp_path / "watch"
-        index = MagicMock()
+        index = _mock_index()
         # No stored redownload_url → exercise the fallback (collection re-fetch)
         # path. The fast path is covered separately (KAMP-575).
         index.get_download_item.return_value = None
@@ -4150,7 +4399,7 @@ class TestDownloadSingleAlbum:
 
     def test_updates_collection_mode_and_track_source(self, tmp_path: Path) -> None:
         config = _bc_config(tmp_path)
-        index = MagicMock()
+        index = _mock_index()
         index.get_download_item.return_value = None  # fallback path
         fake_collection = [self._collection_item("42")]
 
@@ -4193,7 +4442,7 @@ class TestDownloadSingleAlbum:
         This is the regression fix: no per-item collection re-fetch → no 429 storm.
         """
         config = _bc_config(tmp_path)
-        index = MagicMock()
+        index = _mock_index()
         index.get_download_item.return_value = {
             "redownload_url": "https://bandcamp.com/download?id=42&sig=xyz",
             "album_artist": "Test Band",
@@ -4241,7 +4490,7 @@ class TestDownloadSingleAlbum:
     def test_no_stored_url_falls_back_to_collection_fetch(self, tmp_path: Path) -> None:
         """No stored redownload_url → the collection is fetched to resolve it."""
         config = _bc_config(tmp_path)
-        index = MagicMock()
+        index = _mock_index()
         index.get_download_item.return_value = {"redownload_url": None}
 
         with (
@@ -4370,7 +4619,7 @@ class TestPrefetchRedownloadUrls:
     """prefetch_redownload_urls: fill missing queue URLs with one fetch (KAMP-575)."""
 
     def test_populates_missing_urls_with_one_fetch(self, mocker: MockerFixture) -> None:
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"111": None, "222": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch(
@@ -4388,7 +4637,7 @@ class TestPrefetchRedownloadUrls:
 
     def test_noop_when_no_missing_urls(self, mocker: MockerFixture) -> None:
         """All queued rows already have URLs → no network I/O, nothing written."""
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"111": "https://dl/111"}
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
         n = prefetch_redownload_urls(index, MagicMock())
@@ -4399,7 +4648,7 @@ class TestPrefetchRedownloadUrls:
     def test_skips_items_not_in_collection(self, mocker: MockerFixture) -> None:
         """A queued id absent from the collection is left unfilled (per-item
         fallback will resolve it)."""
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"111": None, "999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         mocker.patch(
@@ -4419,7 +4668,7 @@ class TestPrefetchRedownloadUrls:
     # fresh collection fetch on every single item. That is the 429 storm.
 
     def test_unresolvable_item_is_not_refetched(self, mocker: MockerFixture) -> None:
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
@@ -4435,7 +4684,7 @@ class TestPrefetchRedownloadUrls:
     def test_newly_queued_item_earns_a_fetch(self, mocker: MockerFixture) -> None:
         """An id we have never tried is exactly what justifies another fetch —
         that is how items enqueued mid-drain get their URL."""
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch(
@@ -4468,7 +4717,7 @@ class TestPrefetchRedownloadUrls:
         """
         from kamp_daemon.bandcamp import PrefetchState
 
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"1": None}
         index.next_queued_download.return_value = "1"
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
@@ -4508,7 +4757,7 @@ class TestPrefetchRedownloadUrls:
         so the window would trade one prefetch walk for several fallback walks.
         A walk here resolves every queued row at once, so it pays for itself.
         """
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"1": "https://dl/1", "2": None}
         index.next_queued_download.return_value = "2"  # head has no URL
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
@@ -4525,7 +4774,7 @@ class TestPrefetchRedownloadUrls:
     ) -> None:
         """The item about to download already has its URL, so the ids queued
         behind it can wait for the window — that is the whole saving."""
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"1": "https://dl/1", "2": None}
         index.next_queued_download.return_value = "1"  # head is resolved
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
@@ -4542,7 +4791,7 @@ class TestPrefetchRedownloadUrls:
     def test_walk_allowed_again_after_the_interval(self, mocker: MockerFixture) -> None:
         from kamp_daemon.bandcamp import PrefetchState
 
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"1": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
@@ -4560,7 +4809,7 @@ class TestPrefetchRedownloadUrls:
         """A fresh state must not sit out the window before its first walk."""
         from kamp_daemon.bandcamp import PrefetchState
 
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"1": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
@@ -4576,7 +4825,7 @@ class TestPrefetchRedownloadUrls:
         silences the prefetch for the whole window."""
         from kamp_daemon.bandcamp import PrefetchState
 
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"1": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch(
@@ -4602,7 +4851,7 @@ class TestPrefetchRedownloadUrls:
     def test_failed_fetch_leaves_ids_retryable(self, mocker: MockerFixture) -> None:
         """A 429 is transient — it must not burn the ids and strand them on the
         slow per-item path for the rest of the drain."""
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch(
@@ -4624,7 +4873,7 @@ class TestPrefetchRedownloadUrls:
         self, mocker: MockerFixture
     ) -> None:
         """A row that leaves the queue and comes back (retry) is tried again."""
-        index = MagicMock()
+        index = _mock_index()
         index.download_redownload_urls.return_value = {"999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
@@ -4645,7 +4894,7 @@ class TestBackfillDownloadSizes:
     """backfill_download_sizes: estimate File Size on queued items (KAMP-574)."""
 
     def test_sizes_queued_items_as_estimates(self, mocker: MockerFixture) -> None:
-        index = MagicMock()
+        index = _mock_index()
         index.queued_downloads_missing_size.return_value = ["a", "b"]
         index.download_redownload_urls.return_value = {
             "a": "https://bc/download?sid=a",
@@ -4673,7 +4922,7 @@ class TestBackfillDownloadSizes:
         assert slept == [1.0]  # throttle between the two fetches (not before the first)
 
     def test_skips_items_without_resolvable_size(self, mocker: MockerFixture) -> None:
-        index = MagicMock()
+        index = _mock_index()
         index.queued_downloads_missing_size.return_value = ["a", "b"]
         index.download_redownload_urls.return_value = {
             "a": "https://bc/download?sid=a",
@@ -4691,7 +4940,7 @@ class TestBackfillDownloadSizes:
         )
 
     def test_noop_when_nothing_queued(self, mocker: MockerFixture) -> None:
-        index = MagicMock()
+        index = _mock_index()
         index.queued_downloads_missing_size.return_value = []
         size = mocker.patch("kamp_daemon.bandcamp.get_download_size_bytes")
         n = backfill_download_sizes(index, "flac", MagicMock())
@@ -4702,7 +4951,7 @@ class TestBackfillDownloadSizes:
     def test_skips_item_without_stored_url(self, mocker: MockerFixture) -> None:
         """An item without a stored URL is skipped — the backfill NEVER fetches the
         collection to resolve it (the prefetch fills it in on a later cycle)."""
-        index = MagicMock()
+        index = _mock_index()
         index.queued_downloads_missing_size.return_value = ["a", "nourl"]
         index.download_redownload_urls.return_value = {"a": "https://bc/download?sid=a"}
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
@@ -4721,7 +4970,7 @@ class TestBackfillDownloadSizes:
     def test_never_fetches_collection(self, mocker: MockerFixture) -> None:
         """KAMP-575: the backfill sizes items via stored URLs only and never hits
         the collection endpoint (which is what tripped the 429s)."""
-        index = MagicMock()
+        index = _mock_index()
         index.queued_downloads_missing_size.return_value = ["a", "b"]
         index.download_redownload_urls.return_value = {
             "a": "https://bc/download?sid=a",

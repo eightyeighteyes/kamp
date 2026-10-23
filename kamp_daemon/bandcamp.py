@@ -903,11 +903,22 @@ def sync_collection_stream(
                     # No release_date: the collection payload carries none for
                     # these items (only `purchased` and `updated`), and the one
                     # place that would have it is the page we cannot read.
-                    index.ensure_album_stub(
+                    stub_id = index.ensure_album_stub(
                         str(sid),
                         album_artist=band_name,
                         album=item_title,
                     )
+                    if stub_id is not None:
+                        # Deliberately NOT added to new_album_keys: that list
+                        # drives KAMP-618 Last.fm genre enrichment, and there
+                        # are no tracks here to carry genres.
+                        # Tell the running UI, exactly as an indexed batch does.
+                        # Without this the stub reaches the database and the
+                        # open app never refetches, so the album stays
+                        # invisible until a restart -- which looks identical to
+                        # the bug this is fixing.
+                        if batch_indexed_callback:
+                            batch_indexed_callback()
                 if tracks:
                     # KAMP-588: cache the album's Bandcamp tags so a later download
                     # can stamp them into the files (and KAMP-591 has a fast path).

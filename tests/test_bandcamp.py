@@ -2978,6 +2978,47 @@ class TestUnfetchablePrivateRelease:
         assert row is not None
         assert row["sale_item_id"] == "1"
 
+    def test_creating_a_stub_notifies_the_ui(self, tmp_path: Path) -> None:
+        """A new stub must reach the running UI, not just the database.
+
+        batch_indexed_callback is what broadcasts "library changed" (it feeds
+        on_tracks_indexed -> notify_library_changed), and it lived inside
+        `if tracks:`. A stub creates no tracks, so the album appeared in the DB
+        and the open app never refetched: synced, present on disk, invisible
+        until a restart. That is indistinguishable from the bug this ticket
+        fixes, which is how it got missed.
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "lib.db")
+        notified: list[bool] = []
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock([_item(1, "Caroline Rose", "demos")]),
+            ),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=BandcampAPIError("404 Client Error for album page"),
+            ),
+        ):
+            sync_collection_stream(
+                _bc_config(tmp_path),
+                tmp_path / "watch",
+                index,
+                batch_indexed_callback=lambda: notified.append(True),
+                sleep=lambda _seconds: None,
+            )
+
+        index.close()
+
+        assert notified, "the UI was never told the library changed"
+
     def test_second_sync_does_not_refetch_the_dead_page(self, tmp_path: Path) -> None:
         """One retry per window, not one per sync (KAMP-738).
 

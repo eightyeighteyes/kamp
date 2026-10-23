@@ -43,6 +43,16 @@ hidden_imports = [
     "starlette.responses",
     "anyio",
     "anyio._backends._asyncio",
+    # pylast's HTTP stack (KAMP-709). pylast 7.1 swapped requests for httpx2,
+    # which reaches ssl through httpcore2 -> truststore. All three are plain
+    # top-level imports that PyInstaller's static analysis does follow, so
+    # these are belt-and-braces rather than load-bearing: listing them costs
+    # nothing, and a miss would not fail the build — it would break scrobbling
+    # and genre enrichment at runtime in the packaged app only, which is the
+    # one failure mode no CI job here can see.
+    "httpx2",
+    "httpcore2",
+    "truststore",
     # explicit submodule collection for kamp packages
     *collect_submodules("kamp_core"),
     *collect_submodules("kamp_daemon"),

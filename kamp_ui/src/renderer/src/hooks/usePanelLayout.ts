@@ -27,8 +27,7 @@ export type BuiltInPanelManifest = {
 
 /** Discriminated union used throughout the rendering layer. */
 export type UnifiedPanel =
-  | (BuiltInPanelManifest & { kind: 'builtin' })
-  | (PanelManifest & { kind: 'extension' })
+  (BuiltInPanelManifest & { kind: 'builtin' }) | (PanelManifest & { kind: 'extension' })
 
 // Module-level registry — populated synchronously before React mounts so the
 // initial layout state can reference all built-ins on first render.

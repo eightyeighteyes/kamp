@@ -160,8 +160,7 @@ function createDiscoveryIframe(
     if (!msg || msg.type !== 'kamp:register-panel') return
     if (msg.extensionId !== ext.id) return
     const manifest = msg.manifest as
-      | { id: string; title: string; defaultSlot: string; compatibleSlots?: string[] }
-      | undefined
+      { id: string; title: string; defaultSlot: string; compatibleSlots?: string[] } | undefined
     if (!manifest?.id) return
     done = true
     window.removeEventListener('message', onMessage)

@@ -34,13 +34,7 @@ function formatTime(seconds: number): string {
 //   idle (1.2s) → ellipsis-1/2/3 (400ms each) → scrolling-1 (to end of text)
 //   → end-hold (1s) → scrolling-2 (wrap to copy-B start) → idle (1.2s) → ...
 type ScrollPhase =
-  | 'idle'
-  | 'ellipsis-1'
-  | 'ellipsis-2'
-  | 'ellipsis-3'
-  | 'scrolling-1'
-  | 'end-hold'
-  | 'scrolling-2'
+  'idle' | 'ellipsis-1' | 'ellipsis-2' | 'ellipsis-3' | 'scrolling-1' | 'end-hold' | 'scrolling-2'
 
 const SCROLL_RATE = 40 // px/s
 const IDLE_DELAY_MS = 1200

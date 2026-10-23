@@ -430,12 +430,7 @@ export type ActiveView = 'library' | 'now-playing' | 'home' | 'downloads' | 'cra
 export type UiState = {
   active_view: ActiveView
   sort_order:
-    | 'album_artist'
-    | 'album'
-    | 'date_added'
-    | 'last_played'
-    | 'most_played'
-    | 'release_date'
+    'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played' | 'release_date'
   sort_dir: 'asc' | 'desc'
   queue_panel_open: boolean
 }
@@ -445,12 +440,7 @@ export const setActiveViewApi = (view: ActiveView): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
   sortOrder:
-    | 'album_artist'
-    | 'album'
-    | 'date_added'
-    | 'last_played'
-    | 'most_played'
-    | 'release_date',
+    'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played' | 'release_date',
   sortDir: 'asc' | 'desc'
 ): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/sort-order', { sort_order: sortOrder, sort_dir: sortDir })

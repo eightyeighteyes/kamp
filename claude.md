@@ -108,6 +108,26 @@ Budget at least a Side for any feature touching osacompile, Spotlight registrati
 ## macOS notifications
 `NSUserNotificationCenter` (used by `rumps.notification()`) is a no-op on macOS 14+. Use `UNUserNotificationCenter` instead. It requires `CFBundleIdentifier` — embed it in `launcher/main.c` via `__TEXT,__info_plist`. Without the compiled launcher (e.g. dev venv), `UNUserNotificationCenter.currentNotificationCenter()` crashes; wrap it in `try/except` and fall back to `rumps.notification()`.
 
+## The dev app writes to the production library — KAMP-737
+
+`npm start` spawns a daemon that resolves `_state_dir()/library.db`, which is the **real** `~/.local/share/kamp/library.db`. There is no dev/prod split. A dev build of an unmerged branch corrupted 833 rows of `bandcamp_collection` in one second, and the forensics only came together because `_backup_db` happened to snapshot the DB 82 minutes earlier.
+
+- **Attribute an incident to the code that was *running*, not to HEAD.** The damage was dated 19:10:02; the branch whose migration had already run merged to main at 19:20:04, ten minutes later. Searching HEAD for a caller of the offending function found none and produced a false "unexplained trigger" — the running tree was an uncommitted working copy. Cross-check `git log --all --format=%ad --date=...`, the `schema_version` in the nearest `.bak-*`, and `~/.zsh_history` timestamps before concluding anything about *which* code did it.
+- **A `.bak-<timestamp>` names its migration.** `_backup_db` is called just before a heal, so the backup's `schema_version` identifies which migration block was executing, and therefore which branch was loaded. That is the cheapest possible timeline anchor. Backups are uniquely named and never pruned, so old ones survive.
+- **Read a live DB with its sidecars.** `library.db-wal` was 4 MB and four hours newer than the `.db` file during this investigation. Copying `library.db` alone silently reads stale data and can invert a conclusion. Copy `library.db`, `-wal` and `-shm` together, or `VACUUM INTO` a consolidated snapshot.
+- **A WAL backup will not open `mode=ro`.** It has no `-shm` beside it and never will, so read-only access needs `immutable=1` (see `scripts/repair_kamp737.py`). Without it you get a bare "unable to open database file".
+- The memory note "validate migrations on a copy, never in place" was not strong enough, because the daemon the dev app launches points at the real DB by default. Treat any dev session as capable of writing production data.
+
+## Writers must not assert columns they do not own — KAMP-737
+
+`upsert_collection_item` assigned `mode` and `num_streamable_tracks` unconditionally from parameters that defaulted to `"local"` and `0`, so a caller that cared about neither silently flattened both. Two columns were already guarded against exactly this (`tralbum_id` via `COALESCE(NULLIF(...))` in KAMP-682, `added_at` via `MIN()`), and the third and fourth were not.
+
+- **On a shared upsert, default a column to `None` and merge with `COALESCE`** so omitting it means "leave it alone" rather than "reset it". When the column is `NOT NULL`, bind the parameter twice — `COALESCE(?, 0)` in `VALUES` for a fresh insert and `COALESCE(?, col)` in `DO UPDATE` — because coercing it to `0` for the insert makes `excluded.<col>` `0` and defeats the guard you just added.
+- **A function reachable from extension API cannot trust its caller.** `mark_synced` is public (`kamp_daemon/ext/abc.py`), so guarding only `sync_once`'s first-run branch left the damage one extension call away. Put the invariant in the function.
+- **`added_at = 0` is load-bearing, not a placeholder** — it is the exact "pre-owned at first run" marker Discovery Crate attribution keys on, and `MIN()` makes it permanent. Preserve its meaning for new rows while refusing to apply it to existing ones.
+- **Mock-based tests hid this for months.** Every test around `mark_collection_synced` used `MagicMock()` for the index, so the `MIN(added_at, …)` merge was never executed. Assert on **kwargs**, not `call_count`, and keep at least one test against a real `LibraryIndex` whenever behaviour depends on SQL merge semantics.
+- **Don't ship a heal you cannot target.** `mode='local'` here overwhelmingly means *pre-owned*, not *we hold the files*: only 97 of 720 legitimately-local rows have any file-source provenance. Every backup-free discriminator mislabelled roughly one row in ten, so the repair stayed a one-off script keyed to a real backup (`scripts/repair_kamp737.py`) instead of a migration.
+
 ## Scope discipline
 If the same sub-problem fails twice in a row, stop and check in before attempting a third approach. Two failures signal a wrong level of abstraction or an environment constraint — not a fixable bug. This applies especially to test fixtures and dev-environment workarounds, which have no user value on their own.
 

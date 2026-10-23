@@ -4406,7 +4406,7 @@ class LibraryIndex:
         album_url: str = "",
         synced_at: float | None = None,
         added_at: float | None = None,
-        num_streamable_tracks: int = 0,
+        num_streamable_tracks: int | None = None,
     ) -> None:
         """Insert or update a single entry in bandcamp_collection."""
         now = _time.time()
@@ -4416,7 +4416,7 @@ class LibraryIndex:
                 (sale_item_id, item_type, band_name, item_title,
                  tralbum_id, album_url, mode, synced_at, added_at,
                  num_streamable_tracks)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
             ON CONFLICT(sale_item_id) DO UPDATE SET
                 item_type             = excluded.item_type,
                 band_name             = excluded.band_name,
@@ -4433,7 +4433,19 @@ class LibraryIndex:
                 mode                  = excluded.mode,
                 synced_at             = COALESCE(excluded.synced_at, synced_at),
                 added_at              = MIN(added_at, COALESCE(excluded.added_at, added_at)),
-                num_streamable_tracks = excluded.num_streamable_tracks
+                -- KAMP-737: never silently reset the KAMP-544 pre-order
+                -- watermark. This was assigned unconditionally from a
+                -- parameter defaulting to 0, so any writer that did not care
+                -- about the watermark erased it -- exactly the trap
+                -- tralbum_id was guarded against above, for the same reason.
+                -- A zeroed watermark makes sync_new_purchases' `api_streamable
+                -- <= stored_streamable` false and re-downloads the pre-order.
+                -- The parameter is bound twice rather than read from
+                -- `excluded`: the column is NOT NULL, so the VALUES clause
+                -- coerces None to 0 for a fresh insert, which would make
+                -- excluded.num_streamable_tracks 0 here and clobber exactly
+                -- what this guard protects.
+                num_streamable_tracks = COALESCE(?, num_streamable_tracks)
             """,
             (
                 sale_item_id,
@@ -4445,7 +4457,8 @@ class LibraryIndex:
                 mode,
                 synced_at,
                 added_at if added_at is not None else now,
-                num_streamable_tracks,
+                num_streamable_tracks,  # VALUES, via COALESCE(?, 0)
+                num_streamable_tracks,  # DO UPDATE, preserved when None
             ),
         )
         # Keep the albums row's sale_item_id FK in sync when a matching album exists.

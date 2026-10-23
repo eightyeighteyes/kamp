@@ -93,7 +93,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 64
+_SCHEMA_VERSION = 65
 
 #: Settings key holding the time of the last *complete* wishlist walk
 #: (KAMP-666). Owned here rather than by the daemon so clear_wishlist() can
@@ -451,7 +451,18 @@ CREATE TABLE IF NOT EXISTS bandcamp_collection (
     num_streamable_tracks INTEGER NOT NULL DEFAULT 0,
     -- KAMP-588: JSON array of the album's Bandcamp tags, cached at sync time so a
     -- later download can stamp them into the files (and KAMP-591 has a fast path).
-    keywords              TEXT
+    keywords              TEXT,
+    -- KAMP-738: the collection API's item_art_id, stored so artwork can be fetched
+    -- straight from the art CDN. Without it the art paths fall back to scraping the
+    -- album page for an art_id, which is impossible for a private release whose page
+    -- 404s -- making its artwork survive only as long as the on-disk cache.
+    art_id                INTEGER,
+    -- KAMP-738: when the album page last refused us. A private release 404s for the
+    -- fan who owns it, and a trackless album always looks "new", so the stream sync
+    -- would re-fetch and re-fail every single sync, forever, against the endpoint
+    -- family CLAUDE.md names as the scarce resource. Timestamped rather than a flag
+    -- so a release that later becomes public is retried instead of written off.
+    page_unfetchable_at   REAL
 );
 
 -- The Bandcamp wishlist, walked in the background and read for crate exclusion
@@ -1070,12 +1081,20 @@ _EFFECTIVE_SOURCE_EXPR = _eff_source("t")
 # short-circuited a mixed album to 'local' was dropped, since post-collapse
 # file_path is the *preferred* uri and that branch fired for exactly the mixed
 # case, leaving the 'mixed' arm dead.
+# COALESCE to 'bandcamp' for the trackless case (KAMP-738): MIN() over zero rows
+# is NULL, and albums.source is NOT NULL, so recomputing the source of an album
+# with no tracks raised IntegrityError rather than returning a wrong badge. That
+# is reachable from remove_download and from two heal paths, and it became
+# reachable in normal use once a 404ing private release started getting a
+# trackless stub row. 'bandcamp' is the right default because only a
+# Bandcamp-backed album is allowed to be trackless at all — prune_empty_albums
+# deletes any other.
 _ALBUM_SOURCE_SUBQUERY = (
-    "(SELECT CASE"
+    "COALESCE((SELECT CASE"
     "   WHEN COUNT(DISTINCT es.eff) > 1 THEN 'mixed'"
     "   ELSE MIN(es.eff) END"
     "  FROM (SELECT " + _EFFECTIVE_SOURCE_EXPR + " AS eff"
-    "        FROM tracks t WHERE t.album_id = albums.id) es)"
+    "        FROM tracks t WHERE t.album_id = albums.id) es), 'bandcamp')"
 )
 
 # The named-album SELECT projection shared by albums() (its first UNION branch)
@@ -2946,7 +2965,32 @@ class LibraryIndex:
             # is nothing on disk to convert, and the first walk populates it.
             self._conn.execute("UPDATE schema_version SET version = 64")
             self._conn.commit()
-            version = 64  # noqa: F841
+            version = 64
+
+        if version == 64:
+            # v64 -> v65 (KAMP-738): bandcamp_collection.art_id. Additive and
+            # nullable, so no backfill — the next stream sync writes it from the
+            # collection payload. Unconstrained column, so a plain ADD COLUMN is
+            # correct here (the KAMP-552 rebuild ceremony is only for dropping
+            # constrained ones).
+            cols = {
+                r[1]
+                for r in self._conn.execute(
+                    "PRAGMA table_info(bandcamp_collection)"
+                ).fetchall()
+            }
+            if "art_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE bandcamp_collection ADD COLUMN art_id INTEGER"
+                )
+            if "page_unfetchable_at" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE bandcamp_collection"
+                    " ADD COLUMN page_unfetchable_at REAL"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 65")
+            self._conn.commit()
+            version = 65  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -4407,6 +4451,7 @@ class LibraryIndex:
         synced_at: float | None = None,
         added_at: float | None = None,
         num_streamable_tracks: int | None = None,
+        art_id: int | None = None,
     ) -> None:
         """Insert or update a single entry in bandcamp_collection."""
         now = _time.time()
@@ -4415,8 +4460,8 @@ class LibraryIndex:
             INSERT INTO bandcamp_collection
                 (sale_item_id, item_type, band_name, item_title,
                  tralbum_id, album_url, mode, synced_at, added_at,
-                 num_streamable_tracks)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
+                 num_streamable_tracks, art_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?)
             ON CONFLICT(sale_item_id) DO UPDATE SET
                 item_type             = excluded.item_type,
                 band_name             = excluded.band_name,
@@ -4445,7 +4490,12 @@ class LibraryIndex:
                 -- coerces None to 0 for a fresh insert, which would make
                 -- excluded.num_streamable_tracks 0 here and clobber exactly
                 -- what this guard protects.
-                num_streamable_tracks = COALESCE(?, num_streamable_tracks)
+                num_streamable_tracks = COALESCE(?, num_streamable_tracks),
+                -- Same preserve-on-omission rule (KAMP-738): most writers do
+                -- not carry an art_id, and losing a stored one would make a
+                -- private release's artwork unrecoverable, since the only
+                -- other source is the album page that 404s.
+                art_id                = COALESCE(excluded.art_id, art_id)
             """,
             (
                 sale_item_id,
@@ -4458,6 +4508,10 @@ class LibraryIndex:
                 synced_at,
                 added_at if added_at is not None else now,
                 num_streamable_tracks,  # VALUES, via COALESCE(?, 0)
+                # art_id is nullable, so VALUES can carry the NULL straight
+                # through and `excluded.art_id` reads it back in DO UPDATE --
+                # no second binding needed, unlike num_streamable_tracks.
+                art_id,
                 num_streamable_tracks,  # DO UPDATE, preserved when None
             ),
         )
@@ -4994,6 +5048,95 @@ class LibraryIndex:
         # delete the ledger rows safely.
         self._conn.execute("DELETE FROM bandcamp_collection")
         self._conn.commit()
+
+    def mark_page_unfetchable(self, sale_item_id: str, when: float) -> None:
+        """Record that this release's album page refused us (KAMP-738)."""
+        self._conn.execute(
+            "UPDATE bandcamp_collection SET page_unfetchable_at = ?"
+            " WHERE sale_item_id = ?",
+            (when, sale_item_id),
+        )
+        self._conn.commit()
+
+    def clear_page_unfetchable(self, sale_item_id: str) -> None:
+        """Forget a past page failure after a successful fetch (KAMP-738)."""
+        self._conn.execute(
+            "UPDATE bandcamp_collection SET page_unfetchable_at = NULL"
+            " WHERE sale_item_id = ? AND page_unfetchable_at IS NOT NULL",
+            (sale_item_id,),
+        )
+        self._conn.commit()
+
+    def unfetchable_pages(self) -> dict[str, float]:
+        """Return {sale_item_id: when the page last refused us}."""
+        rows = self._conn.execute(
+            "SELECT sale_item_id, page_unfetchable_at FROM bandcamp_collection"
+            " WHERE page_unfetchable_at IS NOT NULL"
+        ).fetchall()
+        return {r["sale_item_id"]: r["page_unfetchable_at"] for r in rows}
+
+    def ensure_album_stub(
+        self,
+        sale_item_id: str,
+        *,
+        album_artist: str,
+        album: str,
+        release_date: str = "",
+    ) -> int | None:
+        """Create a trackless `albums` row for a collection item we cannot index.
+
+        A private release gifted to pre-order buyers has an `item_url` that 404s
+        even for the fan who owns it, and no other route exposes its track list
+        (KAMP-738). Without a row here the user owns music kamp will not admit
+        exists; with one it appears as a Bandcamp album with zero tracks and the
+        existing "Download this album" action, which is reachable precisely
+        because `source` is not 'local'.
+
+        Two columns are load-bearing and neither can be left to its default:
+
+        * ``source='bandcamp'`` — the column defaults to 'local', which would
+          make the projection's ``has_art`` fall through to ``embedded_art`` (0)
+          so the card renders no artwork at all, and would show the local
+          context menu ("Reveal in Finder") on an album with no files.
+        * ``sale_item_id`` — ``prune_empty_albums`` spares a trackless album only
+          when it has one. Without it the next scan that removes any track
+          anywhere deletes this row and the bug returns silently.
+
+        Returns the album id, or None when the name pair is already taken by a
+        different sale item. ``albums`` is ``UNIQUE (album_artist, album)``
+        COLLATE NOCASE, so an unguarded stamp-by-name would hijack an unrelated
+        album; the UPDATE is guarded the same way as the ingest path's, and the
+        row is re-read by ``sale_item_id`` rather than assumed.
+        """
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO albums
+                (album_artist, album, release_date, source, date_added)
+            VALUES (?, ?, ?, 'bandcamp', ?)
+            """,
+            (album_artist, album, release_date, _time.time()),
+        )
+        self._conn.execute(
+            "UPDATE albums SET sale_item_id = ?, source = 'bandcamp'"
+            " WHERE album_artist = ? COLLATE NOCASE"
+            "   AND album        = ? COLLATE NOCASE"
+            "   AND (sale_item_id IS NULL OR sale_item_id = ?)",
+            (sale_item_id, album_artist, album, sale_item_id),
+        )
+        row = self._conn.execute(
+            "SELECT id FROM albums WHERE sale_item_id = ?", (sale_item_id,)
+        ).fetchone()
+        self._conn.commit()
+        if row is None:
+            logger.warning(
+                "ensure_album_stub: %r by %r is already held by another sale item "
+                "— leaving it alone (sale_item_id=%s)",
+                album,
+                album_artist,
+                sale_item_id,
+            )
+            return None
+        return int(row["id"])
 
     def get_collection_item(self, sale_item_id: str) -> dict[str, Any] | None:
         """Return the bandcamp_collection row for *sale_item_id*, or None if absent."""

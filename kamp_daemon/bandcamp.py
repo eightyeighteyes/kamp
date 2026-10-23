@@ -62,6 +62,14 @@ _HIDDEN_URL = "https://bandcamp.com/api/fancollection/1/hidden_items"
 # 800-album walk from ~40 requests to 8.
 _COLLECTION_PAGE_BATCH = 100
 
+# How long to leave a release alone after its album page refused us (KAMP-738).
+# A private release gifted to pre-order buyers 404s even for the fan who owns
+# it, and because a trackless album always satisfies `is_new_album`, the stream
+# sync would spend a paced album-page request re-confirming that on every sync
+# forever. A week is long enough to stop being a cost and short enough that a
+# release later made public is picked up without the user doing anything.
+_UNFETCHABLE_RETRY_SECONDS = 7 * 24 * 60 * 60.0
+
 # Realistic browser User-Agent — Bandcamp rejects obvious bot strings.
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -286,6 +294,18 @@ def _parse_purchased(s: str | None) -> float | None:
     try:
         return email.utils.parsedate_to_datetime(s).timestamp()
     except Exception:
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Coerce a collection-payload field to int, or None when it is absent/junk.
+
+    Bandcamp returns null for plenty of per-item fields, and a bad value must
+    not take a sync down over something as peripheral as an art id.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return None
 
 
@@ -744,6 +764,11 @@ def sync_collection_stream(
     # (mode='local') with mode='remote'.  Local albums were processed by the
     # download pipeline and already have their tracks in the tracks table.
     existing_state = index.get_collection_state()
+    # KAMP-738: releases whose album page refused us recently. Re-fetching one
+    # costs a paced request against the endpoint family that rate-limits
+    # hardest and can only fail again, so they are skipped until the retry
+    # window lapses.
+    unfetchable = index.unfetchable_pages()
     album_count = 0
     track_count = 0
     # (album_artist, album) of albums newly indexed this run — the streaming-add
@@ -788,6 +813,10 @@ def sync_collection_stream(
             tralbum_id=str(item.get("tralbum_id", "")),
             synced_at=time.time(),
             added_at=_parse_purchased(item.get("purchased")),
+            # KAMP-738: the collection payload already carries the art id, and
+            # storing it is the only way artwork survives for a release whose
+            # album page 404s -- every other art path scrapes that page.
+            art_id=_int_or_none(item.get("item_art_id")),
         )
         album_count += 1
 
@@ -819,9 +848,18 @@ def sync_collection_stream(
         is_duplicate_release = is_new_album and index.has_remote_album_tracks(
             str(sid), tralbum_id=str(item.get("tralbum_id", ""))
         )
+        # KAMP-738: a page that 404d recently gets one retry per window, not one
+        # per sync. Without this a private release is re-fetched forever,
+        # because a trackless album always satisfies is_new_album.
+        failed_at = unfetchable.get(str(sid))
+        page_known_bad = (
+            failed_at is not None
+            and (time.time() - failed_at) < _UNFETCHABLE_RETRY_SECONDS
+        )
         if (
             album_url
             and not is_duplicate_release
+            and not page_known_bad
             and (
                 is_preorder_already
                 or api_says_preorder
@@ -847,6 +885,29 @@ def sync_collection_stream(
                     date_added=purchased_ts,
                     page_out=page_data,
                 )
+                if tracks:
+                    # The page answered, so forget any past refusal — a release
+                    # made public again must not stay skipped.
+                    index.clear_page_unfetchable(str(sid))
+                else:
+                    index.mark_page_unfetchable(str(sid), time.time())
+                if not tracks and is_new_album:
+                    # KAMP-738: the page gave us nothing and we hold no tracks
+                    # for this release. For a private release gifted to
+                    # pre-order buyers that is permanent — item_url 404s even
+                    # for the fan who owns it, and no other route exposes the
+                    # track list. Record the album from the collection metadata
+                    # we already have so the user can at least see what they
+                    # own and reach the download action, rather than the album
+                    # silently not existing.
+                    # No release_date: the collection payload carries none for
+                    # these items (only `purchased` and `updated`), and the one
+                    # place that would have it is the page we cannot read.
+                    index.ensure_album_stub(
+                        str(sid),
+                        album_artist=band_name,
+                        album=item_title,
+                    )
                 if tracks:
                     # KAMP-588: cache the album's Bandcamp tags so a later download
                     # can stamp them into the files (and KAMP-591 has a fast path).
@@ -912,7 +973,13 @@ def sync_collection_stream(
             cache_key = tralbum if tralbum else f"sid_{sid}"
             cache_path = art_cache_dir / f"{cache_key}.jpg"
             if not cache_path.exists():
+                # Prefer the page's art_id when we parsed one, else the id the
+                # collection payload already gave us (KAMP-738) — which is the
+                # only one available for a private release whose page 404s, and
+                # which also spares an album-page fetch for everything else.
                 art_id = page_data.get("art_id")
+                if art_id is None:
+                    art_id = _int_or_none(item.get("item_art_id"))
                 # With an art_id in hand the only request is to the art CDN,
                 # which is a different host and not what rate-limits — so it
                 # needs no album-page spacing. Without one we fall back to

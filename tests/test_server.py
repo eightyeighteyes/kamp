@@ -6151,6 +6151,65 @@ class TestArtEndpointRemoteAlbums:
         assert cache_file.exists()
         assert cache_file.read_bytes() == self._JPEG
 
+    def test_cache_miss_passes_the_stored_art_id(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The stored art_id must reach fetch_album_art_bytes (KAMP-738).
+
+        Without it the fetcher scrapes the album page for an art_id. For a
+        private release that page 404s, so its artwork would survive only as
+        long as the on-disk cache and be unrecoverable after the first miss.
+        This is the path that is broken today; the cache-hit test above passes
+        either way and would give a false green.
+        """
+        cache_dir = tmp_path / "art_cache"
+        item = self._collection_item()
+        item["art_id"] = 1920585686
+        mock_index.get_track_by_id.return_value = self._remote_track()
+        mock_index.get_collection_item.return_value = item
+
+        c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
+
+        with patch(
+            "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=self._JPEG
+        ) as fetch:
+            res = c.get(
+                "/api/v1/album-art",
+                params={"album_artist": "A", "album": "B", "track_id": 1},
+            )
+
+        assert res.status_code == 200
+        assert fetch.call_args.kwargs["art_id"] == 1920585686
+
+    def test_cache_miss_without_a_stored_art_id_still_works(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Rows predating the art_id column pass None and fall back to the page."""
+        cache_dir = tmp_path / "art_cache"
+        mock_index.get_track_by_id.return_value = self._remote_track()
+        mock_index.get_collection_item.return_value = self._collection_item()
+
+        c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
+
+        with patch(
+            "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=self._JPEG
+        ) as fetch:
+            res = c.get(
+                "/api/v1/album-art",
+                params={"album_artist": "A", "album": "B", "track_id": 1},
+            )
+
+        assert res.status_code == 200
+        assert fetch.call_args.kwargs["art_id"] is None
+
     def test_no_collection_item_returns_404(
         self,
         mock_index: MagicMock,

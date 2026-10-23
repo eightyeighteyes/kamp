@@ -7791,6 +7791,42 @@ class TestBandcampCollection:
 
         assert row["added_at"] == 0.0
 
+    def test_upsert_does_not_zero_the_watermark_when_omitted(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller that omits num_streamable_tracks must not erase it (KAMP-737).
+
+        The column was assigned unconditionally from a parameter defaulting to
+        0, so any writer that did not care about the watermark silently reset
+        it. That is the same trap tralbum_id was given a COALESCE guard for in
+        KAMP-682, and it cost the KAMP-544 pre-order watermark on 5 rows.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("9", mode="preorder", num_streamable_tracks=6)
+        index.upsert_collection_item("9", mode="preorder")
+        row = index._conn.execute(
+            "SELECT num_streamable_tracks FROM bandcamp_collection"
+            " WHERE sale_item_id = '9'"
+        ).fetchone()
+        index.close()
+
+        assert row["num_streamable_tracks"] == 6
+
+    def test_upsert_still_updates_the_watermark_when_given(
+        self, tmp_path: Path
+    ) -> None:
+        """Preserving on omission must not make the column unwritable."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("9", mode="preorder", num_streamable_tracks=6)
+        index.upsert_collection_item("9", mode="preorder", num_streamable_tracks=9)
+        row = index._conn.execute(
+            "SELECT num_streamable_tracks FROM bandcamp_collection"
+            " WHERE sale_item_id = '9'"
+        ).fetchone()
+        index.close()
+
+        assert row["num_streamable_tracks"] == 9
+
     def test_update_remote_track_date_added_corrects_wrong_timestamp(
         self, tmp_path: Path
     ) -> None:

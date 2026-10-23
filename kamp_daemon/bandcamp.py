@@ -300,8 +300,19 @@ def mark_collection_synced(
 ) -> int:
     """Record every item in the Bandcamp collection as already downloaded.
 
-    Writes all sale_item_ids to bandcamp_collection with mode='local' and
+    Writes *new* sale_item_ids to bandcamp_collection with mode='local' and
     synced_at=now without downloading anything.  Returns the number of new items marked.
+
+    Rows that already exist are refreshed (title, artist, url, tralbum_id,
+    synced_at) but keep their mode, added_at and num_streamable_tracks. That
+    is not politeness, it is the KAMP-737 invariant: this function cannot
+    trust its caller, because ``mark_synced`` is public extension API
+    (``kamp_daemon/ext/abc.py``) and any extension holding ``core.syncer``
+    reaches it without passing sync_once's first-run guard. A dev build
+    invoked it against a production DB and flattened 833 rows — every mode to
+    'local', every added_at to 0, every watermark to 0 — and because the
+    streaming sync skips mode='local' before it can reclassify anything, a
+    pre-order flattened that way never recovers.
     """
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
@@ -316,18 +327,42 @@ def mark_collection_synced(
     now = time.time()
     for item in collection:
         key = str(item["sale_item_id"])
-        if key not in state:
+        is_new = key not in state
+        if is_new:
             newly_marked += 1
+        if is_new:
+            # An unreleased pre-order cannot have been "already downloaded", so
+            # it is recorded as what it is rather than as owned.
+            mode = "preorder" if item.get("is_preorder") else "local"
+            # 0 is the deliberate, permanent "you already owned this at first
+            # run" marker that Discovery Crate purchase attribution keys on
+            # exactly (see _ATTRIBUTABLE_SQL's added_at > 0 clause).
+            added_at: float | None = 0
+            # KAMP-544 watermark: "this many tracks were streamable when we
+            # last reconciled". Marking the collection synced asserts we are
+            # current, so the API's count is the honest starting value.
+            streamable: int | None = int(item.get("num_streamable_tracks") or 0)
+        else:
+            # Preserve, don't assert — all three columns. added_at=None makes
+            # the MIN() merge a no-op where 0 would floor a real purchase date
+            # permanently, and leaving the watermark alone matters twice over:
+            # raising it here without downloading anything would mask a
+            # genuine incremental release, so the pre-order would never
+            # re-download.
+            mode = state[key]
+            added_at = None
+            streamable = None
         index.upsert_collection_item(
             key,
-            mode="local",
+            mode=mode,
             item_type=str(item.get("sale_item_type", "p")),
             band_name=str(item.get("band_name", "")),
             item_title=str(item.get("item_title", "")),
             album_url=str(item.get("item_url", "")),
             tralbum_id=str(item.get("tralbum_id", "")),
             synced_at=now,
-            added_at=0,
+            added_at=added_at,
+            num_streamable_tracks=streamable,
         )
 
     logger.info(

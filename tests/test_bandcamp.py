@@ -1139,7 +1139,11 @@ class TestMarkCollectionSynced:
             count = mark_collection_synced(config, index)
 
         assert count == 1
-        # upsert called for both (to keep metadata current), but only 1 was newly marked
+        # upsert called for both (to keep metadata current), but only 1 was newly
+        # marked. KAMP-737: "metadata" is now explicitly title/artist/url/
+        # tralbum_id/synced_at — the already-recorded row keeps its mode,
+        # added_at and watermark, asserted in
+        # TestMarkCollectionSyncedPreservesExistingRows.
         assert index.upsert_collection_item.call_count == 2
 
     def test_subsequent_sync_downloads_nothing(self, tmp_path: Path) -> None:
@@ -2519,6 +2523,189 @@ class TestMarkCollectionSyncedAddedAt:
 
         call_kwargs = index.upsert_collection_item.call_args[1]
         assert call_kwargs["added_at"] == 0
+
+
+class TestMarkCollectionSyncedPreservesExistingRows:
+    """mark_collection_synced must never damage a row it did not create (KAMP-737).
+
+    A dev build invoked this against a production DB and flattened 833 rows:
+    every mode became 'local', every added_at became 0, and every
+    num_streamable_tracks watermark became 0 — because upsert_collection_item
+    assigns mode and num_streamable_tracks unconditionally and floors added_at
+    through MIN(). The streaming sync then skips mode='local' rows
+    (bandcamp.py), so a pre-order flattened this way can never recover.
+
+    The invariant lives in this function rather than at its call site because
+    mark_synced is public extension API (kamp_daemon/ext/abc.py) — it cannot
+    trust its caller.
+
+    These assert on kwargs, not call_count: the pre-existing
+    `call_count == 2` assertion is exactly what let this ship.
+    """
+
+    def _run(self, tmp_path: Path, items: list[dict[str, Any]], state: dict[str, str]):
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = state
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            mark_collection_synced(config, index)
+
+        return {str(c[0][0]): c[1] for c in index.upsert_collection_item.call_args_list}
+
+    def test_existing_rows_keep_their_mode(self, tmp_path: Path) -> None:
+        """A row already recorded keeps whatever mode it had."""
+        calls = self._run(
+            tmp_path,
+            [_item(1), _item(2), _item(3)],
+            {"1": "preorder", "2": "remote", "3": "local"},
+        )
+
+        assert calls["1"]["mode"] == "preorder"
+        assert calls["2"]["mode"] == "remote"
+        assert calls["3"]["mode"] == "local"
+
+    def test_existing_rows_do_not_have_added_at_floored(self, tmp_path: Path) -> None:
+        """added_at=None leaves the stored value alone.
+
+        upsert_collection_item merges with MIN(added_at, COALESCE(excluded, added_at)),
+        so None is a no-op while 0 is permanent.
+        """
+        calls = self._run(tmp_path, [_item(1)], {"1": "local"})
+
+        assert calls["1"]["added_at"] is None
+
+    def test_new_rows_still_get_added_at_zero(self, tmp_path: Path) -> None:
+        """0 stays the deliberate "you already owned this at first run" marker.
+
+        Discovery Crate purchase attribution keys on added_at == 0 exactly
+        (see kamp_core/library.py and test_discovery.py), so new rows must
+        keep it.
+        """
+        calls = self._run(tmp_path, [_item(1)], {})
+
+        assert calls["1"]["added_at"] == 0
+        assert calls["1"]["mode"] == "local"
+
+    def test_existing_rows_keep_their_watermark(self, tmp_path: Path) -> None:
+        """An existing row's num_streamable_tracks is left alone.
+
+        It is the KAMP-544 watermark that sync_new_purchases compares with
+        `api_streamable <= stored_streamable` to decide whether a pre-order
+        gained tracks. Raising it here — without downloading anything — would
+        mask a genuine incremental release and the pre-order would never
+        re-download. Zeroing it causes the opposite: a re-download every sync.
+        None leaves it untouched.
+        """
+        calls = self._run(
+            tmp_path,
+            [_preorder_item(1, num_streamable_tracks=4)],
+            {"1": "preorder"},
+        )
+
+        assert calls["1"]["num_streamable_tracks"] is None
+
+    def test_a_new_preorder_is_not_recorded_as_owned(self, tmp_path: Path) -> None:
+        """An unreleased pre-order cannot have been "already downloaded"."""
+        calls = self._run(tmp_path, [_preorder_item(1, num_streamable_tracks=3)], {})
+
+        assert calls["1"]["mode"] == "preorder"
+        assert calls["1"]["num_streamable_tracks"] == 3
+
+    def test_added_at_survives_against_a_real_index(self, tmp_path: Path) -> None:
+        """End-to-end against LibraryIndex, not a MagicMock.
+
+        Every other test in this area mocks the index, which is precisely why
+        the MIN(added_at, ...) interaction was never exercised and the bug
+        shipped. This one writes and reads the real column.
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "1", mode="preorder", added_at=12345.0, num_streamable_tracks=7
+        )
+
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock([_item(1)])
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            mark_collection_synced(config, index)
+
+        row = index._conn.execute(
+            "SELECT mode, added_at, num_streamable_tracks"
+            " FROM bandcamp_collection WHERE sale_item_id = '1'"
+        ).fetchone()
+        index.close()
+
+        assert row["added_at"] == 12345.0
+        assert row["mode"] == "preorder"
+        assert row["num_streamable_tracks"] == 7
+
+    def test_marking_a_preorder_synced_does_not_then_download_it(
+        self, tmp_path: Path
+    ) -> None:
+        """mark-synced then sync must not download the pre-order it just recorded.
+
+        Both halves run against a real LibraryIndex so the watermark actually
+        round-trips through the column and the real
+        get_collection_streamable_counts() -- which filters mode='preorder' --
+        does the comparing. With the watermark left at 0, sync_new_purchases'
+        `api_streamable <= stored_streamable` is false and the inline
+        pre-order download fires, inverting this function's own promise that
+        "future sync runs will only download new purchases".
+        """
+        from kamp_core.library import LibraryIndex
+
+        index = LibraryIndex(tmp_path / "library.db")
+        items = [_preorder_item(1, num_streamable_tracks=2)]
+        config = _bc_config(tmp_path)
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+        ):
+            mark_collection_synced(config, index)
+
+        mock_dl = MagicMock(return_value=tmp_path / "1.zip")
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch("kamp_daemon.bandcamp._download_item", mock_dl),
+        ):
+            sync_new_purchases(config, tmp_path / "watch", index)
+
+        index.close()
+
+        mock_dl.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

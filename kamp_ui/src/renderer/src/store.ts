@@ -134,12 +134,7 @@ type PlayerStore = {
   albumMetaExpanded: boolean
   albumRenameProgress: { done: number; total: number } | null
   sortOrder:
-    | 'album_artist'
-    | 'album'
-    | 'date_added'
-    | 'last_played'
-    | 'most_played'
-    | 'release_date'
+    'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played' | 'release_date'
   sortDir: 'asc' | 'desc'
   libraryFilter: string[]
   searchQuery: string

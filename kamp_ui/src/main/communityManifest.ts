@@ -11,8 +11,7 @@ import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 
 export type ManifestEntry =
-  | { source: 'npm'; name: string }
-  | { source: 'local'; name: string; path: string }
+  { source: 'npm'; name: string } | { source: 'local'; name: string; path: string }
 
 type Manifest = { installed: ManifestEntry[] }
 

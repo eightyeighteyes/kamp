@@ -26,7 +26,7 @@ import threading
 from ctypes import byref, c_int32, c_int64, c_uint32, c_void_p
 from ctypes.util import find_library
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Callable, TypeVar
 
 import keyring.errors
 
@@ -371,14 +371,19 @@ def _call_with_timeout(label: str, fn: Callable[[], _T]) -> _T:
             )
         _pending_ctypes_calls += 1
 
-    box: dict[str, Any] = {}
+    # Lists rather than a dict[str, Any]: a one-element list is fully typed, so
+    # neither the value nor the error needs a cast, and an *appended* None is
+    # still distinguishable from "the runner never got that far" (both
+    # _read_raw and _delete_raw can legitimately produce None).
+    done: list[_T] = []
+    failed: list[BaseException] = []
 
     def _runner() -> None:
         global _pending_ctypes_calls
         try:
-            box["value"] = fn()
+            done.append(fn())
         except BaseException as exc:  # re-raised on the calling thread below
-            box["error"] = exc
+            failed.append(exc)
         finally:
             with _pending_lock:
                 _pending_ctypes_calls -= 1
@@ -395,9 +400,9 @@ def _call_with_timeout(label: str, fn: Callable[[], _T]) -> _T:
             " (a keychain prompt is probably waiting for the user)"
         )
 
-    if "error" in box:
-        raise box["error"]
-    return box["value"]  # type: ignore[no-any-return]
+    if failed:
+        raise failed[0]
+    return done[0]
 
 
 def _read_raw(service: str, username: str, use_dpc: bool) -> str | None:

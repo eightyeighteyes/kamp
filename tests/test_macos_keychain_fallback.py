@@ -221,6 +221,17 @@ class TestCtypesCallsAreBounded:
     ) -> None:
         assert kc._call_with_timeout("test", lambda: "value") == "value"
 
+    def test_a_none_result_is_returned_not_mistaken_for_a_failure(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        """`None` is a real answer here: "no such credential".
+
+        The runner records results in a list precisely so an appended None is
+        distinguishable from "the call never got that far". A truthiness check
+        would turn every absent credential into a spurious error.
+        """
+        assert kc._call_with_timeout("test", lambda: None) is None
+
     def test_exception_propagates_to_the_caller(
         self, kc: ModuleType, mocker: MockerFixture
     ) -> None:

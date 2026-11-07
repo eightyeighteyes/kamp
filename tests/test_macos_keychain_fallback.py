@@ -14,6 +14,7 @@ learned nothing and must not be mistaken for an answer.
 from __future__ import annotations
 
 import subprocess
+import threading
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -188,6 +189,74 @@ class TestTimeout:
             kc.get_password("kamp", "bandcamp")
 
         assert kc._helper_unusable is False
+
+
+class TestCtypesCallsAreBounded:
+    """Security.framework blocks until the user answers; we must not.
+
+    Verified against a signed build: before this guard, a ctypes Login Keychain
+    read sat for over two minutes on an unanswered prompt and only returned
+    when the dialog was clicked. In the daemon that is a thread hung forever on
+    a login or a playback lookahead.
+    """
+
+    def test_blocked_call_raises_keyring_locked(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        mocker.patch.object(kc, "_CTYPES_TIMEOUT_SECONDS", 0.05)
+        started = threading.Event()
+
+        def _blocks_forever() -> str:
+            started.set()
+            threading.Event().wait()  # never returns
+            return "unreachable"
+
+        with pytest.raises(keyring.errors.KeyringLocked, match="timed out"):
+            kc._call_with_timeout("test", _blocks_forever)
+
+        assert started.is_set(), "the call never actually ran"
+
+    def test_fast_call_is_unaffected(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        assert kc._call_with_timeout("test", lambda: "value") == "value"
+
+    def test_exception_propagates_to_the_caller(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        """A real OSStatus error must not be masked by the threading."""
+
+        def _raises() -> str:
+            raise keyring.errors.KeyringError("Security framework error (OSStatus -42)")
+
+        with pytest.raises(keyring.errors.KeyringError, match="-42"):
+            kc._call_with_timeout("test", _raises)
+
+    def test_pending_calls_are_capped(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        """A timed-out thread keeps waiting, so they must not accumulate."""
+        mocker.patch.object(kc, "_pending_ctypes_calls", kc._MAX_PENDING_CTYPES_CALLS)
+
+        with pytest.raises(keyring.errors.KeyringLocked, match="already waiting"):
+            kc._call_with_timeout("test", lambda: "value")
+
+    def test_counter_is_released_after_a_normal_call(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        """Otherwise ordinary use would walk into the cap after four reads."""
+        mocker.patch.object(kc, "_pending_ctypes_calls", 0)
+        for _ in range(kc._MAX_PENDING_CTYPES_CALLS + 2):
+            kc._call_with_timeout("test", lambda: "value")
+        assert kc._pending_ctypes_calls == 0
+
+    def test_read_raw_goes_through_the_bound(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        """The wrapper must be on the path callers actually use."""
+        blocking = mocker.patch.object(kc, "_read_raw_blocking", return_value=SENTINEL)
+        assert kc._read_raw("kamp", "lastfm", use_dpc=False) == SENTINEL
+        blocking.assert_called_once_with("kamp", "lastfm", False)
 
 
 class TestSetSessionNoLongerWritesPlaintext:

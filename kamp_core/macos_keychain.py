@@ -22,9 +22,11 @@ import ctypes
 import logging
 import subprocess
 import sys
+import threading
 from ctypes import byref, c_int32, c_int64, c_uint32, c_void_p
 from ctypes.util import find_library
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 import keyring.errors
 
@@ -326,7 +328,95 @@ def _raise_for_status(status: int) -> None:
     raise keyring.errors.KeyringError(f"Security framework error (OSStatus {status})")
 
 
+#: Matches the helper's ``subprocess.run(timeout=10)`` so both paths give up
+#: after the same wait, rather than one of them waiting forever.
+_CTYPES_TIMEOUT_SECONDS = 10.0
+
+#: Cap on keychain calls still blocked on a dialog. A Python thread cannot be
+#: cancelled, so a timed-out call keeps waiting until the user answers or
+#: dismisses the prompt; past this many we refuse immediately instead of
+#: letting them accumulate.
+_MAX_PENDING_CTYPES_CALLS = 4
+
+_pending_ctypes_calls = 0
+_pending_lock = threading.Lock()
+
+_T = TypeVar("_T")
+
+
+def _call_with_timeout(label: str, fn: Callable[[], _T]) -> _T:
+    """Run *fn* on a daemon thread, raising KeyringLocked if it outlasts the timeout.
+
+    Security.framework blocks until the user answers, with no timeout of its
+    own. Reading an *existing* Login Keychain item from a binary the item's ACL
+    does not trust raises a modal prompt — and Login Keychain ACLs here are
+    binary-hash based (TASK-167), so every new build is untrusted until the user
+    clicks Allow.
+
+    Unbounded, that hangs whichever daemon thread touched the keychain, forever:
+    a Bandcamp login or a playback lookahead simply never returns. Measured at
+    over two minutes against a signed build before this guard, ending only when
+    the dialog was answered by hand.
+
+    The prompt itself is wanted — answering it once makes the credential
+    readable until the next build. Only the unbounded wait is the bug.
+    """
+    global _pending_ctypes_calls
+
+    with _pending_lock:
+        if _pending_ctypes_calls >= _MAX_PENDING_CTYPES_CALLS:
+            raise keyring.errors.KeyringLocked(
+                f"keychain {label}: {_pending_ctypes_calls} calls already waiting"
+                " on an unanswered keychain prompt; refusing to add another"
+            )
+        _pending_ctypes_calls += 1
+
+    box: dict[str, Any] = {}
+
+    def _runner() -> None:
+        global _pending_ctypes_calls
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # re-raised on the calling thread below
+            box["error"] = exc
+        finally:
+            with _pending_lock:
+                _pending_ctypes_calls -= 1
+
+    thread = threading.Thread(target=_runner, name=f"keychain-{label}", daemon=True)
+    thread.start()
+    thread.join(_CTYPES_TIMEOUT_SECONDS)
+
+    if thread.is_alive():
+        # Still blocked on the dialog. The thread keeps running (it cannot be
+        # killed) and will decrement the counter when it eventually unblocks.
+        raise keyring.errors.KeyringLocked(
+            f"keychain {label} timed out after {_CTYPES_TIMEOUT_SECONDS:.0f}s"
+            " (a keychain prompt is probably waiting for the user)"
+        )
+
+    if "error" in box:
+        raise box["error"]
+    return box["value"]  # type: ignore[no-any-return]
+
+
 def _read_raw(service: str, username: str, use_dpc: bool) -> str | None:
+    """Timeout-bounded Login Keychain / DPC read."""
+    return _call_with_timeout(
+        f"read({service}/{username})",
+        lambda: _read_raw_blocking(service, username, use_dpc),
+    )
+
+
+def _delete_raw(service: str, username: str, use_dpc: bool) -> None:
+    """Timeout-bounded Login Keychain / DPC delete."""
+    _call_with_timeout(
+        f"delete({service}/{username})",
+        lambda: _delete_raw_blocking(service, username, use_dpc),
+    )
+
+
+def _read_raw_blocking(service: str, username: str, use_dpc: bool) -> str | None:
     q_kwargs: dict[str, str | bool | c_void_p] = dict(
         kSecClass="kSecClassGenericPassword",
         kSecMatchLimit="kSecMatchLimitOne",
@@ -347,7 +437,7 @@ def _read_raw(service: str, username: str, use_dpc: bool) -> str | None:
     )
 
 
-def _delete_raw(service: str, username: str, use_dpc: bool) -> None:
+def _delete_raw_blocking(service: str, username: str, use_dpc: bool) -> None:
     q_kwargs: dict[str, str | bool | c_void_p] = dict(
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,
@@ -456,6 +546,16 @@ def set_password(service: str, username: str, password: str) -> None:
             _raise_for_status(status)
             return
 
+    # Bounded: updating an *existing* Login Keychain item prompts just as
+    # reading one does, and the ctypes call would otherwise block forever.
+    _call_with_timeout(
+        f"write({service}/{username})",
+        lambda: _write_login_keychain_blocking(service, username, password),
+    )
+
+
+def _write_login_keychain_blocking(service: str, username: str, password: str) -> None:
+    """SecItemUpdate-then-Add against the Login Keychain. May block on a prompt."""
     find_q = _make_dict(
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,

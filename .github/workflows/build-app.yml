@@ -481,6 +481,32 @@ jobs:
           END=$(date +%s)
           echo "→ Pre-signing done in $((END-START))s"
 
+      # TEMPORARY (KAMP-743, do not merge): publish the *signed* daemon and
+      # keychain helper. The Data Protection Keychain is only readable by a
+      # binary whose keychain-access-groups entitlement validates, which needs
+      # the real signing identity applied just above — so no unsigned build can
+      # answer the question this ticket turns on, and the bundle-x64 artifact
+      # from build-bundle is unsigned.
+      #
+      # Deliberately placed BEFORE "Build DMG": that step is currently failing
+      # at `xcrun stapler` (error 68, api.apple-cloudkit.com unreachable), and
+      # stapling only attaches a ticket for offline Gatekeeper checks — it has
+      # no bearing on whether an entitlement validates. Uploading here means the
+      # artifact survives that failure.
+      #
+      # Two paths, so upload-artifact strips the LCA (kamp_ui/resources) and the
+      # archive keeps `kamp/` beside `kamp-keychain-helper` — the sibling layout
+      # macos_keychain._find_helper() expects from `sys.executable.parent.parent`.
+      # REVERT WITH THE MATRIX CHANGE BEFORE OPENING THE PR.
+      - name: Upload signed bundle for KAMP-743 keychain diagnosis
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: signed-kamp-${{ matrix.arch }}
+          path: |
+            kamp_ui/resources/kamp
+            kamp_ui/resources/kamp-keychain-helper
+          retention-days: 5
+
       - name: Cache electron-builder binaries
         # electron-builder downloads dmgbuild and other native helpers on first run.
         # Caching avoids transient network failures and speeds up subsequent builds.

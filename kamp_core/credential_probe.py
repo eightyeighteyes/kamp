@@ -44,6 +44,19 @@ UNKNOWN_NO_ENTITLEMENT: Final[str] = "unknown (no entitlement)"
 #: credential and short enough to paste into a ticket.
 _DIGEST_CHARS: Final[int] = 12
 
+#: Fixed, non-secret domain separator.  A *random* salt is not an option: the
+#: whole purpose of the digest is that the same credential yields the same
+#: value in two different stores, and across two different runs — comparing a
+#: dev run against a packaged run is how the Login Keychain fallback was
+#: confirmed in KAMP-749.  Determinism is the requirement; the salt only keeps
+#: these digests from colliding with any other PBKDF2 output.
+_DIGEST_SALT: Final[bytes] = b"kamp.credential_probe.v1"
+
+#: Deliberately slow.  ~6 calls per `doctor-credentials` run, so the cost is
+#: unnoticeable there, and it means the digest resists guessing even if some
+#: future caller passes a low-entropy value.
+_DIGEST_ITERATIONS: Final[int] = 200_000
+
 
 def credential_digest(value: str) -> str:
     """Return a short one-way digest of *value*, for equality comparison only.
@@ -52,11 +65,21 @@ def credential_digest(value: str) -> str:
     *different* values" — the signal that a stale keychain item is shadowing a
     newer plaintext row — without either value reaching a log file or a ticket.
 
-    Not a password hash and not intended as one: the input is a
-    high-entropy credential blob, so there is nothing here to brute-force, and
-    the truncation is what keeps the output unusable for reconstruction.
+    Uses PBKDF2-HMAC-SHA256 rather than a bare SHA-256.  Not because this is
+    password storage — the output is never used to verify anything, and the
+    input is a high-entropy credential blob — but because a plain digest of a
+    secret is indistinguishable from password hashing to a reader or a static
+    analyser (CodeQL ``py/weak-sensitive-data-hashing`` flagged exactly that),
+    and a slow KDF is strictly the more conservative choice at no practical
+    cost in a diagnostic command.  The truncation is what keeps the output
+    unusable for reconstruction.
     """
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:_DIGEST_CHARS]
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        value.encode("utf-8"),
+        _DIGEST_SALT,
+        _DIGEST_ITERATIONS,
+    ).hex()[:_DIGEST_CHARS]
 
 
 def describe(status: str, **extra: object) -> dict[str, object]:

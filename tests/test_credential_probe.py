@@ -12,6 +12,7 @@ Two concerns:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sys
@@ -54,6 +55,17 @@ class TestCredentialDigest:
         assert credential_probe.credential_digest(blob) == (
             credential_probe.credential_digest(blob)
         )
+
+    def test_digest_is_not_a_bare_sha256_of_the_credential(self) -> None:
+        """A plain digest of a secret trips CodeQL py/weak-sensitive-data-hashing.
+
+        Pinned so that "simplifying" this back to hashlib.sha256 fails here
+        rather than re-breaking the CodeQL check on a later PR. The property is
+        what matters, not the exact KDF, so this asserts only that the output
+        is *not* the bare digest.
+        """
+        bare = hashlib.sha256(SENTINEL.encode("utf-8")).hexdigest()[:12]
+        assert credential_probe.credential_digest(SENTINEL) != bare
 
     def test_describe_carries_status_and_extras(self) -> None:
         report = credential_probe.describe(credential_probe.PRESENT, length=7)

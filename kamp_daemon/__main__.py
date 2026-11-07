@@ -194,6 +194,21 @@ def main() -> None:
         help="Which error type to simulate.",
     )
 
+    # doctor-credentials subcommand
+    doctor_parser = subparsers.add_parser(
+        "doctor-credentials",
+        help=(
+            "Report where each stored credential lives (keychain vs plaintext"
+            " SQLite row). Read-only; prints no credential values."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit the report as JSON, for pasting into a bug report.",
+    )
+
     # rollback subcommand
     rollback_parser = subparsers.add_parser(
         "rollback",
@@ -274,6 +289,12 @@ def main() -> None:
 
     if command == "test-notify":
         _cmd_test_notify(getattr(args, "type"))
+        return
+
+    # Read-only diagnostic: must not open the library read-write, and must not
+    # need a loadable Config to run (a broken credential can break startup).
+    if command == "doctor-credentials":
+        _cmd_doctor_credentials(getattr(args, "as_json", False))
         return
 
     from kamp_core.library import LibraryIndex as _LibraryIndex
@@ -364,6 +385,136 @@ def _cmd_logout() -> None:
 
     logout()
     print("Logged out. The next sync will require re-authentication.")
+
+
+#: Services whose credentials live in the ``sessions`` table.
+_CREDENTIAL_SERVICES: tuple[str, ...] = ("bandcamp", "lastfm")
+
+
+def _credential_report() -> dict[str, object]:
+    """Collect a secret-free report of where each credential is stored.
+
+    Read-only throughout: the SQLite connection is opened ``mode=ro`` and the
+    keychain probes never write.  Opening read-only matters because there is no
+    dev/prod library split — the daemon this CLI shares code with resolves the
+    real ``library.db`` (KAMP-737) — so a diagnostic must be incapable of
+    touching it.
+    """
+    import sqlite3
+
+    from kamp_core import credential_probe
+
+    db_path = _state_dir() / "library.db"
+
+    try:
+        from kamp_core import macos_keychain as _mac_kc
+    except Exception:
+        _mac_kc = None  # type: ignore[assignment]
+
+    report: dict[str, object] = {
+        "db_path": str(db_path),
+        "db_exists": db_path.exists(),
+        "platform": sys.platform,
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "services": {},
+    }
+
+    # Lengths and digests in one pass. The digest is what makes a stale
+    # keychain item shadowing a newer plaintext row visible as a mismatch,
+    # rather than something to be inferred.
+    rows: dict[str, int | None] = {}
+    digests: dict[str, str] = {}
+    if db_path.exists():
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            for row in conn.execute("SELECT service, session_json FROM sessions"):
+                value = row["session_json"]
+                rows[row["service"]] = None if value is None else len(value)
+                if value is not None:
+                    digests[row["service"]] = credential_probe.credential_digest(value)
+        finally:
+            conn.close()
+
+    services: dict[str, object] = {}
+    for service in _CREDENTIAL_SERVICES:
+        entry: dict[str, object] = {
+            "db_row": (
+                "absent"
+                if service not in rows
+                else (
+                    "null (credential is in a secret store)"
+                    if rows[service] is None
+                    else "PLAINTEXT"
+                )
+            ),
+        }
+        if rows.get(service) is not None:
+            entry["db_row_length"] = rows[service]
+            entry["db_row_digest"] = digests.get(service)
+        if _mac_kc is not None:
+            entry["keychain"] = _mac_kc.credential_provenance("kamp", service)
+        services[service] = entry
+
+    report["services"] = services
+    return report
+
+
+def _cmd_doctor_credentials(as_json: bool) -> None:
+    """Print where each stored credential actually lives (KAMP-743).
+
+    Exists because two plaintext credential rows were found on disk that could
+    not be attributed: the warnings explaining them had long since rotated out
+    of the logs.  This reports *current* state instead of waiting for a
+    reproduction, and is the only way to get a trustworthy answer about the
+    Data Protection Keychain, which is readable only by the entitled helper in
+    a packaged build.
+    """
+    import json as _json
+
+    report = _credential_report()
+
+    if as_json:
+        print(_json.dumps(report, indent=2, default=str))
+        return
+
+    print(
+        f"kamp credential report  (platform={report['platform']}, "
+        f"frozen={report['frozen']})"
+    )
+    print(f"  db: {report['db_path']}")
+    if not report["db_exists"]:
+        print("  db: NOT FOUND — nothing to report")
+        return
+    print()
+
+    services = report["services"]
+    assert isinstance(services, dict)
+    for service, entry in services.items():
+        assert isinstance(entry, dict)
+        print(f"  {service}")
+        print(f"    sqlite row      : {entry['db_row']}", end="")
+        if "db_row_length" in entry:
+            print(f" ({entry['db_row_length']} bytes, digest {entry['db_row_digest']})")
+        else:
+            print()
+        keychain = entry.get("keychain")
+        if keychain is None:
+            print("    keychain        : n/a (not macOS)")
+        else:
+            assert isinstance(keychain, dict)
+            print(f"    implementation  : {keychain['implementation']}")
+            for store in ("dpc", "login_keychain"):
+                detail = keychain[store]
+                assert isinstance(detail, dict)
+                line = str(detail["status"])
+                if detail.get("digest"):
+                    line += f" ({detail['length']} bytes, digest {detail['digest']})"
+                elif detail.get("detail"):
+                    line += f" — {detail['detail']}"
+                label = "dpc" if store == "dpc" else "login keychain"
+                print(f"    {label:<16}: {line}")
+        print()
 
 
 _NOTIFY_SUBTITLES: dict[str, str] = {

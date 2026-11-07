@@ -25,8 +25,11 @@ import sys
 from ctypes import byref, c_int32, c_int64, c_uint32, c_void_p
 from ctypes.util import find_library
 from pathlib import Path
+from typing import Callable
 
 import keyring.errors
+
+from . import credential_probe as _probe_vocab
 
 if sys.platform != "darwin":
     raise ImportError("kamp_core.macos_keychain is macOS-only")
@@ -511,6 +514,78 @@ def delete_password(service: str, username: str) -> None:
             return
 
     _delete_raw(service, username, use_dpc=False)
+
+
+def backend_state() -> dict[str, object]:
+    """Return a secret-free description of which implementation is active.
+
+    Which of this module's two implementations is in play is decided once at
+    import time by :data:`_helper_path`, and it determines where a credential
+    lands: the helper writes the Data Protection Keychain, the ctypes fallback
+    ends up in the Login Keychain.  Nothing used to report that choice, so a
+    plaintext row could not be traced to the path that produced it (KAMP-743).
+    """
+    return {
+        "implementation": "helper" if _helper_path is not None else "ctypes",
+        "helper_path": _helper_path,
+        "dpc_unavailable": _dpc_unavailable,
+    }
+
+
+def _probe(reader: Callable[[], str | None]) -> dict[str, object]:
+    """Run *reader* and describe the outcome without retaining the value."""
+    try:
+        value = reader()
+    except keyring.errors.KeyringLocked as exc:
+        return _probe_vocab.describe(_probe_vocab.LOCKED, detail=str(exc))
+    except Exception as exc:
+        return _probe_vocab.describe(
+            _probe_vocab.ERROR, detail=f"{type(exc).__name__}: {exc}"
+        )
+    if value is None:
+        return _probe_vocab.describe(_probe_vocab.ABSENT)
+    return _probe_vocab.describe(
+        _probe_vocab.PRESENT,
+        length=len(value),
+        digest=_probe_vocab.credential_digest(value),
+    )
+
+
+def credential_provenance(service: str, username: str) -> dict[str, object]:
+    """Report which keychain holds *service*/*username*, revealing no values.
+
+    Read-only: writes nothing to either keychain.  Returns the active
+    implementation plus a per-store report for the Data Protection Keychain and
+    the Login Keychain, each carrying a status, and — when a credential is
+    found — its length and a truncated digest so the two can be compared with
+    each other and with the SQLite row.
+    """
+    dpc: dict[str, object]
+    if _helper_path is not None:
+        # The helper carries the entitlement, so its answer is authoritative.
+        dpc = _probe(lambda: _helper_get(service, username, login=False))
+    else:
+        probed = _probe(lambda: _read_raw(service, username, use_dpc=True))
+        if probed["status"] == _probe_vocab.PRESENT:
+            dpc = probed
+        else:
+            # Unentitled: "not found" and "not allowed to look" are the same
+            # answer here, so report neither as absence.  Keep what the raw
+            # read actually said, since the OSStatus is the diagnostic.
+            dpc = _probe_vocab.describe(
+                _probe_vocab.UNKNOWN_NO_ENTITLEMENT,
+                raw_probe=probed,
+            )
+
+    return {
+        **backend_state(),
+        "service": service,
+        "account": username,
+        "dpc": dpc,
+        "login_keychain": _probe(
+            lambda: _get_login_keychain_password(service, username)
+        ),
+    }
 
 
 def _get_login_keychain_password(service: str, username: str) -> str | None:

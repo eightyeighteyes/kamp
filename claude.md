@@ -202,6 +202,14 @@ Variables captured at daemon startup (e.g. `lib_path`, `lib_watcher`) are NOT au
 ## UI config refresh after config-changing events
 The server does NOT push config changes over WebSocket. After any event that changes server-side config (Bandcamp login, library path set, etc.), the UI store must explicitly call `loadConfig()` to pick up the new state. Without this, fields like `bandcamp.connected` stay stale from the initial mount, hiding UI elements that depend on them (e.g. the sync button).
 
+## Apple notarization stapling is a flaky network call — KAMP-752
+`xcrun stapler` fetches the issued notarization ticket from `api.apple-cloudkit.com`, and that call intermittently fails with `NSURLErrorDomain Code=-1005 "The network connection was lost."` and `Failed to staple your application with code: 68`. It has no relation to the build: **signing and notarization both succeed**, and stapling only attaches the ticket so Gatekeeper can validate *offline*. But it fails the `Build DMG` step, which skips DMG branding, verification and upload — a red build and no installer, from a transient on Apple's side.
+
+- **Do not reach for `notarize: false` to get a tighter retry.** electron-builder owns notarization via `notarize: true`, and `@electron/notarize` submits and staples in a single flow with no hook between the two. Scoping a retry to the staple alone means reimplementing release notarization by hand. Retry the whole step instead; an extra electron-builder + notarization cycle is ~5 min and the job allows 90.
+- **Make the retry conditional on the failure signature** (`Failed to staple`, `api.apple-cloudkit.com`, `code: 68`). An unconditional retry turns a real problem — expired certificate, bad `CSC_LINK`, wrong team ID — into three notarization cycles before it reports, which is how a 5-minute diagnosis becomes a 20-minute one.
+- **`set -o pipefail` is load-bearing** when capturing through `tee`: without it the pipeline reports `tee`'s success and the failure is swallowed. Use `grep -F` for the predicate, since `code: 68` is a literal and must not be read as a pattern.
+- A stapling failure is *not* evidence that signing is misconfigured. Check whether the pre-sign and certificate-import steps passed before investigating anything else.
+
 ## Building mpv from source in CI
 
 When building mpv from source, use the latest release tag (v0.41.0 as of 2026-04) — older tags are incompatible with Homebrew's current FFmpeg (8.x removed `FF_PROFILE_*` constants and `av_format_inject_global_side_data`).

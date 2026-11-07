@@ -25,18 +25,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # TEMPORARY (KAMP-743, do not merge): the arm64 leg is commented out
-          # because macos-14 no longer schedules — the job is cancelled after
-          # ~1s having run zero steps, where it succeeded on 2026-10-24. A
-          # cancelled matrix leg means `needs: build-bundle` is never satisfied,
-          # so sign-and-package is skipped and NO signed app is produced. This
-          # branch needs a signed x64 build to read the Data Protection
-          # Keychain. REVERT THIS BLOCK BEFORE OPENING THE PR; the real fix is
-          # re-pinning the arm64 runner, which changes the Xcode/Swift version
-          # behind the MACOSX_DEPLOYMENT_TARGET=13.0 guarantee and deserves its
-          # own ticket.
-          # - arch: arm64
-          #   runner: macos-14   # Apple Silicon (arm64) — Xcode 15 / Swift 5.10, compatible with macOS 14+
+          - arch: arm64
+            runner: macos-14   # Apple Silicon (arm64) — Xcode 15 / Swift 5.10, compatible with macOS 14+
           - arch: x64
             runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
@@ -352,9 +342,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # TEMPORARY (KAMP-743, do not merge) — see build-bundle above.
-          # - arch: arm64
-          #   runner: macos-14
+          - arch: arm64
+            runner: macos-14
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}

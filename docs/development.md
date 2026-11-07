@@ -69,6 +69,35 @@ macOS/Linux, `%LOCALAPPDATA%\kamp` on Windows); Electron writes to
 
 Memory is sampled every 60s and the renderer probe every 10s.
 
+### Where a credential is stored
+
+`kamp doctor-credentials` reports, per service, whether the `sessions.session_json`
+column is NULL (the credential is in a secret store) or **plaintext**, and which
+keychain holds the copy. Add `--json` for a form that pastes into a bug report.
+It is read-only — the library is opened `mode=ro` and nothing is written to
+either keychain — and it prints no credential values, only lengths and a
+truncated digest. Matching digests across two stores mean they hold the same
+value; differing digests mean one is stale.
+
+```bash
+poetry run kamp doctor-credentials
+```
+
+Two things to know before trusting the output:
+
+- **`dpc: unknown (no entitlement)` is the honest answer in dev, not a bug.**
+  The Data Protection Keychain is only enumerable by a binary carrying
+  `keychain-access-groups`, so an unentitled read cannot tell "absent" from "not
+  allowed to look". Only a positive hit, or an answer from the bundled
+  `kamp-keychain-helper`, is trustworthy. Reporting that as absence is what
+  misdirected the first pass at KAMP-743 into thinking a credential had vanished.
+- **The two macOS implementations write to different keychains.** In dev
+  (`sys.frozen` false) the module falls back to ctypes and the credential lands
+  in the **Login Keychain**; in a packaged build the helper writes the **Data
+  Protection Keychain**. The report's `implementation` line says which one ran.
+  An unsigned local build cannot validate the entitlement, so `get_dpc` fails
+  there and only a signed/CI build answers the DPC question.
+
 ### Album art cache
 
 `GET /api/v1/album-art` extracts each album's embedded art once and then serves it

@@ -569,7 +569,58 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEBUG: electron-builder
-        run: npm run build:mac -- --${{ matrix.arch }}
+        # Retry only an Apple-side stapling outage (KAMP-752). Signing and
+        # notarization both succeed in that failure; `xcrun stapler` then cannot
+        # reach api.apple-cloudkit.com to fetch the issued ticket and exits 68,
+        # which fails this step and skips DMG branding, verification and upload.
+        # Observed twice ~8 minutes apart in run 42393528272, and re-running by
+        # hand has always eventually worked.
+        #
+        # The retry deliberately wraps the whole electron-builder invocation
+        # rather than the staple alone: electron-builder owns notarization via
+        # `notarize: true` (electron-builder.yml) and @electron/notarize submits
+        # and staples in one flow, with no hook between. Scoping the retry
+        # tighter would mean reimplementing release notarization by hand to work
+        # around a transient — a bad trade.
+        #
+        # It is conditional on the failure signature so a genuine problem (an
+        # expired certificate, a bad CSC_LINK, the wrong team ID) still fails on
+        # the first attempt instead of burning three notarization cycles. Output
+        # is tee'd so the DEBUG=electron-builder detail survives for every
+        # attempt rather than being swallowed by the capture.
+        run: |
+          set -o pipefail
+          attempts=3
+          log="$RUNNER_TEMP/build-mac.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            echo "::group::Build DMG (attempt $attempt/$attempts)"
+            rc=0
+            npm run build:mac -- --${{ matrix.arch }} 2>&1 | tee "$log" || rc=$?
+            echo "::endgroup::"
+
+            if [ "$rc" -eq 0 ]; then
+              [ "$attempt" -gt 1 ] && echo "→ succeeded on attempt $attempt"
+              exit 0
+            fi
+
+            # grep -F: these are literal strings, and "code: 68" must not be
+            # read as a pattern. -q so the match itself prints nothing.
+            if grep -qF -e 'Failed to staple' \
+                        -e 'api.apple-cloudkit.com' \
+                        -e 'code: 68' "$log"; then
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "::warning::Apple stapling unavailable (exit $rc) — retrying in 60s (attempt $attempt/$attempts)"
+                sleep 60
+                continue
+              fi
+              echo "::error::Apple stapling still unavailable after $attempts attempts"
+              exit "$rc"
+            fi
+
+            echo "::error::Build DMG failed for a non-stapling reason (exit $rc) — not retrying"
+            exit "$rc"
+          done
         working-directory: kamp_ui
 
       - name: Brand the DMG install target

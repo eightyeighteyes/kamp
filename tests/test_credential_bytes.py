@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import keyring.errors
@@ -328,12 +329,19 @@ class TestBackupResidue:
         raw = backups[0].read_bytes()
         assert raw.count(SENTINEL.encode("utf-8")) == 0
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX file-permission semantics (chmod / st_mode 0o600) do not "
+        "apply on Windows; see KAMP-281 for Windows ACL hardening follow-up",
+    )
     def test_backup_file_is_owner_only(self, tmp_path: Path) -> None:
-        """The destination is created outside _make_conn's umask guard.
+        """The destination used to be created outside _make_conn's umask guard.
 
-        Observed backups are 0600, but nothing in the code enforces it -- under
-        a 022 umask a fresh sqlite file is created 0644, so the mode is
-        environment-dependent rather than guaranteed.
+        Nothing enforced the mode, so it followed the ambient umask: under the
+        common 022 a fresh sqlite file is created 0644, which is what this test
+        found before the fix. The backup now inherits the same umask guard as
+        the live DB and is chmod'd explicitly, so the mode is guaranteed rather
+        than environment-dependent.
         """
         db_path = tmp_path / "library.db"
         index = LibraryIndex(db_path)

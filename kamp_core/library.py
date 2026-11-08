@@ -148,6 +148,11 @@ _SCHEMA_VERSION = 65
 #: drop the rows and the freshness marker together — see its docstring.
 _WISHLIST_WALKED_AT = "bandcamp.wishlist_walked_at"
 
+#: Settings key recording that the one-off credential residue scrub has run
+#: (KAMP-748). Versioned so a future change of mechanism can re-run it on
+#: installs that already completed this one.
+_CREDENTIAL_SCRUB_MARKER = "credentials.residue_scrubbed_v1"
+
 
 class NoStreamableVersionError(Exception):
     """Raised by remove_download when the album cannot fall back to streaming.
@@ -1311,6 +1316,22 @@ class LibraryIndex:
         # Enforce referential integrity so orphaned album_id / sale_item_id
         # FKs are caught at write time rather than silently ignored.
         conn.execute("PRAGMA foreign_keys=ON")
+        # Zero deleted content instead of merely unlinking it (KAMP-748).
+        #
+        # This is not redundant with the default. SQLite defaults to FAST here,
+        # which zeroes freed space only within pages it is rewriting anyway; it
+        # deliberately skips pages freed *whole* onto the freelist, to avoid the
+        # extra I/O. Measured: under FAST, a credential removed by DELETE or by
+        # UPDATE..NULL is gone once the WAL is checkpointed, but one removed by
+        # DROP TABLE survives -- and the v11->v12 migration below drops a
+        # `sessions` table full of plaintext credentials. That is what left
+        # credential bytes in freed pages of a real user's library.
+        #
+        # ON makes the DROP TABLE case clean. Set globally rather than only
+        # around the credential paths precisely because the leak came from a
+        # migration, not from `clear_session`: a narrowly scoped pragma would
+        # not have prevented it, and will not prevent the next one.
+        conn.execute("PRAGMA secure_delete=ON")
         return conn
 
     @property
@@ -3310,15 +3331,67 @@ class LibraryIndex:
         Connection.backup copies consistently where a plain file copy could miss
         un-checkpointed WAL. Best-effort: on failure, log and return False so the
         caller can abort the mutation rather than run it without a restore point.
+
+        The snapshot is stripped of credentials before it is closed (KAMP-748).
+        `Connection.backup` is a page-level copy, so it carries freelist pages
+        too -- meaning a backup taken any time after a plaintext credential
+        existed can contain it even when the live row is already NULL. Backups
+        are uniquely named and never pruned (KAMP-737), so every one of them is
+        permanent. None of the nine existing `_backup_db` call sites is a
+        credential path: the leak is the inverse, an unrelated migration heal
+        snapshotting a database that happens to hold a live credential row.
+
+        Scrubbing the destination rather than skipping the backup is deliberate.
+        KAMP-737's forensics worked only because a `.bak-*` had survived, and
+        the docstring contract above is that callers abort without a restore
+        point -- so "don't take the backup" would disable heals. A restore point
+        does not need the credential: the keychain has it, and if it does not,
+        the user logs in again.
         """
         ts = _time.strftime("%Y%m%d-%H%M%S")
         backup_path = self._db_path.with_name(f"{self._db_path.name}.bak-{ts}")
         try:
-            dest = sqlite3.connect(str(backup_path))
+            # Create under the same restrictive umask _make_conn uses, so the
+            # snapshot is 0600 rather than inheriting the ambient umask (which
+            # yields 0644 under the common 022).
+            old_umask = os.umask(0o077)
+            try:
+                dest = sqlite3.connect(str(backup_path))
+            finally:
+                os.umask(old_umask)
             with dest:
                 self._conn.backup(dest)
+            # NULL then VACUUM: NULL unlinks the value, VACUUM is what removes
+            # the bytes, including any the page-level copy brought over in
+            # freed pages. secure_delete on the destination is not enough --
+            # it cannot reach pages that were already free in the source.
+            dest.execute("UPDATE sessions SET session_json = NULL")
+            dest.commit()
+            # The copy inherits the source's WAL mode, so the scrub above and
+            # the VACUUM below would land in a `.bak-*-wal` sidecar beside the
+            # snapshot -- putting the credential right back next to the file we
+            # just cleaned. Switching the snapshot to a rollback journal keeps
+            # it a single self-contained file, and incidentally fixes the
+            # KAMP-737 complaint that a WAL-mode backup needs `immutable=1` to
+            # open because it has no `-shm` beside it.
+            dest.execute("PRAGMA journal_mode=DELETE")
+            dest.execute("VACUUM")
+            dest.commit()
             dest.close()
-            logger.info("%s: backed up library to %s", label, backup_path)
+            # Switching to a rollback journal removes the `-wal` but leaves the
+            # `-shm` that the inherited WAL mode created. It holds page numbers
+            # and hashes rather than page content, so it is not a leak, but a
+            # snapshot should be a single file -- the stray sidecar is what
+            # makes a `.bak-*` awkward to open later.
+            for suffix in ("-wal", "-shm"):
+                backup_path.with_name(backup_path.name + suffix).unlink(missing_ok=True)
+            # Enforce the mode rather than trusting the umask dance above.
+            backup_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            logger.info(
+                "%s: backed up library to %s (credentials stripped)",
+                label,
+                backup_path,
+            )
             return True
         except Exception as exc:  # pragma: no cover - backup is best-effort
             logger.warning("%s: backup failed (%s); skipping heal", label, exc)
@@ -4461,6 +4534,46 @@ class LibraryIndex:
             (service, session_json, _time.time()),
         )
         self._conn.commit()
+        # Checkpoint on the write path too, not just on clear (KAMP-748).
+        #
+        # The UPSERT replaces session_json in place, so the *previous*
+        # credential's page image is left in the WAL. Ordinary (PASSIVE)
+        # checkpointing recycles those frames only as new frames are appended,
+        # which is neither prompt nor guaranteed -- a live install was observed
+        # with a 1.2 MB WAL four hours older than its last checkpoint. Every
+        # login writes the session at least twice (__main__.py fetches the
+        # username and persists again), so this path runs more often than
+        # clear_session does.
+        self._checkpoint_wal("set_session")
+
+    def _checkpoint_wal(self, label: str) -> None:
+        """TRUNCATE-checkpoint the WAL, warning if another reader blocked it.
+
+        `PRAGMA wal_checkpoint` returns `(busy, log, checkpointed)` and reports
+        `busy=1` *without raising* when another connection holds a read lock.
+        Both credential paths ignored that, so a checkpoint that silently did
+        nothing left the credential sitting in the WAL while the code believed
+        it had been truncated.
+
+        The daemon makes this reachable: connections are per-thread (KAMP-720)
+        and sync/pipeline work runs in separate processes against the same file,
+        so a logout concurrent with a sync can hit it. No single-threaded test
+        can exercise the busy branch -- it always returns (0, 0, 0) -- so this
+        is deliberately a warning rather than a retry loop; retrying under an
+        unknown reader would just block the caller.
+        """
+        row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if row is not None and row[0]:
+            logger.warning(
+                "%s: WAL checkpoint was blocked by another reader"
+                " (busy=%s log=%s checkpointed=%s); credential bytes may remain"
+                " in %s-wal until a later checkpoint succeeds",
+                label,
+                row[0],
+                row[1],
+                row[2],
+                self._db_path.name,
+            )
 
     def clear_session(self, service: str) -> None:
         """Remove the session entry for *service* from keychain and DB."""
@@ -4499,8 +4612,89 @@ class LibraryIndex:
         self._conn.execute("DELETE FROM sessions WHERE service = ?", (service,))
         self._conn.commit()
         # Truncate the WAL so deleted credential data (cookies, session keys) is
-        # not recoverable from the WAL file after disconnect.
-        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # not recoverable from the WAL file after disconnect.  Via the shared
+        # helper so a checkpoint blocked by another reader is reported rather
+        # than assumed to have worked (KAMP-748).
+        self._checkpoint_wal("clear_session")
+
+    def _vacuum(self) -> None:
+        """Rebuild the database file in place. Separate so tests can fail it."""
+        self._conn.execute("VACUUM")
+        self._conn.commit()
+
+    def scrub_credential_residue(self) -> bool:
+        """One-off erase of credential bytes already in freed pages (KAMP-748).
+
+        `secure_delete=ON` stops *new* residue; it cannot reach bytes that were
+        already in freed pages when it was turned on. Only rebuilding the file
+        removes those, and every macOS install carries some: the v11->v12
+        migration dropped a `sessions` table full of plaintext credentials under
+        the FAST default, which does not zero whole freed pages.
+
+        Returns True if the scrub ran, False if it was already done or could
+        not run. Deliberately *not* called from `__init__`: `LibraryIndex` is
+        constructed in spawn-mode sync and pipeline subprocess workers, so a
+        VACUUM there would fire on every sync and contend with the daemon's own
+        connections for the exclusive lock (`timeout=30`, so a 30s stall then
+        "database is locked"). The daemon calls this once at startup instead.
+
+        No `_backup_db` first, which inverts the usual heal convention. A backup
+        would be a fresh permanent copy of exactly the bytes being erased. The
+        risk that normally justifies a restore point is absent here: VACUUM
+        rewrites the file but preserves every live row, and on failure SQLite
+        rolls back and leaves the original intact.
+        """
+        if self.get_setting(_CREDENTIAL_SCRUB_MARKER) is not None:
+            return False
+
+        try:
+            size = self._db_path.stat().st_size if self._db_path.exists() else 0
+        except OSError:  # pragma: no cover - stat failure is not actionable
+            size = 0
+
+        # VACUUM builds the replacement before discarding the original, and in
+        # WAL mode it writes the whole database through the WAL, so peak usage
+        # is roughly twice the file. Checked rather than risked: running out of
+        # space mid-rebuild on a multi-GB library is a bad way to find out.
+        import shutil
+
+        try:
+            free = shutil.disk_usage(self._db_path.parent).free
+        except OSError:  # pragma: no cover - unusual filesystem
+            free = 0
+        if size and free < size * 2:
+            logger.warning(
+                "credential residue scrub skipped: needs ~%d bytes free, has %d."
+                " Will retry on the next start.",
+                size * 2,
+                free,
+            )
+            return False
+
+        try:
+            self._vacuum()
+            # Without this the WAL stays at its peak -- VACUUM pushes the whole
+            # database through it -- so the footprint silently doubles and
+            # stays doubled.
+            self._checkpoint_wal("credential residue scrub")
+        except sqlite3.OperationalError as exc:
+            # Almost always lock contention with another process holding the
+            # database. The marker stays unset so the next start retries.
+            logger.warning(
+                "credential residue scrub could not run (%s);"
+                " will retry on the next start",
+                exc,
+            )
+            return False
+
+        self.set_setting(_CREDENTIAL_SCRUB_MARKER, str(int(_time.time())))
+        logger.info(
+            "Credential residue scrub complete: %s rebuilt (was %d bytes, now %d)",
+            self._db_path.name,
+            size,
+            self._db_path.stat().st_size if self._db_path.exists() else 0,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Bandcamp collection (KAMP-381)

@@ -477,3 +477,43 @@ class TestFallbackWarningsNameTheBackend:
         assert "readback_len=n/a" in caplog.text
         assert "payload_len=" in caplog.text
         index.close()
+
+
+class TestCredentialReportSqliteFacts:
+    """The report must carry the facts that decide byte-level erasure (KAMP-748).
+
+    Whether a removed credential leaves bytes in the file depends on
+    ``PRAGMA secure_delete``, whose default is build-dependent. The dev venv
+    reports a benign default, so these fields only tell us anything when
+    ``doctor-credentials`` is run from a packaged build — which is the
+    environment the plaintext fallback actually happened in.
+    """
+
+    def test_report_includes_sqlite_version_and_secure_delete_default(self) -> None:
+        import sqlite3
+
+        from kamp_daemon.__main__ import _credential_report
+
+        report = _credential_report()
+
+        assert report["sqlite_version"] == sqlite3.sqlite_version
+        # 2=FAST (the untouched default on every build measured), 1=ON, 0=OFF.
+        assert report["secure_delete_default"] in (0, 1, 2)
+
+    def test_default_is_read_before_anything_sets_the_pragma(self) -> None:
+        """LibraryIndex sets ON; the report must still show the build default.
+
+        Reading the value off a connection the app had already configured would
+        make this field always say "ON" and answer the wrong question entirely.
+        """
+        import sqlite3
+
+        from kamp_daemon.__main__ import _credential_report
+
+        probe = sqlite3.connect(":memory:")
+        try:
+            build_default = probe.execute("PRAGMA secure_delete").fetchone()[0]
+        finally:
+            probe.close()
+
+        assert _credential_report()["secure_delete_default"] == build_default

@@ -191,6 +191,80 @@ class TestCredentialProvenance:
         result = kc.credential_provenance("kamp", "bandcamp")
         assert SENTINEL not in json.dumps(result, default=str)
 
+    def test_an_unusable_helper_reports_ctypes_not_helper(
+        self, mocker: MockerFixture
+    ) -> None:
+        """The packaged-build case: the binary exists and AMFI killed it.
+
+        KAMP-749 latches ``_helper_unusable`` the first time the helper cannot
+        run, and in every released build it does latch, because the restricted
+        ``keychain-access-groups`` entitlement is unauthorised (KAMP-753).
+        Deriving the implementation from ``_helper_path`` alone would name the
+        Data Protection Keychain while the credential actually went to the Login
+        Keychain — the exact misattribution this report exists to prevent.
+        """
+        from kamp_core import macos_keychain as kc
+
+        mocker.patch.object(kc, "_helper_path", "/fake/kamp-keychain-helper")
+        mocker.patch.object(kc, "_helper_unusable", True)
+        mocker.patch.object(kc, "_read_raw", return_value=None)
+        mocker.patch.object(kc, "_get_login_keychain_password", return_value=None)
+
+        result = kc.credential_provenance("kamp", "bandcamp")
+
+        assert result["implementation"] == "ctypes"
+        assert result["helper_unusable"] is True
+        assert result["helper_path"] == "/fake/kamp-keychain-helper"
+
+    def test_a_helper_that_cannot_run_is_unknown_not_an_error(
+        self, mocker: MockerFixture
+    ) -> None:
+        """``_HelperUnusable`` is not an answer about the credential.
+
+        Left to ``_probe``'s broad ``except Exception`` it would be described as
+        ERROR, which reads as "the store reported a problem" when in fact the
+        store was never asked. It has to come out as UNKNOWN, with the signal
+        or errno kept as the diagnostic.
+        """
+        from kamp_core import macos_keychain as kc
+
+        mocker.patch.object(kc, "_helper_path", "/fake/kamp-keychain-helper")
+        mocker.patch.object(kc, "_helper_unusable", False)
+        mocker.patch.object(
+            kc,
+            "_helper_get",
+            side_effect=kc._HelperUnusable("killed by signal 9"),
+        )
+        mocker.patch.object(kc, "_read_raw", return_value=None)
+        mocker.patch.object(kc, "_get_login_keychain_password", return_value=None)
+
+        dpc = kc.credential_provenance("kamp", "bandcamp")["dpc"]
+        assert isinstance(dpc, dict)
+        assert dpc["status"] == credential_probe.UNKNOWN_NO_ENTITLEMENT
+        assert dpc["status"] != credential_probe.ERROR
+        assert "signal 9" in str(dpc["helper_error"])
+
+    def test_a_dead_helper_still_trusts_a_positive_unentitled_hit(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Falling through to the ctypes read is worth doing, not just polite.
+
+        An unentitled "not found" proves nothing, but an unentitled *hit* is a
+        real credential — so a dead helper must not short-circuit the report
+        into UNKNOWN when the value is sitting right there.
+        """
+        from kamp_core import macos_keychain as kc
+
+        mocker.patch.object(kc, "_helper_path", "/fake/kamp-keychain-helper")
+        mocker.patch.object(kc, "_helper_unusable", True)
+        mocker.patch.object(kc, "_read_raw", return_value=SENTINEL)
+        mocker.patch.object(kc, "_get_login_keychain_password", return_value=None)
+
+        dpc = kc.credential_provenance("kamp", "bandcamp")["dpc"]
+        assert isinstance(dpc, dict)
+        assert dpc["status"] == credential_probe.PRESENT
+        assert dpc["digest"] == credential_probe.credential_digest(SENTINEL)
+
 
 class TestCredentialBackendId:
     """The id has to describe the store that will actually service the call.
@@ -215,6 +289,53 @@ class TestCredentialBackendId:
         backend_id = library._credential_backend_id()
         assert backend_id != "keyring"
         assert "fail.Keyring" in backend_id
+
+    def test_reports_the_helper_latch_so_ctypes_is_not_read_as_dev(
+        self, mocker: MockerFixture
+    ) -> None:
+        """``impl=ctypes`` means two different things after KAMP-749.
+
+        In dev there is no helper; in a packaged build there is one and AMFI
+        killed it. The warning has to distinguish them, or a plaintext row from
+        a released build looks like it came from a developer's machine.
+        """
+
+        class StubKc:
+            @staticmethod
+            def backend_state() -> dict[str, object]:
+                return {
+                    "implementation": "ctypes",
+                    "helper_path": "/fake/kamp-keychain-helper",
+                    "helper_unusable": True,
+                    "dpc_unavailable": True,
+                }
+
+        mocker.patch("kamp_core.library._mac_kc", StubKc)
+
+        backend_id = library._credential_backend_id()
+        assert "impl=ctypes" in backend_id
+        assert "helper_unusable=True" in backend_id
+
+    def test_omits_the_helper_latch_when_there_is_no_helper(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Dev: the latch describes nothing, so it is noise in every log line."""
+
+        class StubKc:
+            @staticmethod
+            def backend_state() -> dict[str, object]:
+                return {
+                    "implementation": "ctypes",
+                    "helper_path": None,
+                    "helper_unusable": False,
+                    "dpc_unavailable": True,
+                }
+
+        mocker.patch("kamp_core.library._mac_kc", StubKc)
+
+        backend_id = library._credential_backend_id()
+        assert "impl=ctypes" in backend_id
+        assert "helper_unusable" not in backend_id
 
     def test_names_the_real_backend_when_one_exists(
         self, mocker: MockerFixture

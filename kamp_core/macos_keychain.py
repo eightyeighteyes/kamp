@@ -19,12 +19,14 @@ This module is macOS-only. Callers must guard with sys.platform.
 from __future__ import annotations
 
 import ctypes
+import logging
 import subprocess
 import sys
+import threading
 from ctypes import byref, c_int32, c_int64, c_uint32, c_void_p
 from ctypes.util import find_library
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
 
 import keyring.errors
 
@@ -36,6 +38,8 @@ if sys.platform != "darwin":
 # ---------------------------------------------------------------------------
 # Helper binary discovery
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 _OS_STATUS_SUCCESS = 0
 _ERR_SEC_ITEM_NOT_FOUND = -25300
@@ -67,6 +71,31 @@ def _find_helper() -> str | None:
 # Resolved once at import time. None → use ctypes fallback.
 _helper_path: str | None = _find_helper()
 
+# Set when the helper cannot be executed at all, as opposed to running and
+# returning an error. Latched for the process lifetime so we stop paying a
+# subprocess spawn that is guaranteed to die, mirroring _dpc_unavailable below.
+#
+# KAMP-749: this is not hypothetical. `keychain-access-groups` is a *restricted*
+# entitlement, and AMFI will not honour it without a matching provisioning
+# profile; the app bundle has none, so the kernel SIGKILLs the helper at exec in
+# every released build ("Disallowing com.kamp.app because no eligible
+# provisioning profiles found", AMFI error -413). Before this latch the packaged
+# path returned the helper's failure straight to the caller, and set_session
+# then wrote the credential to SQLite in plaintext -- with no second attempt,
+# because get_password/set_password delegated to the helper unconditionally.
+_helper_unusable: bool = False
+
+
+class _HelperUnusable(Exception):
+    """The helper could not be run — fall through to the ctypes path.
+
+    Distinct from a `keyring.errors.KeyringError`, which means the helper *ran*
+    and reported something (not found, locked, internal error). That answer is
+    authoritative and must be passed to the caller; this exception means we
+    learned nothing and should ask a different mechanism.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Helper-based implementation (built .app)
 # ---------------------------------------------------------------------------
@@ -75,14 +104,53 @@ _helper_path: str | None = _find_helper()
 def _run_helper(
     op: str, service: str, username: str, password: str | None = None
 ) -> tuple[int, str]:
-    """Invoke the helper binary and return (exit_code, stdout)."""
+    """Invoke the helper binary and return (exit_code, stdout).
+
+    Raises :class:`_HelperUnusable` when the helper could not run at all, and
+    :class:`keyring.errors.KeyringLocked` when it ran but was still waiting on
+    the user. Neither ``subprocess.TimeoutExpired`` nor ``OSError`` is a
+    ``keyring.errors`` subclass, so before KAMP-749 both escaped
+    ``set_session``'s ``except keyring.errors.KeyringError`` and turned the
+    bandcamp login-complete handler into an HTTP 422 — the same class of bug
+    KAMP-282 fixed for the Windows branch.
+    """
+    global _helper_unusable
     assert _helper_path is not None
-    result = subprocess.run(
-        [_helper_path, op, service, username],
-        input=(password + "\n").encode("utf-8") if password is not None else None,
-        capture_output=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            [_helper_path, op, service, username],
+            input=(password + "\n").encode("utf-8") if password is not None else None,
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Reading an *existing* Login Keychain item from a binary the item's ACL
+        # does not trust raises a modal keychain prompt, which blocks for the
+        # full timeout when nobody answers it. The store is reachable and the
+        # answer is simply pending, so this is Locked rather than unusable — and
+        # deliberately does not latch, because the next call may well be
+        # answered. get_session already retries KeyringLocked with backoff.
+        raise keyring.errors.KeyringLocked(
+            f"kamp-keychain-helper {op} timed out after 10s"
+            " (a keychain prompt is probably waiting for the user)"
+        ) from exc
+    except OSError as exc:
+        # Cannot exec at all: missing, wrong architecture (Errno 86 "Bad CPU
+        # type" when a Rosetta process spawns a native arm64 child), or not
+        # executable. Nothing about the keychain was learned.
+        _helper_unusable = True
+        raise _HelperUnusable(f"cannot exec kamp-keychain-helper: {exc}") from exc
+
+    if result.returncode < 0:
+        # Killed by a signal. -9 (SIGKILL) is what AMFI does when a restricted
+        # entitlement is unauthorised; the process never ran, so this says
+        # nothing about the credential.
+        _helper_unusable = True
+        raise _HelperUnusable(
+            f"kamp-keychain-helper {op} killed by signal {-result.returncode}"
+            " (restricted entitlement not authorised — see KAMP-753)"
+        )
+
     return result.returncode, result.stdout.decode("utf-8")
 
 
@@ -106,6 +174,27 @@ def _helper_set(service: str, username: str, password: str) -> None:
         raise keyring.errors.KeyringLocked("Keychain locked (set_dpc)")
     raise keyring.errors.KeyringError(
         f"kamp-keychain-helper set_dpc failed (exit {code})"
+    )
+
+
+def _use_helper() -> bool:
+    """True when the helper is present and has not already proved unrunnable."""
+    return _helper_path is not None and not _helper_unusable
+
+
+def _note_fallback(op: str, exc: Exception) -> None:
+    """Record that the helper could not run and the ctypes path is taking over.
+
+    Logged at WARNING unconditionally rather than behind a diagnostics gate: the
+    whole reason KAMP-749 went unnoticed for months is that a credential quietly
+    took a different path than intended and nothing said so.
+    """
+    logger.warning(
+        "macos_keychain: helper unusable for %s (%s); falling back to the"
+        " Login Keychain via ctypes. The Data Protection Keychain is"
+        " unavailable until a provisioning profile authorises it (KAMP-753).",
+        op,
+        exc,
     )
 
 
@@ -241,7 +330,100 @@ def _raise_for_status(status: int) -> None:
     raise keyring.errors.KeyringError(f"Security framework error (OSStatus {status})")
 
 
+#: Matches the helper's ``subprocess.run(timeout=10)`` so both paths give up
+#: after the same wait, rather than one of them waiting forever.
+_CTYPES_TIMEOUT_SECONDS = 10.0
+
+#: Cap on keychain calls still blocked on a dialog. A Python thread cannot be
+#: cancelled, so a timed-out call keeps waiting until the user answers or
+#: dismisses the prompt; past this many we refuse immediately instead of
+#: letting them accumulate.
+_MAX_PENDING_CTYPES_CALLS = 4
+
+_pending_ctypes_calls = 0
+_pending_lock = threading.Lock()
+
+_T = TypeVar("_T")
+
+
+def _call_with_timeout(label: str, fn: Callable[[], _T]) -> _T:
+    """Run *fn* on a daemon thread, raising KeyringLocked if it outlasts the timeout.
+
+    Security.framework blocks until the user answers, with no timeout of its
+    own. Reading an *existing* Login Keychain item from a binary the item's ACL
+    does not trust raises a modal prompt — and Login Keychain ACLs here are
+    binary-hash based (TASK-167), so every new build is untrusted until the user
+    clicks Allow.
+
+    Unbounded, that hangs whichever daemon thread touched the keychain, forever:
+    a Bandcamp login or a playback lookahead simply never returns. Measured at
+    over two minutes against a signed build before this guard, ending only when
+    the dialog was answered by hand.
+
+    The prompt itself is wanted — answering it once makes the credential
+    readable until the next build. Only the unbounded wait is the bug.
+    """
+    global _pending_ctypes_calls
+
+    with _pending_lock:
+        if _pending_ctypes_calls >= _MAX_PENDING_CTYPES_CALLS:
+            raise keyring.errors.KeyringLocked(
+                f"keychain {label}: {_pending_ctypes_calls} calls already waiting"
+                " on an unanswered keychain prompt; refusing to add another"
+            )
+        _pending_ctypes_calls += 1
+
+    # Lists rather than a dict[str, Any]: a one-element list is fully typed, so
+    # neither the value nor the error needs a cast, and an *appended* None is
+    # still distinguishable from "the runner never got that far" (both
+    # _read_raw and _delete_raw can legitimately produce None).
+    done: list[_T] = []
+    failed: list[BaseException] = []
+
+    def _runner() -> None:
+        global _pending_ctypes_calls
+        try:
+            done.append(fn())
+        except BaseException as exc:  # re-raised on the calling thread below
+            failed.append(exc)
+        finally:
+            with _pending_lock:
+                _pending_ctypes_calls -= 1
+
+    thread = threading.Thread(target=_runner, name=f"keychain-{label}", daemon=True)
+    thread.start()
+    thread.join(_CTYPES_TIMEOUT_SECONDS)
+
+    if thread.is_alive():
+        # Still blocked on the dialog. The thread keeps running (it cannot be
+        # killed) and will decrement the counter when it eventually unblocks.
+        raise keyring.errors.KeyringLocked(
+            f"keychain {label} timed out after {_CTYPES_TIMEOUT_SECONDS:.0f}s"
+            " (a keychain prompt is probably waiting for the user)"
+        )
+
+    if failed:
+        raise failed[0]
+    return done[0]
+
+
 def _read_raw(service: str, username: str, use_dpc: bool) -> str | None:
+    """Timeout-bounded Login Keychain / DPC read."""
+    return _call_with_timeout(
+        f"read({service}/{username})",
+        lambda: _read_raw_blocking(service, username, use_dpc),
+    )
+
+
+def _delete_raw(service: str, username: str, use_dpc: bool) -> None:
+    """Timeout-bounded Login Keychain / DPC delete."""
+    _call_with_timeout(
+        f"delete({service}/{username})",
+        lambda: _delete_raw_blocking(service, username, use_dpc),
+    )
+
+
+def _read_raw_blocking(service: str, username: str, use_dpc: bool) -> str | None:
     q_kwargs: dict[str, str | bool | c_void_p] = dict(
         kSecClass="kSecClassGenericPassword",
         kSecMatchLimit="kSecMatchLimitOne",
@@ -262,7 +444,7 @@ def _read_raw(service: str, username: str, use_dpc: bool) -> str | None:
     )
 
 
-def _delete_raw(service: str, username: str, use_dpc: bool) -> None:
+def _delete_raw_blocking(service: str, username: str, use_dpc: bool) -> None:
     q_kwargs: dict[str, str | bool | c_void_p] = dict(
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,
@@ -290,8 +472,13 @@ def get_password(service: str, username: str) -> str | None:
     Returns ``None`` if the item is absent.
     Raises ``keyring.errors.KeyringLocked`` when the keychain is locked.
     """
-    if _helper_path is not None:
-        return _helper_get(service, username, login=False)
+    if _use_helper():
+        try:
+            return _helper_get(service, username, login=False)
+        except _HelperUnusable as exc:
+            _note_fallback("get", exc)
+            # Fall through to ctypes below rather than reporting absence: the
+            # helper never ran, so it learned nothing about this credential.
 
     global _dpc_unavailable
     if not _dpc_unavailable:
@@ -325,8 +512,14 @@ def set_password(service: str, username: str, password: str) -> None:
     In the built .app delegates to kamp-keychain-helper (DPC).
     In dev falls back to ctypes / Login Keychain.
     """
-    if _helper_path is not None:
-        return _helper_set(service, username, password)
+    if _use_helper():
+        try:
+            return _helper_set(service, username, password)
+        except _HelperUnusable as exc:
+            _note_fallback("set", exc)
+            # Fall through: writing via ctypes puts the credential in the Login
+            # Keychain, which is the whole point — the alternative is the
+            # caller storing it in SQLite as plaintext.
 
     global _dpc_unavailable
     if not _dpc_unavailable:
@@ -360,6 +553,16 @@ def set_password(service: str, username: str, password: str) -> None:
             _raise_for_status(status)
             return
 
+    # Bounded: updating an *existing* Login Keychain item prompts just as
+    # reading one does, and the ctypes call would otherwise block forever.
+    _call_with_timeout(
+        f"write({service}/{username})",
+        lambda: _write_login_keychain_blocking(service, username, password),
+    )
+
+
+def _write_login_keychain_blocking(service: str, username: str, password: str) -> None:
+    """SecItemUpdate-then-Add against the Login Keychain. May block on a prompt."""
     find_q = _make_dict(
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,
@@ -385,10 +588,16 @@ def delete_password(service: str, username: str) -> None:
     In dev falls back to ctypes / Login Keychain.
     Silently ignores the case where the item is absent in either keychain.
     """
-    if _helper_path is not None:
-        _helper_delete(service, username, login=False)
-        _helper_delete(service, username, login=True)
-        return
+    if _use_helper():
+        try:
+            _helper_delete(service, username, login=False)
+            _helper_delete(service, username, login=True)
+            return
+        except _HelperUnusable as exc:
+            _note_fallback("delete", exc)
+            # Fall through, so a disconnect still removes the Login Keychain
+            # copy. Without this a credential the ctypes path had written
+            # survived every attempt to delete it from the packaged app.
 
     global _dpc_unavailable
     if not _dpc_unavailable:
@@ -414,15 +623,26 @@ def delete_password(service: str, username: str) -> None:
 def backend_state() -> dict[str, object]:
     """Return a secret-free description of which implementation is active.
 
-    Which of this module's two implementations is in play is decided once at
-    import time by :data:`_helper_path`, and it determines where a credential
-    lands: the helper writes the Data Protection Keychain, the ctypes fallback
-    ends up in the Login Keychain.  Nothing used to report that choice, so a
-    plaintext row could not be traced to the path that produced it (KAMP-743).
+    Which of this module's two implementations is in play decides where a
+    credential lands: the helper writes the Data Protection Keychain, the ctypes
+    fallback ends up in the Login Keychain.  Nothing used to report that choice,
+    so a plaintext row could not be traced to the path that produced it
+    (KAMP-743).
+
+    The choice is *not* settled at import time.  :data:`_helper_path` only says
+    the binary exists; KAMP-749 added :data:`_helper_unusable`, which latches
+    the first time it cannot actually run — and in every released build it does
+    latch, because AMFI SIGKILLs the helper over an unauthorised restricted
+    entitlement (KAMP-753).  Reporting ``helper`` on the strength of
+    ``_helper_path`` alone would therefore name the store that is *not* being
+    written, in exactly the case this function exists to describe, so the
+    implementation is derived from :func:`_use_helper` and the latch is
+    reported alongside it.
     """
     return {
-        "implementation": "helper" if _helper_path is not None else "ctypes",
+        "implementation": "helper" if _use_helper() else "ctypes",
         "helper_path": _helper_path,
+        "helper_unusable": _helper_unusable,
         "dpc_unavailable": _dpc_unavailable,
     }
 
@@ -431,6 +651,13 @@ def _probe(reader: Callable[[], str | None]) -> dict[str, object]:
     """Run *reader* and describe the outcome without retaining the value."""
     try:
         value = reader()
+    except _HelperUnusable:
+        # Deliberately not described as ERROR: the helper never ran, so it
+        # reported nothing about this credential and there is no outcome to
+        # record.  The caller decides what to say instead -- see
+        # credential_provenance, which treats it as "unknown" rather than
+        # letting a dead helper masquerade as an answer about the store.
+        raise
     except keyring.errors.KeyringLocked as exc:
         return _probe_vocab.describe(_probe_vocab.LOCKED, detail=str(exc))
     except Exception as exc:
@@ -455,11 +682,21 @@ def credential_provenance(service: str, username: str) -> dict[str, object]:
     found — its length and a truncated digest so the two can be compared with
     each other and with the SQLite row.
     """
-    dpc: dict[str, object]
-    if _helper_path is not None:
+    dpc: dict[str, object] | None = None
+    helper_error: str | None = None
+
+    if _use_helper():
         # The helper carries the entitlement, so its answer is authoritative.
-        dpc = _probe(lambda: _helper_get(service, username, login=False))
-    else:
+        try:
+            dpc = _probe(lambda: _helper_get(service, username, login=False))
+        except _HelperUnusable as exc:
+            # It was SIGKILLed or could not exec (KAMP-749), so we hold no
+            # entitled answer after all.  Fall through to the unentitled read
+            # below -- a positive hit there is still trustworthy -- and carry
+            # the reason, which is the diagnostic a maintainer needs.
+            helper_error = str(exc)
+
+    if dpc is None:
         probed = _probe(lambda: _read_raw(service, username, use_dpc=True))
         if probed["status"] == _probe_vocab.PRESENT:
             dpc = probed
@@ -470,6 +707,7 @@ def credential_provenance(service: str, username: str) -> dict[str, object]:
             dpc = _probe_vocab.describe(
                 _probe_vocab.UNKNOWN_NO_ENTITLEMENT,
                 raw_probe=probed,
+                **({"helper_error": helper_error} if helper_error else {}),
             )
 
     return {
@@ -485,14 +723,20 @@ def credential_provenance(service: str, username: str) -> dict[str, object]:
 
 def _get_login_keychain_password(service: str, username: str) -> str | None:
     """Read directly from the Login Keychain — used only for DPC migration."""
-    if _helper_path is not None:
-        return _helper_get(service, username, login=True)
+    if _use_helper():
+        try:
+            return _helper_get(service, username, login=True)
+        except _HelperUnusable as exc:
+            _note_fallback("get_login", exc)
     return _read_raw(service, username, use_dpc=False)
 
 
 def _delete_login_keychain_password(service: str, username: str) -> None:
     """Delete directly from the Login Keychain — used only for DPC migration cleanup."""
-    if _helper_path is not None:
-        _helper_delete(service, username, login=True)
-        return
+    if _use_helper():
+        try:
+            _helper_delete(service, username, login=True)
+            return
+        except _HelperUnusable as exc:
+            _note_fallback("delete_login", exc)
     _delete_raw(service, username, use_dpc=False)

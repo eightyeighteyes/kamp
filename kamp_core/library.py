@@ -102,9 +102,17 @@ def _credential_backend_id() -> str:
     """
     if _mac_kc is not None:
         state = _mac_kc.backend_state()
+        # In a packaged build the helper binary exists but AMFI kills it
+        # (KAMP-749/753), so impl=ctypes there is a *fallback*, not dev mode.
+        # Only report the latch when there is a helper for it to describe.
+        latched = (
+            f"helper_unusable={state['helper_unusable']},"
+            if state["helper_path"] is not None
+            else ""
+        )
         return (
             f"macos-keychain(impl={state['implementation']},"
-            f"dpc_unavailable={state['dpc_unavailable']})"
+            f"{latched}dpc_unavailable={state['dpc_unavailable']})"
         )
     if _win_cred is not None:
         return "windows-dpapi"

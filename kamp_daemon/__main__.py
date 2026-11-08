@@ -503,7 +503,14 @@ def _cmd_doctor_credentials(as_json: bool) -> None:
             print("    keychain        : n/a (not macOS)")
         else:
             assert isinstance(keychain, dict)
-            print(f"    implementation  : {keychain['implementation']}")
+            impl = str(keychain["implementation"])
+            # A packaged build has the helper and still reports ctypes, because
+            # AMFI killed it (KAMP-749/753). Say so: otherwise the line is
+            # indistinguishable from dev, where there is no helper at all, and
+            # attributing the credential to a path is the point of this command.
+            if keychain.get("helper_unusable") and keychain.get("helper_path"):
+                impl += " (helper present but unusable — see KAMP-753)"
+            print(f"    implementation  : {impl}")
             for store in ("dpc", "login_keychain"):
                 detail = keychain[store]
                 assert isinstance(detail, dict)

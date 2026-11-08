@@ -18,11 +18,12 @@ import logging
 import sys
 from pathlib import Path
 
+import keyring.backends.fail
 import keyring.errors
 import pytest
 from pytest_mock import MockerFixture
 
-from kamp_core import credential_probe
+from kamp_core import credential_probe, library
 from kamp_core.library import LibraryIndex
 
 darwin_only = pytest.mark.skipif(
@@ -191,6 +192,70 @@ class TestCredentialProvenance:
         assert SENTINEL not in json.dumps(result, default=str)
 
 
+class TestCredentialBackendId:
+    """The id has to describe the store that will actually service the call.
+
+    Review feedback on PR #835: the generic arm returned a bare ``"keyring"``
+    whenever neither native module was importable, which can be wrong three
+    ways — and worst inside ``set_session``'s ``NoKeyringError`` handler, where
+    the message says "no keyring backend" while the field claimed one.
+    """
+
+    def test_names_the_failing_backend_rather_than_claiming_keyring(
+        self, mocker: MockerFixture
+    ) -> None:
+        """The self-contradiction the review caught."""
+        mocker.patch("kamp_core.library._mac_kc", None)
+        mocker.patch("kamp_core.library._win_cred", None)
+        mocker.patch(
+            "kamp_core.library.keyring.get_keyring",
+            return_value=keyring.backends.fail.Keyring(),
+        )
+
+        backend_id = library._credential_backend_id()
+        assert backend_id != "keyring"
+        assert "fail.Keyring" in backend_id
+
+    def test_names_the_real_backend_when_one_exists(
+        self, mocker: MockerFixture
+    ) -> None:
+        class StubBackend:
+            pass
+
+        mocker.patch("kamp_core.library._mac_kc", None)
+        mocker.patch("kamp_core.library._win_cred", None)
+        mocker.patch(
+            "kamp_core.library.keyring.get_keyring", return_value=StubBackend()
+        )
+
+        assert "StubBackend" in library._credential_backend_id()
+
+    @pytest.mark.parametrize("platform", ["darwin", "win32"])
+    def test_flags_a_missing_native_module(
+        self, platform: str, mocker: MockerFixture
+    ) -> None:
+        """Reaching the generic arm on darwin/win32 means an import failed.
+
+        The native imports are wrapped in `except Exception`, so that is
+        otherwise invisible — and a plaintext row from a macOS machine would
+        look like an ordinary Linux-style fallback.
+        """
+        mocker.patch("kamp_core.library._mac_kc", None)
+        mocker.patch("kamp_core.library._win_cred", None)
+        mocker.patch("kamp_core.library.sys.platform", platform)
+        mocker.patch("kamp_core.library.keyring.get_keyring", return_value=object())
+
+        assert f"native-module-missing={platform}" in library._credential_backend_id()
+
+    def test_no_native_flag_on_other_platforms(self, mocker: MockerFixture) -> None:
+        mocker.patch("kamp_core.library._mac_kc", None)
+        mocker.patch("kamp_core.library._win_cred", None)
+        mocker.patch("kamp_core.library.sys.platform", "linux")
+        mocker.patch("kamp_core.library.keyring.get_keyring", return_value=object())
+
+        assert "native-module-missing" not in library._credential_backend_id()
+
+
 class TestFallbackWarningsNameTheBackend:
     """Every path that writes a plaintext credential must be attributable.
 
@@ -213,6 +278,12 @@ class TestFallbackWarningsNameTheBackend:
             side_effect=keyring.errors.NoKeyringError(),
         )
         mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        # Whatever raises NoKeyringError is a fail.Keyring, so the warning must
+        # name it instead of asserting a backend the same line calls absent.
+        mocker.patch(
+            "kamp_core.library.keyring.get_keyring",
+            return_value=keyring.backends.fail.Keyring(),
+        )
 
         index = self._index(tmp_path)
         with caplog.at_level(logging.WARNING, logger="kamp_core.library"):
@@ -220,8 +291,11 @@ class TestFallbackWarningsNameTheBackend:
 
         assert "no keyring backend" in caplog.text
         assert "PLAINTEXT" in caplog.text
-        assert "backend=keyring" in caplog.text
         assert "payload_len=" in caplog.text
+        # Not "backend=keyring": that contradicted "no keyring backend" in the
+        # same sentence (PR #835 review).
+        assert "backend=keyring(" in caplog.text
+        assert "fail.Keyring" in caplog.text
         assert SENTINEL not in caplog.text, "warning must not echo the credential"
         index.close()
 

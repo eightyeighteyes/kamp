@@ -108,7 +108,27 @@ def _credential_backend_id() -> str:
         )
     if _win_cred is not None:
         return "windows-dpapi"
-    return "keyring"
+
+    # Name the backend that will actually service the call rather than
+    # asserting a bare "keyring", which can be a lie in three ways.  The worst
+    # is the NoKeyringError arm of set_session: it logs "no keyring backend ...
+    # stored as PLAINTEXT", so "backend=keyring" there claimed the very store
+    # the message says is absent.  keyring.get_keyring() returns a
+    # backends.fail.Keyring when nothing is usable -- the object that raises
+    # NoKeyringError -- so printing its class makes that self-evident.
+    try:
+        backend = keyring.get_keyring()
+        name = f"{type(backend).__module__}.{type(backend).__name__}"
+    except Exception as exc:  # pragma: no cover - backend discovery failure
+        name = f"unavailable({type(exc).__name__})"
+
+    # The other two: on darwin or win32 we only reach here because the native
+    # module failed to import (the import is wrapped in `except Exception`), a
+    # condition that is otherwise invisible.  Say so, or a plaintext row from a
+    # macOS machine looks like it came from an ordinary Linux-style fallback.
+    if sys.platform in ("darwin", "win32"):
+        return f"keyring({name},native-module-missing={sys.platform})"
+    return f"keyring({name})"
 
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})

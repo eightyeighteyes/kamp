@@ -8,7 +8,7 @@ on:
         type: string
         default: ''
       debug_macos:
-        description: 'SSH into macOS 14 ARM runner with built bundle (tmate)'
+        description: 'SSH into the Apple Silicon runner with the built bundle via tmate'
         type: boolean
         default: false
   release:
@@ -26,7 +26,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14   # Apple Silicon (arm64) — Xcode 15 / Swift 5.10, compatible with macOS 14+
+            runner: macos-15   # Apple Silicon arm64. macos-14 retired 2026-11-02, see KAMP-754. MACOSX_DEPLOYMENT_TARGET below pins minos=13.0 regardless of the image.
           - arch: x64
             runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
@@ -343,7 +343,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
@@ -916,14 +916,14 @@ jobs:
 
   # Manual debug job: SSH into an Apple Silicon runner with the freshly built
   # ARM bundle to investigate deployment-target / Swift ABI crashes.
-  # Runs as a matrix across macOS 14 (standard) and macOS 13 (xlarge, ~10x cost)
-  # so one trigger shows diagnostic output from both OS versions in parallel.
+  # Runs on one standard Apple Silicon runner. This is NOT a matrix -- an older
+  # revision ran two OS versions in parallel and that label list is long gone.
   # mpv --version in the log tells you if a Swift symbol is missing before SSH.
   # bundle-arm64 is the raw kamp_ui/resources/ directory (NOT a DMG) — no mounting needed.
   debug-macos:
     needs: build-bundle
     if: github.event_name == 'workflow_dispatch' && inputs.debug_macos == true
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:

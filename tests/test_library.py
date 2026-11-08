@@ -5891,12 +5891,33 @@ class TestSessionManagement:
         index.close()
 
     def test_clear_session_truncates_wal(self, tmp_path: Path) -> None:
+        """A size check alone is not enough — see the positive control (KAMP-748).
+
+        This asserted only that the WAL was 0 bytes afterwards, which passes
+        just as happily when the credential was never written to the WAL in the
+        first place. On macOS dev that is exactly what happens without the
+        `no_keyring` fixture: `set_session` succeeds against the Login Keychain
+        and leaves `session_json` NULL, so there is nothing to truncate and the
+        test was green for the wrong reason.
+
+        Byte-level coverage of what survives in the files lives in
+        tests/test_credential_bytes.py; this keeps the WAL-size contract.
+        """
+        marker = "js_logged_in"
         db_path = tmp_path / "library.db"
         index = LibraryIndex(db_path)
-        index.set_session(
-            "bandcamp", {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        )
+        index.set_session("bandcamp", {"cookies": [{"name": marker, "value": "1"}]})
         wal_path = db_path.with_suffix(".db-wal")
+
+        # Positive control: the credential really did reach the DB files, so a
+        # clean result below means erasure rather than absence. The autouse
+        # no_keyring fixture forces the plaintext fallback that makes this true.
+        needle = marker.encode("utf-8")
+        planted = sum(
+            p.read_bytes().count(needle) for p in (db_path, wal_path) if p.exists()
+        )
+        assert planted, "positive control failed: nothing was written to the DB files"
+
         index.clear_session("bandcamp")
         wal_size = wal_path.stat().st_size if wal_path.exists() else 0
         assert wal_size == 0, f"WAL not truncated after clear_session: {wal_size} bytes"

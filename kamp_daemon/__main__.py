@@ -411,11 +411,34 @@ def _credential_report() -> dict[str, object]:
     except Exception:
         _mac_kc = None  # type: ignore[assignment]
 
+    # SQLite facts, read before anything sets the pragma (KAMP-748).
+    #
+    # Whether a removed credential leaves bytes behind depends entirely on
+    # secure_delete, whose default is build-dependent: FAST on the builds
+    # measured so far, and FAST does not zero whole freed pages. These two
+    # values are the only way to confirm that from a *packaged* build, which is
+    # the environment the credential bug actually lived in -- the dev venv
+    # answers "fine" and tells us nothing about it.
+    #
+    # Read from a throwaway connection so the report shows the build default
+    # rather than LibraryIndex's explicit ON. Note that the integer 2 is parsed
+    # as a boolean: only the keyword FAST selects 2, so a reported 2 is the
+    # untouched default and a reported 1 means something set it.
+    _probe_conn = sqlite3.connect(":memory:")
+    try:
+        secure_delete_default = _probe_conn.execute("PRAGMA secure_delete").fetchone()[
+            0
+        ]
+    finally:
+        _probe_conn.close()
+
     report: dict[str, object] = {
         "db_path": str(db_path),
         "db_exists": db_path.exists(),
         "platform": sys.platform,
         "frozen": bool(getattr(sys, "frozen", False)),
+        "sqlite_version": sqlite3.sqlite_version,
+        "secure_delete_default": secure_delete_default,
         "services": {},
     }
 
@@ -483,6 +506,13 @@ def _cmd_doctor_credentials(as_json: bool) -> None:
         f"frozen={report['frozen']})"
     )
     print(f"  db: {report['db_path']}")
+    # The secure_delete default decides whether a removed credential leaves
+    # bytes in the file, and it is only informative from a packaged build.
+    print(
+        f"  sqlite: {report['sqlite_version']}"
+        f"  (secure_delete default {report['secure_delete_default']}"
+        f" — 2=FAST, 1=ON, 0=OFF)"
+    )
     if not report["db_exists"]:
         print("  db: NOT FOUND — nothing to report")
         return
@@ -802,6 +832,19 @@ def _cmd_daemon(
             )
         except Exception as _exc:
             _logger.warning("Failed to migrate bandcamp_session.json: %s", _exc)
+
+    # KAMP-748: one-off erase of credential bytes left in freed pages by the
+    # v11->v12 migration, which dropped a plaintext `sessions` table under
+    # SQLite's FAST secure_delete default (FAST does not zero whole freed
+    # pages).  Keyed on a settings marker, so this is a no-op from the second
+    # start onward.
+    #
+    # Called here rather than from LibraryIndex.__init__ deliberately: the
+    # sync and pipeline subprocess workers construct their own LibraryIndex,
+    # so a VACUUM in the constructor would run on every sync and fight the
+    # daemon for the exclusive lock.  It must also run *after* the legacy
+    # session migration above, which writes a credential of its own.
+    index.scrub_credential_residue()
 
     # Resolve the full mpv path before creating the engine so the Electron-spawned
     # daemon (which may run with a stale PATH) can find the Homebrew binary.

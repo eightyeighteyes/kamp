@@ -97,6 +97,28 @@ Two things to know before trusting the output:
   Protection Keychain**. The report's `implementation` line says which one ran.
   An unsigned local build cannot validate the entitlement, so `get_dpc` fails
   there and only a signed/CI build answers the DPC question.
+- **The `sqlite` line answers a different question, and only from a packaged
+  build.** It reports the SQLite version and the *untouched* `secure_delete`
+  default (`2`=FAST, `1`=ON, `0`=OFF), which is what decides whether a removed
+  credential leaves its bytes in the database file. FAST — the default on every
+  build measured — zeroes freed space only within pages being rewritten anyway,
+  so it does *not* clear pages freed whole, which is how the v11→v12 migration's
+  `DROP TABLE sessions` stranded credential bytes in users' libraries (KAMP-748).
+  `LibraryIndex` now sets `ON` explicitly, so a report showing `1` means
+  something already configured the connection; the dev venv always reports a
+  benign default, which is why only a packaged run is informative.
+
+A credential removed from the column is not the same as a credential removed
+from the file. `library.db` keeps one more copy than the row count suggests, and
+`.bak-*` snapshots are page-level copies that carry freed pages too — so a
+backup taken after a plaintext credential ever existed could contain it even
+with the live row NULL. Snapshots are now stripped of credentials as they are
+written, and the daemon runs a one-off `VACUUM` at startup to clear residue that
+predates the fix. Note what this does and does not achieve: it removes the
+credential from the live database and from future snapshots. It does not erase
+it from the physical disk, from APFS local snapshots or Time Machine, or from
+copies of the state directory made by hand. That is hygiene, not containment —
+re-authenticating is the only step that makes an escaped copy useless.
 
 ### Album art cache
 

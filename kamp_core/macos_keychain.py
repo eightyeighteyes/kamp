@@ -30,6 +30,8 @@ from typing import Callable, TypeVar
 
 import keyring.errors
 
+from . import credential_probe as _probe_vocab
+
 if sys.platform != "darwin":
     raise ImportError("kamp_core.macos_keychain is macOS-only")
 
@@ -616,6 +618,107 @@ def delete_password(service: str, username: str) -> None:
             return
 
     _delete_raw(service, username, use_dpc=False)
+
+
+def backend_state() -> dict[str, object]:
+    """Return a secret-free description of which implementation is active.
+
+    Which of this module's two implementations is in play decides where a
+    credential lands: the helper writes the Data Protection Keychain, the ctypes
+    fallback ends up in the Login Keychain.  Nothing used to report that choice,
+    so a plaintext row could not be traced to the path that produced it
+    (KAMP-743).
+
+    The choice is *not* settled at import time.  :data:`_helper_path` only says
+    the binary exists; KAMP-749 added :data:`_helper_unusable`, which latches
+    the first time it cannot actually run — and in every released build it does
+    latch, because AMFI SIGKILLs the helper over an unauthorised restricted
+    entitlement (KAMP-753).  Reporting ``helper`` on the strength of
+    ``_helper_path`` alone would therefore name the store that is *not* being
+    written, in exactly the case this function exists to describe, so the
+    implementation is derived from :func:`_use_helper` and the latch is
+    reported alongside it.
+    """
+    return {
+        "implementation": "helper" if _use_helper() else "ctypes",
+        "helper_path": _helper_path,
+        "helper_unusable": _helper_unusable,
+        "dpc_unavailable": _dpc_unavailable,
+    }
+
+
+def _probe(reader: Callable[[], str | None]) -> dict[str, object]:
+    """Run *reader* and describe the outcome without retaining the value."""
+    try:
+        value = reader()
+    except _HelperUnusable:
+        # Deliberately not described as ERROR: the helper never ran, so it
+        # reported nothing about this credential and there is no outcome to
+        # record.  The caller decides what to say instead -- see
+        # credential_provenance, which treats it as "unknown" rather than
+        # letting a dead helper masquerade as an answer about the store.
+        raise
+    except keyring.errors.KeyringLocked as exc:
+        return _probe_vocab.describe(_probe_vocab.LOCKED, detail=str(exc))
+    except Exception as exc:
+        return _probe_vocab.describe(
+            _probe_vocab.ERROR, detail=f"{type(exc).__name__}: {exc}"
+        )
+    if value is None:
+        return _probe_vocab.describe(_probe_vocab.ABSENT)
+    return _probe_vocab.describe(
+        _probe_vocab.PRESENT,
+        length=len(value),
+        digest=_probe_vocab.credential_digest(value),
+    )
+
+
+def credential_provenance(service: str, username: str) -> dict[str, object]:
+    """Report which keychain holds *service*/*username*, revealing no values.
+
+    Read-only: writes nothing to either keychain.  Returns the active
+    implementation plus a per-store report for the Data Protection Keychain and
+    the Login Keychain, each carrying a status, and — when a credential is
+    found — its length and a truncated digest so the two can be compared with
+    each other and with the SQLite row.
+    """
+    dpc: dict[str, object] | None = None
+    helper_error: str | None = None
+
+    if _use_helper():
+        # The helper carries the entitlement, so its answer is authoritative.
+        try:
+            dpc = _probe(lambda: _helper_get(service, username, login=False))
+        except _HelperUnusable as exc:
+            # It was SIGKILLed or could not exec (KAMP-749), so we hold no
+            # entitled answer after all.  Fall through to the unentitled read
+            # below -- a positive hit there is still trustworthy -- and carry
+            # the reason, which is the diagnostic a maintainer needs.
+            helper_error = str(exc)
+
+    if dpc is None:
+        probed = _probe(lambda: _read_raw(service, username, use_dpc=True))
+        if probed["status"] == _probe_vocab.PRESENT:
+            dpc = probed
+        else:
+            # Unentitled: "not found" and "not allowed to look" are the same
+            # answer here, so report neither as absence.  Keep what the raw
+            # read actually said, since the OSStatus is the diagnostic.
+            dpc = _probe_vocab.describe(
+                _probe_vocab.UNKNOWN_NO_ENTITLEMENT,
+                raw_probe=probed,
+                **({"helper_error": helper_error} if helper_error else {}),
+            )
+
+    return {
+        **backend_state(),
+        "service": service,
+        "account": username,
+        "dpc": dpc,
+        "login_keychain": _probe(
+            lambda: _get_login_keychain_password(service, username)
+        ),
+    }
 
 
 def _get_login_keychain_password(service: str, username: str) -> str | None:

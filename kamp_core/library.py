@@ -91,6 +91,54 @@ def _maybe_unprotect(text: str) -> str:
     return unwrapped if unwrapped is not None else text
 
 
+def _credential_backend_id() -> str:
+    """Return a short, secret-free id for the credential backend now in use.
+
+    Session credentials take one of three platform paths, and the warning
+    emitted when a write falls back to the plaintext SQLite column never said
+    which one had run — so a plaintext row found on disk later could not be
+    attributed to the path that wrote it (KAMP-743).  Including this in every
+    fallback warning makes each one self-describing.
+    """
+    if _mac_kc is not None:
+        state = _mac_kc.backend_state()
+        # In a packaged build the helper binary exists but AMFI kills it
+        # (KAMP-749/753), so impl=ctypes there is a *fallback*, not dev mode.
+        # Only report the latch when there is a helper for it to describe.
+        latched = (
+            f"helper_unusable={state['helper_unusable']},"
+            if state["helper_path"] is not None
+            else ""
+        )
+        return (
+            f"macos-keychain(impl={state['implementation']},"
+            f"{latched}dpc_unavailable={state['dpc_unavailable']})"
+        )
+    if _win_cred is not None:
+        return "windows-dpapi"
+
+    # Name the backend that will actually service the call rather than
+    # asserting a bare "keyring", which can be a lie in three ways.  The worst
+    # is the NoKeyringError arm of set_session: it logs "no keyring backend ...
+    # stored as PLAINTEXT", so "backend=keyring" there claimed the very store
+    # the message says is absent.  keyring.get_keyring() returns a
+    # backends.fail.Keyring when nothing is usable -- the object that raises
+    # NoKeyringError -- so printing its class makes that self-evident.
+    try:
+        backend = keyring.get_keyring()
+        name = f"{type(backend).__module__}.{type(backend).__name__}"
+    except Exception as exc:  # pragma: no cover - backend discovery failure
+        name = f"unavailable({type(exc).__name__})"
+
+    # The other two: on darwin or win32 we only reach here because the native
+    # module failed to import (the import is wrapped in `except Exception`), a
+    # condition that is otherwise invisible.  Say so, or a plaintext row from a
+    # macOS machine looks like it came from an ordinary Linux-style fallback.
+    if sys.platform in ("darwin", "win32"):
+        return f"keyring({name},native-module-missing={sys.platform})"
+    return f"keyring({name})"
+
+
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
 _SCHEMA_VERSION = 65
@@ -4205,7 +4253,11 @@ class LibraryIndex:
                     "get_session: no entry in keychain or DB for service=%s", service
                 )
                 return None
-            logger.debug("get_session: DB fallback hit for service=%s", service)
+            logger.debug(
+                "get_session: DB fallback hit for service=%s [backend=%s]",
+                service,
+                _credential_backend_id(),
+            )
             return dict(json.loads(_maybe_unprotect(row["session_json"])))  # type: ignore[no-any-return]
 
         # --- keyring path (non-macOS, non-Windows-DPAPI) -----
@@ -4282,7 +4334,11 @@ class LibraryIndex:
                 "get_session: no entry in keychain or DB for service=%s", service
             )
             return None
-        logger.debug("get_session: DB fallback hit for service=%s", service)
+        logger.debug(
+            "get_session: DB fallback hit for service=%s [backend=%s]",
+            service,
+            _credential_backend_id(),
+        )
         return dict(json.loads(_maybe_unprotect(row["session_json"])))  # type: ignore[no-any-return]
 
     def set_session(self, service: str, data: dict[str, Any]) -> None:
@@ -4308,17 +4364,24 @@ class LibraryIndex:
                 else:
                     logger.warning(
                         "set_session: keychain write for service=%s did not verify"
-                        " (read-back returned %s); falling back to DB",
+                        " (read-back returned %s); falling back to DB"
+                        " [backend=%s payload_len=%d readback_len=%s]",
                         service,
                         "wrong value" if verified is not None else "None",
+                        _credential_backend_id(),
+                        len(payload),
+                        len(verified) if verified is not None else "n/a",
                     )
             except keyring.errors.KeyringError as exc:
                 logger.warning(
                     "set_session: keychain write failed for service=%s (%s: %s);"
-                    " credential stored in DB fallback",
+                    " credential stored in DB fallback"
+                    " [backend=%s payload_len=%d]",
                     service,
                     type(exc).__name__,
                     exc,
+                    _credential_backend_id(),
+                    len(payload),
                 )
         elif _win_cred is None:
             # Windows skips this branch — DPAPI-wrapped DB row is the
@@ -4334,19 +4397,36 @@ class LibraryIndex:
                 else:
                     logger.warning(
                         "set_session: keychain write for service=%s did not verify"
-                        " (read-back returned %s); falling back to DB",
+                        " (read-back returned %s); falling back to DB"
+                        " [backend=%s payload_len=%d readback_len=%s]",
                         service,
                         "wrong value" if verified is not None else "None",
+                        _credential_backend_id(),
+                        len(payload),
+                        len(verified) if verified is not None else "n/a",
                     )
             except keyring.errors.NoKeyringError:
-                pass
+                # Previously a bare pass: the one fallback path that wrote a
+                # plaintext credential while logging nothing at all, so a row
+                # produced here left no trace to diagnose (KAMP-743).
+                logger.warning(
+                    "set_session: no keyring backend for service=%s;"
+                    " credential stored as PLAINTEXT in DB fallback"
+                    " [backend=%s payload_len=%d]",
+                    service,
+                    _credential_backend_id(),
+                    len(payload),
+                )
             except keyring.errors.KeyringError as exc:
                 logger.warning(
                     "set_session: keychain write failed for service=%s (%s: %s);"
-                    " credential stored in DB fallback",
+                    " credential stored in DB fallback"
+                    " [backend=%s payload_len=%d]",
                     service,
                     type(exc).__name__,
                     exc,
+                    _credential_backend_id(),
+                    len(payload),
                 )
             except Exception as exc:
                 # Backend may raise OSError/RuntimeError outside the keyring
@@ -4356,10 +4436,13 @@ class LibraryIndex:
                 # See KAMP-282.
                 logger.warning(
                     "set_session: keychain write raised unexpected %s for service=%s"
-                    " (%s); credential stored in DB fallback",
+                    " (%s); credential stored in DB fallback"
+                    " [backend=%s payload_len=%d]",
                     type(exc).__name__,
                     service,
                     exc,
+                    _credential_backend_id(),
+                    len(payload),
                 )
 
         # On Windows, wrap the DB fallback with DPAPI so the SQLite row is

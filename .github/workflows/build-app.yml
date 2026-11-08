@@ -25,8 +25,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: arm64
-            runner: macos-15   # Apple Silicon arm64. macos-14 retired 2026-11-02, see KAMP-754. MACOSX_DEPLOYMENT_TARGET below pins minos=13.0 regardless of the image.
           - arch: x64
             runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
@@ -342,8 +340,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: arm64
-            runner: macos-15
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}

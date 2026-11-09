@@ -8,7 +8,7 @@ on:
         type: string
         default: ''
       debug_macos:
-        description: 'SSH into macOS 14 ARM runner with built bundle (tmate)'
+        description: 'SSH into the Apple Silicon runner with the built bundle via tmate'
         type: boolean
         default: false
   release:
@@ -23,10 +23,14 @@ env:
 jobs:
   build-bundle:
     strategy:
+      # One arch failing must not cancel the other. Without this, the retired
+      # macos-14 runner took the healthy x64 leg down with it mid-build, so a
+      # successful x64 bundle was never produced at all (KAMP-754).
+      fail-fast: false
       matrix:
         include:
           - arch: arm64
-            runner: macos-14   # Apple Silicon (arm64) — Xcode 15 / Swift 5.10, compatible with macOS 14+
+            runner: macos-15   # Apple Silicon arm64. macos-14 retired 2026-11-02, see KAMP-754. MACOSX_DEPLOYMENT_TARGET below pins minos=13.0 regardless of the image.
           - arch: x64
             runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
@@ -108,6 +112,16 @@ jobs:
           # causing dyld to abort on macOS 13. Building manually with
           # -mmacosx-version-min=13.0 and --disable-avfoundation removes the hard
           # reference to _AVCaptureDeviceTypeContinuityCamera (macOS 14-only symbol).
+          # -headerpad_max_install_names reserves Mach-O header space so
+          # dylibbundler can rewrite install names afterwards. These libs are
+          # built into the SHORT prefix /tmp/ffmpeg/lib, and dylibbundler
+          # rewrites that to the LONGER @executable_path/mpv-libs/, which only
+          # fits if the linker left room. Xcode 15 happened to leave enough;
+          # Xcode 16.4 on macos-15 does not, so libavdevice (the most-linked
+          # lib) failed with "larger updated load commands do not fit" the
+          # moment KAMP-754 moved the arm64 leg off macos-14. Applied to every
+          # source build, not just FFmpeg, so the next linker bump cannot
+          # resurface this one library at a time.
           NATIVE_ARCH=$(uname -m)
           git clone --depth=1 --branch n7.1 \
             https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg-src
@@ -116,7 +130,7 @@ jobs:
             --prefix=/tmp/ffmpeg \
             --arch="$NATIVE_ARCH" \
             --extra-cflags="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
-            --extra-ldflags="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            --extra-ldflags="-arch $NATIVE_ARCH -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names" \
             --enable-shared \
             --disable-static \
             --disable-programs \
@@ -144,9 +158,9 @@ jobs:
           meson setup build \
             -Dbuildtype=release \
             -Dc_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
-            -Dc_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dc_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names" \
             -Dcpp_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
-            -Dcpp_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dcpp_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names" \
             -Dvulkan=disabled \
             -Dopengl=disabled \
             -Dshaderc=disabled \
@@ -163,6 +177,8 @@ jobs:
           PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig:/tmp/libplacebo/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
           meson setup build \
             -Dbuildtype=release \
+            -Dc_link_args="-Wl,-headerpad_max_install_names" \
+            -Dcpp_link_args="-Wl,-headerpad_max_install_names" \
             -Dvapoursynth=disabled \
             -Djavascript=disabled \
             -Dlua=enabled \
@@ -340,10 +356,14 @@ jobs:
   sign-and-package:
     needs: build-bundle
     strategy:
+      # One arch failing must not cancel the other. Without this, the retired
+      # macos-14 runner took the healthy x64 leg down with it mid-build, so a
+      # successful x64 bundle was never produced at all (KAMP-754).
+      fail-fast: false
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
@@ -916,14 +936,14 @@ jobs:
 
   # Manual debug job: SSH into an Apple Silicon runner with the freshly built
   # ARM bundle to investigate deployment-target / Swift ABI crashes.
-  # Runs as a matrix across macOS 14 (standard) and macOS 13 (xlarge, ~10x cost)
-  # so one trigger shows diagnostic output from both OS versions in parallel.
+  # Runs on one standard Apple Silicon runner. This is NOT a matrix -- an older
+  # revision ran two OS versions in parallel and that label list is long gone.
   # mpv --version in the log tells you if a Swift symbol is missing before SSH.
   # bundle-arm64 is the raw kamp_ui/resources/ directory (NOT a DMG) — no mounting needed.
   debug-macos:
     needs: build-bundle
     if: github.event_name == 'workflow_dispatch' && inputs.debug_macos == true
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:

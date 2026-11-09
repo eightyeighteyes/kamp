@@ -549,6 +549,39 @@ async function checkForUpdate(win: BrowserWindow): Promise<void> {
 type BandcampLoginResult = { ok: true } | { ok: false; error: string }
 
 /**
+ * KAMP-747: is this URL somewhere the login window is allowed to navigate?
+ *
+ * Governs TOP-LEVEL navigation only — sub-resources (images and audio from
+ * bcbits.com, the reCAPTCHA iframe) never reach this function, so do not add
+ * their hosts here when something fails to load.  See the guards in
+ * openBandcampLogin for why.
+ *
+ * Parses rather than string-matches, which is load-bearing.  Do not
+ * "simplify" this into a startsWith/includes on the raw URL; the decided
+ * cases are:
+ *   - userinfo: https://bandcamp.com@evil.com/ has hostname evil.com -> blocked
+ *   - suffix, not substring: evilbandcamp.com and bandcamp.com.evil.com
+ *     both -> blocked
+ *   - hostname, not host: host carries the port, so bandcamp.com:8443 would
+ *     match neither branch.  Fails closed either way, but for the wrong reason
+ *   - https only: the window's single entry point is https, so allowing http
+ *     would buy nothing but a downgrade path
+ *   - trailing dot (bandcamp.com.) and IPv6 ([::1]) -> blocked, fail closed
+ *   - case: new URL() already lowercases the hostname for special schemes
+ */
+function isBandcampLoginUrl(raw: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'https:') return false
+  const host = parsed.hostname
+  return host === 'bandcamp.com' || host.endsWith('.bandcamp.com')
+}
+
+/**
  * Open a BrowserWindow pointing at bandcamp.com/login.  Poll the default
  * session's cookie jar once per second; when ``js_logged_in=1`` appears,
  * collect all .bandcamp.com cookies, format them as a Playwright
@@ -565,7 +598,16 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       height: 720,
       title: 'Log in to Bandcamp',
       // No preload — this is a plain browser tab, not a Kamp UI window.
-      webPreferences: { sandbox: true }
+      webPreferences: {
+        // KAMP-747: all three are written out rather than inherited.  With
+        // sandbox on and no preload these two are already the Electron
+        // defaults, so this closes no current hole — it pins the posture so a
+        // later refactor that attaches a preload (which would silently turn
+        // contextIsolation off) has to say so in the diff.
+        sandbox: true,
+        nodeIntegration: false,
+        contextIsolation: true
+      }
     })
 
     loginWin.loadURL('https://bandcamp.com/login')
@@ -573,6 +615,63 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     let settled = false
     // Mutable ref — clearInterval needs to see the id assigned below.
     const poll = { timer: undefined as ReturnType<typeof setInterval> | undefined }
+
+    // KAMP-747: the most recent refused navigation that went NOWHERE. Reported
+    // in the settle() error because in a packaged build console.warn goes
+    // nowhere the user can see, and this window is a bare BrowserWindow with no
+    // menu, back button or reload — so a silent dead end would leave the user
+    // unable to tell a confinement failure from "Bandcamp is broken".  A
+    // navigation re-homed to the system browser is deliberately NOT recorded
+    // here: the browser opening is itself visible, so it is not a dead end, and
+    // naming it would put noise in the error after a harmless footer click.
+    let lastBlocked: string | null = null
+
+    // Only the first of a burst for the same URL is handed to the browser.  A
+    // refused navigation can arrive several times over — a redirect chain, or
+    // the page retrying — and each one would otherwise be another browser tab.
+    let lastDiverted: { url: string; at: number } = { url: '', at: 0 }
+
+    const schemeOf = (url: string): string | null => {
+      try {
+        return new URL(url).protocol
+      } catch {
+        return null
+      }
+    }
+
+    /**
+     * Refuse an off-origin URL, then re-home it in the system browser.
+     *
+     * The confinement is only livable because of this.  The login page carries
+     * genuine outbound links — the reCAPTCHA notice points at
+     * policies.google.com, and a footer link 302s to songtradr.com — and
+     * refusing those without re-homing them leaves a dead link in a window with
+     * no address bar to work around it.
+     *
+     * The OS browser is strictly less privileged than the navigation it
+     * replaces: no Bandcamp cookie jar, no X-Kamp-Token injection, no preload.
+     * This is applied to will-redirect as well as will-navigate because a user
+     * click can reach its off-origin hop via a 302 — bandcamp.com's careers
+     * link does exactly that — and Electron exposes no user-gesture flag to
+     * tell that apart from a scripted redirect.
+     */
+    const divertExternal = (url: string, how: string): void => {
+      const scheme = schemeOf(url)
+      if (scheme !== 'https:' && scheme !== 'http:') {
+        lastBlocked = url
+        console.warn('[kamp login] refused %s to %s (scheme not openable)', how, url)
+        return
+      }
+      const now = Date.now()
+      if (lastDiverted.url === url && now - lastDiverted.at < 2000) return
+      lastDiverted = { url, at: now }
+      console.log('[kamp login] refused %s to %s — opening in the system browser', how, url)
+      void shell.openExternal(url).catch((err) => {
+        // It did not open after all, so this one really is a dead end.
+        lastBlocked = url
+        console.error('[kamp login] openExternal(%s) failed: %s', url, String(err))
+      })
+    }
 
     const settle = async (result: BandcampLoginResult): Promise<void> => {
       if (settled) return
@@ -621,6 +720,50 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       }
     }
 
+    // KAMP-747: confine the window.  It carries a live Bandcamp cookie jar, and
+    // because it runs on session.defaultSession (it must — sendLoginComplete
+    // harvests cookies from there) it is also inside the webRequest filter that
+    // injects X-Kamp-Token into every 127.0.0.1:47483 request.  So whatever
+    // origin ends up here gets authenticated reach into the local API: fail
+    // closed.  Partitioning this window's session is KAMP-745.
+    //
+    // will-navigate covers link clicks and window.location writes.  It is
+    // main-frame-only by definition, which is what keeps third-party sub-frames
+    // (the reCAPTCHA iframe) working, and it does NOT fire for loadURL — so the
+    // initial load above cannot be refused by its own guard.
+    loginWin.webContents.on('will-navigate', (event) => {
+      if (isBandcampLoginUrl(event.url)) return
+      event.preventDefault()
+      divertExternal(event.url, 'will-navigate')
+    })
+
+    // A server-side 302 never reaches will-navigate, so without this the guard
+    // above confines links but not redirects.  Two asymmetries with it:
+    //   - will-redirect fires for SUB-FRAMES too (hence isMainFrame, which
+    //     will-navigate has no need of).  Cancelling those would kill a 302
+    //     inside the captcha frame and break the login it is meant to protect.
+    //   - it has no loadURL exemption, so a redirect off the initial
+    //     /login request does reach the allowlist.  That is intended.
+    loginWin.webContents.on('will-redirect', (event) => {
+      if (!event.isMainFrame) return
+      if (isBandcampLoginUrl(event.url)) return
+      event.preventDefault()
+      divertExternal(event.url, 'will-redirect')
+    })
+
+    // Never open a second window: a child would share defaultSession and arrive
+    // with none of the guards above.  Everything goes through divertExternal,
+    // so a popup lands in the system browser as the main window's handler does
+    // — but unlike that handler the scheme is parsed first, so a non-http(s)
+    // URL cannot be handed to the OS, and openExternal's rejectable promise
+    // gets a catch.  A bandcamp.com popup is re-homed too rather than loaded in
+    // place: replacing a half-filled login form has no undo in a window with no
+    // back button, and loadURL would bypass the will-navigate guard beside it.
+    loginWin.webContents.setWindowOpenHandler(({ url }) => {
+      divertExternal(url, 'window.open')
+      return { action: 'deny' }
+    })
+
     poll.timer = setInterval(async () => {
       if (settled) return
       const cookies = await session.defaultSession.cookies.get({ url: 'https://bandcamp.com' })
@@ -629,7 +772,13 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     }, 1000)
 
     loginWin.on('closed', () => {
-      void settle({ ok: false, error: 'Login window closed before completing sign-in.' })
+      // Name the refused navigation if there was one: this is the only channel
+      // that reaches the user in a packaged build, where the console warnings
+      // above go nowhere.  Both callers render result.error already.
+      const error = lastBlocked
+        ? `Login window closed before completing sign-in. Navigation to ${lastBlocked} was blocked — report this if sign-in cannot be completed.`
+        : 'Login window closed before completing sign-in.'
+      void settle({ ok: false, error })
     })
   })
 }

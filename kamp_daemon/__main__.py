@@ -879,6 +879,24 @@ def _cmd_daemon(
         except Exception as _exc:
             _logger.warning("Failed to migrate bandcamp_session.json: %s", _exc)
 
+    # KAMP-755: move any plaintext credential row into the Login Keychain.
+    # Every packaged macOS build since 2026-04-23 wrote them here because the
+    # entitled helper is SIGKILLed by AMFI (KAMP-753); KAMP-749 fixed the write
+    # path but nothing moved what was already on disk, and get_session reads a
+    # plaintext row without re-storing it.
+    #
+    # Must run *after* the legacy bandcamp_session.json migration above, which
+    # writes a credential of its own, and *before* the residue scrub below so
+    # that on an install which has never run a KAMP-748 build, the one-off
+    # VACUUM also sweeps the pages this just freed. Gated on the row itself
+    # rather than a marker, so it retries every start until it succeeds -- and
+    # re-runs if a later failed keychain write ever puts a row back.
+    _healed = index.heal_plaintext_sessions()
+    if _healed:
+        _logger.info(
+            "Moved %d plaintext credential row(s) out of the database", _healed
+        )
+
     # KAMP-748: one-off erase of credential bytes left in freed pages by the
     # v11->v12 migration, which dropped a plaintext `sessions` table under
     # SQLite's FAST secure_delete default (FAST does not zero whole freed

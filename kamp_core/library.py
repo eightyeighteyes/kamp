@@ -4456,6 +4456,28 @@ class LibraryIndex:
                     _credential_backend_id(),
                     len(payload),
                 )
+            except Exception as exc:
+                # The asymmetry this closes: the keyring branch below has had an
+                # equivalent arm since KAMP-282, and this one did not. The macOS
+                # path can still raise outside keyring.errors -- _call_with_timeout
+                # re-raises whatever the worker thread raised, and that is not
+                # guaranteed to be a keyring exception.
+                #
+                # Until now an escape only turned a login request into a 422.
+                # KAMP-755 calls set_session's sibling logic from daemon startup,
+                # where an escape would abort `kamp daemon` unattended on every
+                # start -- leaving a plaintext row the user cannot clear because
+                # the UI never comes up.
+                logger.warning(
+                    "set_session: keychain write raised unexpected %s for service=%s"
+                    " (%s); credential stored in DB fallback"
+                    " [backend=%s payload_len=%d]",
+                    type(exc).__name__,
+                    service,
+                    exc,
+                    _credential_backend_id(),
+                    len(payload),
+                )
         elif _win_cred is None:
             # Windows skips this branch — DPAPI-wrapped DB row is the
             # storage path there (see KAMP-280).
@@ -4695,6 +4717,219 @@ class LibraryIndex:
             self._db_path.stat().st_size if self._db_path.exists() else 0,
         )
         return True
+
+    def _clear_healed_row(self, service: str, expected: str) -> bool:
+        """NULL *service*'s session column, but only if it still holds *expected*.
+
+        The guard is the whole point. The heal reads the row, then does work
+        that can block for ten seconds on an unanswered keychain prompt, and
+        nothing stops a second daemon running against the same database -- the
+        dev app resolves the production library (KAMP-737). An unconditional
+        NULL would destroy a credential written in that window, one the heal
+        never migrated. Guarded, that interleaving is a no-op retried next
+        start.
+        """
+        cursor = self._conn.execute(
+            "UPDATE sessions SET session_json = NULL"
+            " WHERE service = ? AND session_json = ?",
+            (service, expected),
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            logger.warning(
+                "heal_plaintext_sessions: row for service=%s changed while the"
+                " keychain was being consulted; left as-is and will be retried"
+                " on the next start",
+                service,
+            )
+            return False
+        return True
+
+    def heal_plaintext_sessions(self) -> int:
+        """Move plaintext credential rows into the Login Keychain (KAMP-755).
+
+        Returns the number of rows cleared.
+
+        Every packaged macOS build since 2026-04-23 wrote session credentials
+        as plaintext here, because the entitled helper is SIGKILLed by AMFI
+        (KAMP-753).  KAMP-749 fixed the write path; this moves what is already
+        on disk.  Nothing else will: the only heal that ever existed is the
+        v11->v12 migration, gated ``if version < 12`` while every install is at
+        schema 65, and ``get_session`` reads a plaintext row without
+        re-storing it.
+
+        **Not a migration block.**  ``_migrate``'s recent steps are gated on
+        schema *equality*, so a versioned block that declined to bump on
+        failure would strand every later migration permanently.  This is keyed
+        on ``session_json IS NOT NULL`` instead, so it simply retries each
+        start until it succeeds, with no version coupling.
+
+        **Not called from ``__init__``.**  ``LibraryIndex`` is constructed
+        inside the spawn-mode sync and pipeline subprocess workers, so a heal
+        in the constructor would attempt a keychain write on every sync.  The
+        daemon calls it once at startup, the same reasoning that keeps
+        ``scrub_credential_residue``'s VACUUM out of the constructor.
+
+        **Deliberately not routed through ``set_session``.**  That method's
+        UPSERT runs unconditionally, so when its keychain leg fails it writes
+        the plaintext *back* with a fresh timestamp and checkpoints it -- a
+        failing heal would mint new residue on every boot, and the one-shot
+        residue scrub would never clean it.  It also returns ``None`` and never
+        raises, so it offers no success signal to count.
+
+        **No ``_backup_db``.**  Since KAMP-748 the backup strips credentials
+        from its destination, which means it is scrubbed of exactly the column
+        this touches: not a restore point for this operation, just a
+        DB-sized copy at startup that restores nothing.
+        """
+        # macOS only. On Windows ``_mac_kc is None`` and ``_win_cred is not
+        # None``, so neither of set_session's keychain branches runs and the
+        # DPAPI-wrapped row *is* the store (KAMP-280) -- a non-NULL column is
+        # the intended steady state there, not damage, and healing it would
+        # loop forever. The same gate excludes Linux, which is unsupported.
+        if _mac_kc is None:
+            return 0
+
+        rows = self._conn.execute(
+            "SELECT service, session_json FROM sessions"
+            " WHERE session_json IS NOT NULL"
+        ).fetchall()
+        if not rows:
+            return 0
+
+        cleared = 0
+        for row in rows:
+            service = row["service"]
+            raw = row["session_json"]
+            stored = _maybe_unprotect(raw)
+
+            # A row that is not JSON cannot be re-stored usefully, and must not
+            # take the rest of the heal -- or daemon startup -- down with it.
+            # JSONDecodeError's message carries a position, not content, so it
+            # is safe to log.
+            # Requiring an object, not merely valid JSON, also keeps a junk row
+            # from being copied into the keychain under its service name, where
+            # nothing would ever read or delete it again.
+            try:
+                if not isinstance(json.loads(stored), dict):
+                    raise ValueError("session payload is not a JSON object")
+            except Exception as exc:
+                logger.warning(
+                    "heal_plaintext_sessions: row for service=%s is not a valid"
+                    " session payload (%s: %s); left in place for inspection",
+                    service,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+
+            try:
+                current = _mac_kc.get_password("kamp", service)
+            except keyring.errors.KeyringLocked as exc:
+                # Stop entirely rather than press on. Only four keychain calls
+                # may be outstanding, and one that timed out on an unanswered
+                # prompt holds its slot until the user answers -- so continuing
+                # would exhaust the budget and make later legitimate
+                # get_session calls fail instantly, bringing the app up logged
+                # out of everything. Strictly worse than the plaintext row.
+                logger.warning(
+                    "heal_plaintext_sessions: keychain locked at service=%s"
+                    " (%s); abandoning this pass with %d row(s) still plaintext,"
+                    " will retry on the next start [backend=%s]",
+                    service,
+                    exc,
+                    len(rows) - cleared,
+                    _credential_backend_id(),
+                )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "heal_plaintext_sessions: keychain read failed for"
+                    " service=%s (%s: %s); row left in place [backend=%s]",
+                    service,
+                    type(exc).__name__,
+                    exc,
+                    _credential_backend_id(),
+                )
+                continue
+
+            if current is None:
+                # Nothing in the keychain: migrate, and verify by read-back
+                # before touching the row. A write that reports success but
+                # does not round-trip is the exact failure KAMP-743 exists to
+                # diagnose.
+                try:
+                    _mac_kc.set_password("kamp", service, stored)
+                    verified = _mac_kc.get_password("kamp", service)
+                except Exception as exc:
+                    logger.warning(
+                        "heal_plaintext_sessions: could not move service=%s to"
+                        " the keychain (%s: %s); row left in place"
+                        " [backend=%s row_len=%d]",
+                        service,
+                        type(exc).__name__,
+                        exc,
+                        _credential_backend_id(),
+                        len(stored),
+                    )
+                    continue
+                if verified != stored:
+                    logger.warning(
+                        "heal_plaintext_sessions: keychain write for service=%s"
+                        " did not verify (read-back returned %s); row left in"
+                        " place [backend=%s row_len=%d readback_len=%s]",
+                        service,
+                        "wrong value" if verified is not None else "None",
+                        _credential_backend_id(),
+                        len(stored),
+                        len(verified) if verified is not None else "n/a",
+                    )
+                    continue
+                if self._clear_healed_row(service, raw):
+                    cleared += 1
+                    logger.info(
+                        "heal_plaintext_sessions: moved service=%s from the"
+                        " plaintext column to the keychain [backend=%s"
+                        " row_len=%d]",
+                        service,
+                        _credential_backend_id(),
+                        len(stored),
+                    )
+                continue
+
+            # The keychain already holds a credential, so it is already the one
+            # in use: get_session returns the keychain value whenever there is
+            # one and only falls through to this row when the keychain answers
+            # None. The row is therefore unreachable, and dropping it changes
+            # nothing about which credential is live.
+            if len(current) != len(stored):
+                # It is a *different* credential being discarded, though, so do
+                # not do that silently. Lengths only -- never the values.
+                logger.warning(
+                    "heal_plaintext_sessions: keychain and plaintext row for"
+                    " service=%s differ (keychain_len=%d row_len=%d); the"
+                    " keychain value is the one in use, so the row is being"
+                    " dropped. Reconnect %s if it stops working.",
+                    service,
+                    len(current),
+                    len(stored),
+                    service,
+                )
+            if self._clear_healed_row(service, raw):
+                cleared += 1
+                logger.info(
+                    "heal_plaintext_sessions: dropped the redundant plaintext"
+                    " row for service=%s (already in the keychain)",
+                    service,
+                )
+
+        if cleared:
+            # Without this the freed page images sit in the WAL. secure_delete
+            # is ON for every connection (KAMP-748), so the rewritten page is
+            # zeroed and no VACUUM is needed -- but only once the WAL is
+            # checkpointed.
+            self._checkpoint_wal("heal_plaintext_sessions")
+        return cleared
 
     # ------------------------------------------------------------------
     # Bandcamp collection (KAMP-381)

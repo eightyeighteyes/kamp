@@ -74,7 +74,7 @@ Memory is sampled every 60s and the renderer probe every 10s.
 `kamp doctor-credentials` reports, per service, whether the `sessions.session_json`
 column is NULL (the credential is in a secret store) or **plaintext**, and which
 keychain holds the copy. Add `--json` for a form that pastes into a bug report.
-It is read-only — the library is opened `mode=ro` and nothing is written to
+It is read-only — the library is opened read-only and nothing is written to
 either keychain — and it prints no credential values, only lengths and a
 truncated digest. Matching digests across two stores mean they hold the same
 value; differing digests mean one is stale.
@@ -107,6 +107,24 @@ Two things to know before trusting the output:
   `LibraryIndex` now sets `ON` explicitly, so a report showing `1` means
   something already configured the connection; the dev venv always reports a
   benign default, which is why only a packaged run is informative.
+- **A `-wal/-shm sidecars are missing` warning means the rows may be stale.**
+  Read-only access cannot create the shared-memory file a WAL database needs,
+  so a `library.db` copied on its own — which is what every
+  `bak-<version>-prod/` directory holds — can only be read without its
+  write-ahead log. The command falls back and says so rather than failing;
+  restore the sidecars, or start kamp, if you need live state. A clean
+  shutdown *keeps* both sidecars, so a stopped daemon alone does not cause
+  this.
+
+On macOS the daemon moves any plaintext row into the Login Keychain at startup
+(KAMP-755). It is keyed on the row rather than a version or a marker, so it
+retries every start until it succeeds, and re-runs if a later failed keychain
+write ever puts a row back. Where the keychain already holds a value that value
+wins and the row is simply dropped — `get_session` already prefers the keychain,
+so an existing item is the credential in use and the row is unreachable. A row
+is **never** cleared unless the credential has been read back out of the
+keychain intact. Windows is excluded on purpose: there the DPAPI-wrapped row
+*is* the store, so a non-NULL column is correct rather than damage.
 
 A credential removed from the column is not the same as a credential removed
 from the file. `library.db` keeps one more copy than the row count suggests, and

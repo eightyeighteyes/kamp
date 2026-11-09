@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -517,3 +518,141 @@ class TestCredentialReportSqliteFacts:
             probe.close()
 
         assert _credential_report()["secure_delete_default"] == build_default
+
+
+class TestCredentialReportWithoutWalSidecars:
+    """The report must survive a database it cannot open read-only.
+
+    ``_credential_report`` used to open the library ``mode=ro`` only, and the
+    OperationalError escaped, so ``doctor-credentials`` tracebacked instead of
+    reporting. It is reachable in the field: read-only access cannot create the
+    shared memory a WAL database needs, so a ``library.db`` copied on its own --
+    which is what every ``bak-<version>-prod/`` directory in the state dir
+    contains -- can be refused. Restoring one to reproduce a credential bug and
+    then running this command is exactly how it was hit.
+
+    **Whether SQLite refuses is version-dependent, so these tests do not assume
+    it.** Measured on 3.51 (macOS dev): a clean close keeps both sidecars and a
+    sidecar-less copy is refused ``mode=ro``. On the older SQLite bundled with
+    CI's Python 3.11 the opposite holds on both counts -- the sidecars are gone
+    after a clean close and the copy opens fine. Asserting either behaviour is
+    the trap claude.md records as "any SQLite-behavior assumption is
+    unverifiable locally", and the first version of this test walked into it and
+    failed CI on both counts. So the fallback is driven by a refusal this test
+    injects, which exercises the branch identically everywhere.
+    """
+
+    @staticmethod
+    def _wal_db(tmp_path: Path, size: int = 2381) -> Path:
+        db_path = tmp_path / "library.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "CREATE TABLE sessions (service TEXT PRIMARY KEY,"
+                " session_json TEXT, updated_at REAL)"
+            )
+            conn.execute(
+                "INSERT INTO sessions VALUES ('bandcamp', ?, 0)", ("x" * size,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_report_falls_back_and_flags_the_wal_as_unread(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A refused read-only open must fall back, not raise."""
+        from kamp_daemon.__main__ import _credential_report
+
+        self._wal_db(tmp_path)
+        mocker.patch("kamp_daemon.__main__._state_dir", return_value=tmp_path)
+
+        real_connect = sqlite3.connect
+        refused: list[str] = []
+
+        class _Refusing:
+            """Stands in for the connection SQLite hands back but cannot use."""
+
+            row_factory: object = None
+
+            def execute(self, *_args: object) -> object:
+                raise sqlite3.OperationalError("unable to open database file")
+
+            def close(self) -> None:
+                pass
+
+        def _fake_connect(target: str, **kwargs: object) -> object:
+            # Only the library's read-only open is refused. The in-memory
+            # pragma probe and the immutable retry must both work, or this
+            # would test the wrong thing.
+            if "mode=ro" in str(target) and "immutable" not in str(target):
+                refused.append(str(target))
+                return _Refusing()
+            return real_connect(target, **kwargs)  # type: ignore[arg-type]
+
+        mocker.patch("sqlite3.connect", side_effect=_fake_connect)
+
+        report = _credential_report()
+
+        assert refused, "the mode=ro open was never attempted"
+        assert report["db_exists"] is True
+        assert report["db_wal_consulted"] is False, "fallback not recorded"
+        services = report["services"]
+        assert isinstance(services, dict)
+        bandcamp = services["bandcamp"]
+        assert isinstance(bandcamp, dict)
+        assert bandcamp["db_row"] == "PLAINTEXT"
+        assert bandcamp["db_row_length"] == 2381
+
+    def test_wal_is_reported_as_consulted_for_a_readable_database(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """The flag must not be stuck off, or the warning would cry wolf."""
+        from kamp_daemon.__main__ import _credential_report
+
+        self._wal_db(tmp_path)
+        mocker.patch("kamp_daemon.__main__._state_dir", return_value=tmp_path)
+
+        report = _credential_report()
+
+        assert report["db_wal_consulted"] is True
+        services = report["services"]
+        assert isinstance(services, dict)
+        bandcamp = services["bandcamp"]
+        assert isinstance(bandcamp, dict)
+        assert bandcamp["db_row"] == "PLAINTEXT"
+
+    def test_a_genuinely_refused_database_is_handled(self, tmp_path: Path) -> None:
+        """The real-world case, where this platform's SQLite actually refuses.
+
+        Skipped where it does not, rather than asserting a behaviour that
+        differs between the dev and CI SQLite builds. The branch itself is
+        covered everywhere by the injected-refusal test above; this one only
+        confirms the scenario is real when the environment can show it.
+        """
+        source = self._wal_db(tmp_path)
+        restored = tmp_path / "restored" / "library.db"
+        restored.parent.mkdir()
+        restored.write_bytes(source.read_bytes())
+
+        probe = sqlite3.connect(f"file:{restored}?mode=ro", uri=True)
+        try:
+            probe.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        except sqlite3.OperationalError:
+            pass
+        else:
+            pytest.skip(
+                f"SQLite {sqlite3.sqlite_version} opens a sidecar-less WAL"
+                " database read-only, so there is nothing to fall back from"
+            )
+        finally:
+            probe.close()
+
+        retry = sqlite3.connect(f"file:{restored}?mode=ro&immutable=1", uri=True)
+        try:
+            count = retry.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        finally:
+            retry.close()
+        assert count == 1, "immutable=1 must be able to read what mode=ro refused"

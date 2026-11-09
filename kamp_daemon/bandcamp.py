@@ -338,7 +338,8 @@ def mark_collection_synced(
     session = _make_requests_session(session_data)
     fan_id, username = _get_fan_info(session)
     if not username:
-        username = _username_from_logout_cookie(session_data.get("cookies", []))
+        # Read from the logout cookie at login; the cookie itself is not kept.
+        username = str(session_data.get("username") or "")
     _store_username_in_session(username, session_data, index)
     collection = _fetch_collection(fan_id, session, index)
 
@@ -411,7 +412,8 @@ def sync_new_purchases(
     session = _make_requests_session(session_data)
     fan_id, username = _get_fan_info(session)
     if not username:
-        username = _username_from_logout_cookie(session_data.get("cookies", []))
+        # Read from the logout cookie at login; the cookie itself is not kept.
+        username = str(session_data.get("username") or "")
     _store_username_in_session(username, session_data, index)
     logger.info("Fetched fan_id=%s for user %r", fan_id, username)
 
@@ -755,7 +757,8 @@ def sync_collection_stream(
     session = _make_requests_session(session_data)
     fan_id, username = _get_fan_info(session)
     if not username:
-        username = _username_from_logout_cookie(session_data.get("cookies", []))
+        # Read from the logout cookie at login; the cookie itself is not kept.
+        username = str(session_data.get("username") or "")
     _store_username_in_session(username, session_data, index)
     logger.info("Fetched fan_id=%s for user %r", fan_id, username)
 
@@ -1171,6 +1174,102 @@ def _make_requests_session(
         return _ProxySession(session_data)
 
     return _cookie_session(session_data)
+
+
+#: The only Bandcamp cookies kamp persists (KAMP-746).  Anything else the login
+#: window collected — analytics/ad pixels, consent and cart state, and any name
+#: Bandcamp adds later — is dropped, so this is an allowlist, not a blocklist.
+#:
+#: Derived by scripts/probe_bandcamp_cookies.py, which replays a stored jar
+#: with one cookie removed at a time against collection_summary, a count=1
+#: collection_items page, a redownload page and a popplers5 CDN fetch:
+#:
+#:   identity      required — the only cookie the server checks; without it
+#:                 collection_summary answers 200 with no fan_id.  It alone
+#:                 passes all four legs.
+#:   js_logged_in  not checked by Bandcamp, but _validate_session refuses a
+#:                 jar without js_logged_in=1 before it touches the network,
+#:                 so dropping it would log the user out silently.
+#:
+#: Deliberately excluded:
+#:   logout        only ever a username source; the username is read from it
+#:                 at login (store_login_session) and kept in session_data.
+#:   BACKENDID3    backend affinity; the probe passed every leg without it.
+#:   cf_clearance, __cf_bm
+#:                 Cloudflare state bound to the browser that earned it (UA,
+#:                 IP, TLS fingerprint), so useless to requests; __cf_bm is
+#:                 stale within ~30 minutes.  Chromium keeps and refreshes its
+#:                 own copies, and persisting them would make the relay inject
+#:                 a stale value over the live one and then delete it.
+#:
+#: Re-run the probe before adding a name here: a list that is too tight fails
+#: as a silent logout, not an error.
+AUTH_COOKIE_NAMES: frozenset[str] = frozenset({"identity", "js_logged_in"})
+
+
+def filter_session_cookies(session_data: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *session_data* holding only :data:`AUTH_COOKIE_NAMES`.
+
+    Non-cookie keys (``username``, ``origins``) are carried over unchanged:
+    callers persist the whole dict, so losing them would lose the username.
+    """
+    cookies = [
+        dict(c)
+        for c in session_data.get("cookies", [])
+        if c.get("name") in AUTH_COOKIE_NAMES
+    ]
+    return {**session_data, "cookies": cookies}
+
+
+def store_login_session(
+    index: "LibraryIndex", payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist the session the Electron login window collected (KAMP-746).
+
+    The username is read from the *unfiltered* jar — the ``logout`` cookie that
+    carries it is not itself kept.  The API fallback, by contrast, runs on the
+    *filtered* jar: if it ran on the full one it could succeed while the jar we
+    actually store is broken, hiding exactly the failure to watch for.
+    """
+    username = _username_from_logout_cookie(payload.get("cookies", []))
+    session_data = filter_session_cookies(payload)
+    if not username:
+        try:
+            _fan_id, username = _get_fan_info(_make_requests_session(session_data))
+        except Exception as exc:
+            logger.warning("Could not fetch Bandcamp username after login: %s", exc)
+    if username:
+        session_data["username"] = username
+    index.set_session("bandcamp", session_data)
+    return session_data
+
+
+def prune_stored_session(
+    index: "LibraryIndex", session_data: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Drop non-allowlisted cookies from an already-stored session (KAMP-746).
+
+    Sessions saved before the allowlist existed carry every cookie the login
+    window saw.  Rewrites the stored row only when something was dropped, and
+    never writes when there is no session — a ``None`` from get_session can
+    also mean "keychain unreachable", and writing then would be destructive.
+    Returns the filtered session either way, so a failed write still leaves
+    this run serving the filtered jar.
+    """
+    if session_data is None:
+        return None
+    filtered = filter_session_cookies(session_data)
+    if filtered == session_data:
+        return session_data
+    try:
+        index.set_session("bandcamp", filtered)
+        logger.info(
+            "Pruned %d non-auth cookie(s) from the stored Bandcamp session.",
+            len(session_data.get("cookies", [])) - len(filtered["cookies"]),
+        )
+    except Exception as exc:
+        logger.warning("Could not prune the stored Bandcamp session: %s", exc)
+    return filtered
 
 
 def _cookie_session(session_data: dict[str, Any]) -> _requests.Session:

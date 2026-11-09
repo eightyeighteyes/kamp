@@ -582,6 +582,18 @@ function isBandcampLoginUrl(raw: string): boolean {
 }
 
 /**
+ * Cloudflare's bot-management cookies (cf_clearance, __cf_bm, __cflb, _cfuvid).
+ * Chromium earned them and only Chromium can use them, so they stay in its
+ * store after login (KAMP-746).  This is about Chromium's store only: what the
+ * daemon persists is decided by AUTH_COOKIE_NAMES in kamp_daemon/bandcamp.py.
+ */
+const CLOUDFLARE_COOKIES = new Set(['cf_clearance', '__cf_bm', '__cflb', '_cfuvid'])
+
+function isCloudflareCookie(name: string): boolean {
+  return CLOUDFLARE_COOKIES.has(name)
+}
+
+/**
  * Open a BrowserWindow pointing at bandcamp.com/login.  Poll the default
  * session's cookie jar once per second; when ``js_logged_in=1`` appears,
  * collect all .bandcamp.com cookies, format them as a Playwright
@@ -703,15 +715,18 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
           body: JSON.stringify(payload)
         })
         if (!res.ok) throw new Error(`login-complete returned ${res.status}`)
-        // Cookies are now persisted in the DB.  Remove them from the Electron
-        // session store so they don't linger as plaintext in the Chromium
-        // profile on disk.
-        // NOTE: in the PyInstaller bundle, _ProxySession routes requests via
-        // net.fetch which uses session.defaultSession — those requests will fail
-        // until the next startup reloads cookies from DB into the session.
-        // This is acceptable; the frozen-bundle cookie-reload path is tracked
-        // separately as a future improvement.
+        // The daemon has persisted the auth cookies it needs (it filters to its
+        // own allowlist, KAMP-746 — this side sends everything and keeps no
+        // copy of that list).  Clear the jar from the Chromium profile so
+        // neither the credential nor the trackers linger on disk as plaintext.
+        //
+        // Cloudflare's own state is the exception.  The daemon never persists
+        // it (it is bound to this browser's fingerprint and goes stale), so
+        // Chromium is its only holder, and the relay's net.fetch needs it to
+        // stay unchallenged; deleting it here would only invite a fresh
+        // challenge on the next relayed request.
         for (const c of payload.cookies) {
+          if (isCloudflareCookie(c.name)) continue
           await session.defaultSession.cookies.remove('https://bandcamp.com', c.name)
         }
         await settle({ ok: true })

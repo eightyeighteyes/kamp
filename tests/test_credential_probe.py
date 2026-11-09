@@ -517,3 +517,96 @@ class TestCredentialReportSqliteFacts:
             probe.close()
 
         assert _credential_report()["secure_delete_default"] == build_default
+
+
+class TestCredentialReportWithoutWalSidecars:
+    """The report must survive a database restored without its sidecars.
+
+    ``mode=ro`` cannot open a WAL-mode database whose -wal/-shm are absent --
+    read-only access cannot create the shared memory it needs -- and the
+    OperationalError used to escape, so ``doctor-credentials`` tracebacked
+    instead of reporting. Measured: a clean close *keeps* both sidecars, so the
+    trigger is not a stopped daemon but a database copied on its own, which is
+    what every ``bak-<version>-prod/`` directory in the state dir contains.
+    Restoring one of those to reproduce a credential bug and then running this
+    command is exactly how it was hit.
+    """
+
+    @staticmethod
+    def _restored_wal_db(tmp_path: Path) -> Path:
+        """Build a WAL-mode library.db, then copy it WITHOUT its sidecars."""
+        import sqlite3
+
+        source = tmp_path / "source" / "library.db"
+        source.parent.mkdir()
+        conn = sqlite3.connect(source)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "CREATE TABLE sessions (service TEXT PRIMARY KEY,"
+                " session_json TEXT, updated_at REAL)"
+            )
+            conn.execute(
+                "INSERT INTO sessions VALUES ('bandcamp', ?, 0)", ("x" * 2381,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        restored = tmp_path / "state" / "library.db"
+        restored.parent.mkdir()
+        restored.write_bytes(source.read_bytes())
+        # The positive control for this whole test: mode=ro must actually be
+        # refused here, or the fallback under test is never exercised and the
+        # assertions below pass for the wrong reason.
+        probe = sqlite3.connect(f"file:{restored}?mode=ro", uri=True)
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                probe.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        finally:
+            probe.close()
+        return restored
+
+    def test_report_falls_back_and_flags_the_wal_as_unread(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        from kamp_daemon.__main__ import _credential_report
+
+        restored = self._restored_wal_db(tmp_path)
+        mocker.patch("kamp_daemon.__main__._state_dir", return_value=restored.parent)
+
+        report = _credential_report()
+
+        assert report["db_exists"] is True
+        assert report["db_wal_consulted"] is False, "fallback not recorded"
+        services = report["services"]
+        assert isinstance(services, dict)
+        bandcamp = services["bandcamp"]
+        assert isinstance(bandcamp, dict)
+        assert bandcamp["db_row"] == "PLAINTEXT"
+        assert bandcamp["db_row_length"] == 2381
+
+    def test_wal_is_reported_as_consulted_when_sidecars_are_present(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """The flag must not be stuck off -- a normal DB reads its WAL."""
+        import sqlite3
+
+        from kamp_daemon.__main__ import _credential_report
+
+        db_path = tmp_path / "library.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "CREATE TABLE sessions (service TEXT PRIMARY KEY,"
+                " session_json TEXT, updated_at REAL)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        assert (tmp_path / "library.db-shm").exists(), "expected sidecars to persist"
+
+        mocker.patch("kamp_daemon.__main__._state_dir", return_value=tmp_path)
+
+        assert _credential_report()["db_wal_consulted"] is True

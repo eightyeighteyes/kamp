@@ -439,6 +439,7 @@ def _credential_report() -> dict[str, object]:
         "frozen": bool(getattr(sys, "frozen", False)),
         "sqlite_version": sqlite3.sqlite_version,
         "secure_delete_default": secure_delete_default,
+        "db_wal_consulted": True,
         "services": {},
     }
 
@@ -447,17 +448,53 @@ def _credential_report() -> dict[str, object]:
     # rather than something to be inferred.
     rows: dict[str, int | None] = {}
     digests: dict[str, str] = {}
+    wal_consulted = True
     if db_path.exists():
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        try:
-            conn.row_factory = sqlite3.Row
-            for row in conn.execute("SELECT service, session_json FROM sessions"):
-                value = row["session_json"]
-                rows[row["service"]] = None if value is None else len(value)
-                if value is not None:
-                    digests[row["service"]] = credential_probe.credential_digest(value)
-        finally:
-            conn.close()
+        # `mode=ro` cannot open a WAL-mode database whose -wal/-shm sidecars are
+        # missing: read-only access cannot create the shared-memory file it
+        # needs. Measured: a clean close *keeps* both sidecars, so this is not
+        # about the daemon being stopped -- it is the state of a database that
+        # was copied or restored on its own, which is precisely what every
+        # `bak-<version>-prod/` directory here holds (library.db and nothing
+        # else). Restoring a backup to reproduce a credential bug and then
+        # running this command is an obvious thing to do, and it tracebacked
+        # with a bare "unable to open database file".
+        #
+        # `immutable=1` is NOT a drop-in replacement: it asserts the file cannot
+        # change and carries no WAL, so against a *running* daemon it silently
+        # reads the stale main file and would report the wrong credential state
+        # -- worse than failing, for this command. So try the correct open
+        # first and fall back only when it is refused, recording which happened
+        # (KAMP-737's lesson, at a new site).
+        # Note sqlite3.connect() is lazy -- it does not touch the file until a
+        # statement runs -- so the fallback has to be driven by the first query,
+        # not by the connect call.
+        session_rows: list[sqlite3.Row] = []
+        for uri, consulted in (
+            (f"file:{db_path}?mode=ro", True),
+            (f"file:{db_path}?mode=ro&immutable=1", False),
+        ):
+            conn = sqlite3.connect(uri, uri=True)
+            try:
+                conn.row_factory = sqlite3.Row
+                session_rows = conn.execute(
+                    "SELECT service, session_json FROM sessions"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                if consulted:
+                    continue  # refused: retry without the WAL
+                raise
+            finally:
+                conn.close()
+            wal_consulted = consulted
+            break
+
+        for row in session_rows:
+            value = row["session_json"]
+            rows[row["service"]] = None if value is None else len(value)
+            if value is not None:
+                digests[row["service"]] = credential_probe.credential_digest(value)
+    report["db_wal_consulted"] = wal_consulted
 
     services: dict[str, object] = {}
     for service in _CREDENTIAL_SERVICES:
@@ -516,6 +553,15 @@ def _cmd_doctor_credentials(as_json: bool) -> None:
     if not report["db_exists"]:
         print("  db: NOT FOUND — nothing to report")
         return
+    if not report["db_wal_consulted"]:
+        # Say so rather than reporting stale rows as fact: the WAL can hold a
+        # newer credential, or a NULL that supersedes the row shown below.
+        print(
+            "  WARNING: this database's -wal/-shm sidecars are missing, so the"
+            " write-ahead log could not be read and the rows below are as of"
+            " the last checkpoint. Typical of a database copied or restored on"
+            " its own; a credential may have been written since."
+        )
     print()
 
     services = report["services"]

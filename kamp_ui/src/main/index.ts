@@ -616,16 +616,61 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     // Mutable ref — clearInterval needs to see the id assigned below.
     const poll = { timer: undefined as ReturnType<typeof setInterval> | undefined }
 
-    // KAMP-747: the most recent navigation the guards below refused.  Reported
+    // KAMP-747: the most recent refused navigation that went NOWHERE. Reported
     // in the settle() error because in a packaged build console.warn goes
     // nowhere the user can see, and this window is a bare BrowserWindow with no
-    // menu, back button or reload — so a silent block would strand them with no
-    // way to tell a confinement failure from "Bandcamp is broken".
+    // menu, back button or reload — so a silent dead end would leave the user
+    // unable to tell a confinement failure from "Bandcamp is broken".  A
+    // navigation re-homed to the system browser is deliberately NOT recorded
+    // here: the browser opening is itself visible, so it is not a dead end, and
+    // naming it would put noise in the error after a harmless footer click.
     let lastBlocked: string | null = null
 
-    const blockNavigation = (url: string, how: string): void => {
-      lastBlocked = url
-      console.warn('[kamp login] blocked %s to %s', how, url)
+    // Only the first of a burst for the same URL is handed to the browser.  A
+    // refused navigation can arrive several times over — a redirect chain, or
+    // the page retrying — and each one would otherwise be another browser tab.
+    let lastDiverted: { url: string; at: number } = { url: '', at: 0 }
+
+    const schemeOf = (url: string): string | null => {
+      try {
+        return new URL(url).protocol
+      } catch {
+        return null
+      }
+    }
+
+    /**
+     * Refuse an off-origin URL, then re-home it in the system browser.
+     *
+     * The confinement is only livable because of this.  The login page carries
+     * genuine outbound links — the reCAPTCHA notice points at
+     * policies.google.com, and a footer link 302s to songtradr.com — and
+     * refusing those without re-homing them leaves a dead link in a window with
+     * no address bar to work around it.
+     *
+     * The OS browser is strictly less privileged than the navigation it
+     * replaces: no Bandcamp cookie jar, no X-Kamp-Token injection, no preload.
+     * This is applied to will-redirect as well as will-navigate because a user
+     * click can reach its off-origin hop via a 302 — bandcamp.com's careers
+     * link does exactly that — and Electron exposes no user-gesture flag to
+     * tell that apart from a scripted redirect.
+     */
+    const divertExternal = (url: string, how: string): void => {
+      const scheme = schemeOf(url)
+      if (scheme !== 'https:' && scheme !== 'http:') {
+        lastBlocked = url
+        console.warn('[kamp login] refused %s to %s (scheme not openable)', how, url)
+        return
+      }
+      const now = Date.now()
+      if (lastDiverted.url === url && now - lastDiverted.at < 2000) return
+      lastDiverted = { url, at: now }
+      console.log('[kamp login] refused %s to %s — opening in the system browser', how, url)
+      void shell.openExternal(url).catch((err) => {
+        // It did not open after all, so this one really is a dead end.
+        lastBlocked = url
+        console.error('[kamp login] openExternal(%s) failed: %s', url, String(err))
+      })
     }
 
     const settle = async (result: BandcampLoginResult): Promise<void> => {
@@ -689,7 +734,7 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     loginWin.webContents.on('will-navigate', (event) => {
       if (isBandcampLoginUrl(event.url)) return
       event.preventDefault()
-      blockNavigation(event.url, 'will-navigate')
+      divertExternal(event.url, 'will-navigate')
     })
 
     // A server-side 302 never reaches will-navigate, so without this the guard
@@ -703,34 +748,19 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       if (!event.isMainFrame) return
       if (isBandcampLoginUrl(event.url)) return
       event.preventDefault()
-      blockNavigation(event.url, 'will-redirect')
+      divertExternal(event.url, 'will-redirect')
     })
 
     // Never open a second window: a child would share defaultSession and arrive
-    // with none of the guards above.  Genuine external links (terms, privacy)
-    // go to the system browser as the main window does, but unlike that handler
-    // this one checks the scheme first, so a non-http(s) URL cannot be handed to
-    // the OS, and it attaches a catch — openExternal returns a rejectable
-    // promise.  A bandcamp.com popup is dropped rather than loaded in place:
-    // replacing a half-filled login form has no undo in a window with no back
-    // button, and loadURL would bypass the will-navigate guard beside it.
+    // with none of the guards above.  Everything goes through divertExternal,
+    // so a popup lands in the system browser as the main window's handler does
+    // — but unlike that handler the scheme is parsed first, so a non-http(s)
+    // URL cannot be handed to the OS, and openExternal's rejectable promise
+    // gets a catch.  A bandcamp.com popup is re-homed too rather than loaded in
+    // place: replacing a half-filled login form has no undo in a window with no
+    // back button, and loadURL would bypass the will-navigate guard beside it.
     loginWin.webContents.setWindowOpenHandler(({ url }) => {
-      // Parsed, not startsWith — same reason as isBandcampLoginUrl: the scheme
-      // decides whether this string is handed to the OS.
-      let scheme: string | null = null
-      try {
-        scheme = new URL(url).protocol
-      } catch {
-        scheme = null
-      }
-      if (scheme === 'https:' || scheme === 'http:') {
-        console.log('[kamp login] opening %s in the system browser', url)
-        void shell.openExternal(url).catch((err) => {
-          console.error('[kamp login] openExternal(%s) failed: %s', url, String(err))
-        })
-      } else {
-        blockNavigation(url, 'window.open')
-      }
+      divertExternal(url, 'window.open')
       return { action: 'deny' }
     })
 

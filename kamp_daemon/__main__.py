@@ -1239,39 +1239,21 @@ def _cmd_daemon(
         _scrobbler_ref[0] = None
 
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
-        session_data: dict[str, Any] = dict(payload)
-        index.set_session("bandcamp", session_data)
+        from .bandcamp import store_login_session
+
+        # KAMP-746: filters to the auth allowlist and extracts the username in
+        # one place, so the jar stored is the jar the fallback lookup tested.
+        session_data = store_login_session(index, dict(payload))
         index.set_setting("bandcamp.ever_connected", "true")
         # A login can be a different account than the last one, and connecting
         # without a disconnect first is a supported path. Before KAMP-666 that
         # was an hour of stale exclusion; now it is persisted rows belonging to
         # someone else, so the new session starts from a clean table.
         _wishlist_walker.invalidate()
-        _logger.info("Bandcamp session saved from Electron login flow.")
-        # Extract username immediately so the UI can show "Connected as {username}".
-        # Primary source: the logout cookie (URL-encoded JSON, always present after
-        # login, no network round-trip required).  Fallback: the collection_summary
-        # API (requires a network call; may return empty if Bandcamp changes the field).
-        from .bandcamp import (
-            _get_fan_info,
-            _make_requests_session,
-            _username_from_logout_cookie,
+        _logger.info(
+            "Bandcamp session saved from Electron login flow (username %r).",
+            session_data.get("username"),
         )
-
-        cookies: list[Any] = list(session_data.get("cookies", []))
-        username = _username_from_logout_cookie(cookies)
-        if not username:
-            try:
-                bc_session = _make_requests_session(session_data)
-                _fan_id, username = _get_fan_info(bc_session)
-            except Exception as exc:
-                _logger.warning(
-                    "Could not fetch Bandcamp username after login: %s", exc
-                )
-        if username:
-            session_data["username"] = username
-            index.set_session("bandcamp", session_data)
-            _logger.info("Bandcamp username %r stored in session.", username)
 
     def _on_bandcamp_disconnect() -> None:
         index.clear_session("bandcamp")
@@ -1514,7 +1496,19 @@ def _cmd_daemon(
     _wishlist_walker = WishlistWalker(index)
 
     # Bandcamp username comes only from the session (set after Electron login flow).
-    _bc_session = index.get_session("bandcamp")
+    # KAMP-746: sessions saved before the cookie allowlist carry trackers and
+    # other non-auth cookies; drop them on the read startup makes anyway rather
+    # than paying a second (possibly prompting) keychain read for a separate
+    # migration step.  secure_delete=ON (KAMP-748) zeroes the old row's bytes
+    # when the session lives in the DB column.
+    from kamp_daemon.bandcamp import filter_session_cookies, prune_stored_session
+
+    _bc_session = prune_stored_session(index, index.get_session("bandcamp"))
+
+    def _filtered_bc_session() -> dict[str, Any] | None:
+        data = index.get_session("bandcamp")
+        return None if data is None else filter_session_cookies(data)
+
     _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
     _config_values = _build_config_values(config, _bc_session, _bc_ever_connected)
 
@@ -1580,7 +1574,10 @@ def _cmd_daemon(
         on_lastfm_connect=_on_lastfm_connect,
         on_lastfm_disconnect=_on_lastfm_disconnect,
         on_bandcamp_login_complete=_on_bandcamp_login_complete,
-        get_bandcamp_session=lambda: index.get_session("bandcamp"),
+        # Filtered on read too (KAMP-746): if the startup prune's write failed,
+        # the stored row still holds the old jar, and this is what the relay's
+        # /session-cookies injects into Chromium.
+        get_bandcamp_session=lambda: _filtered_bc_session(),
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,

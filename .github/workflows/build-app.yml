@@ -651,6 +651,24 @@ jobs:
           done
         working-directory: kamp_ui
 
+      - name: Verify the keychain helper in the signed app
+        # KAMP-753. The helper was SIGKILLed at exec in every release for
+        # months, and nothing noticed: the daemon falls back quietly and the
+        # app looks fine. This runs it from the finished, signed Kamp.app,
+        # which is the exact code users get, and requires a real Data
+        # Protection Keychain round-trip. "Didn't crash" is not enough: a
+        # helper re-signed without its entitlements would run, exit 3 and pass
+        # a weaker check. Validated locally against both outcomes: a profiled
+        # bundle round-trips, and the same bundle without a profile is killed
+        # with signal 9, which this step reports as a profile failure.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          APP=$(ls -d kamp_ui/dist/mac*/Kamp.app | head -1)
+          echo "→ $APP"
+          codesign --verify --strict --deep --verbose=2 "$APP"
+          bash scripts/smoke_keychain_helper.sh "$APP/Contents/Helpers/KampKeychainHelper.app"
+
       - name: Brand the DMG install target
         # KAMP-675: swap the /Applications symlink for a Finder alias carrying
         # the platter icon, so the drop target seats into the turntable drawn

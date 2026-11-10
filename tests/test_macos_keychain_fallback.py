@@ -132,13 +132,20 @@ class TestHelperRanAndAnswered:
     def test_not_found_is_an_answer_not_a_fallback(
         self, kc: ModuleType, mocker: MockerFixture
     ) -> None:
+        """Absent everywhere is None, and the helper is not latched unusable.
+
+        The only further read allowed is the KAMP-753 migration probe of the
+        Login Keychain — never a DPC re-read over ctypes, which would be the
+        unentitled path second-guessing the entitled one.
+        """
         mocker.patch.object(
             kc.subprocess, "run", return_value=_completed(kc._HELPER_EXIT_NOT_FOUND)
         )
-        read = mocker.patch.object(kc, "_read_raw", return_value=SENTINEL)
+        read = mocker.patch.object(kc, "_read_raw", return_value=None)
 
         assert kc.get_password("kamp", "bandcamp") is None
-        assert not read.called, "fell back despite an authoritative answer"
+        for call in read.call_args_list:
+            assert call.kwargs == {"use_dpc": False}, "re-read DPC over ctypes"
         assert kc._helper_unusable is False
 
     def test_locked_still_raises_keyring_locked(
@@ -159,6 +166,173 @@ class TestHelperRanAndAnswered:
         )
         with pytest.raises(keyring.errors.KeyringError):
             kc.get_password("kamp", "bandcamp")
+
+
+# Mirrors _HELPER_EXIT_* in macos_keychain (and the Swift helper's exit codes).
+kc_exit_ok, kc_exit_not_found, kc_exit_error = 0, 1, 3
+
+
+class _FakeHelper:
+    """A working helper backed by a dict standing in for the DPC.
+
+    Routes on the op argument so each test can see exactly which operations
+    went through the helper, and can make one of them misbehave.
+    """
+
+    def __init__(self) -> None:
+        self.dpc: dict[str, str] = {}
+        self.ops: list[str] = []
+        self.fail_set = False
+        self.corrupt_set = False
+
+    def run(self, argv: list[str], **kwargs: Any) -> MagicMock:
+        _, op, service, user = argv
+        key = f"{service}/{user}"
+        self.ops.append(op)
+        if op == "get_dpc":
+            if key in self.dpc:
+                return _completed(kc_exit_ok, self.dpc[key].encode())
+            return _completed(kc_exit_not_found)
+        if op == "set_dpc":
+            if self.fail_set:
+                return _completed(kc_exit_error)
+            value = kwargs["input"].decode().removesuffix("\n")
+            self.dpc[key] = value + ("-corrupt" if self.corrupt_set else "")
+            return _completed(kc_exit_ok)
+        if op == "delete_dpc":
+            self.dpc.pop(key, None)
+            return _completed(kc_exit_ok)
+        raise AssertionError(f"Login Keychain op {op!r} went through the helper")
+
+
+class TestLoginKeychainMigration:
+    """KAMP-753: a working helper must not strand a Login Keychain credential.
+
+    Until now the helper never ran, so every packaged-build credential the
+    KAMP-749 fallback wrote is in the Login Keychain. The helper's own read
+    covers only the DPC, so without a migration the first build where the
+    helper works would report every such user as logged out.
+
+    Login Keychain items were created over ctypes by ``kamp`` and their ACL
+    trusts ``kamp``, so the migration reads and deletes them in-process. The
+    helper reading them would raise a prompt naming the helper and block for
+    the full timeout on every retry.
+    """
+
+    @pytest.fixture()
+    def helper(self, kc: ModuleType, mocker: MockerFixture) -> _FakeHelper:
+        fake = _FakeHelper()
+        mocker.patch.object(kc.subprocess, "run", side_effect=fake.run)
+        return fake
+
+    @pytest.fixture()
+    def login(self, kc: ModuleType, mocker: MockerFixture) -> dict[str, str]:
+        store: dict[str, str] = {"kamp/bandcamp": SENTINEL}
+
+        def _read(service: str, user: str, use_dpc: bool) -> str | None:
+            assert use_dpc is False
+            return store.get(f"{service}/{user}")
+
+        def _delete(service: str, user: str, use_dpc: bool) -> None:
+            assert use_dpc is False
+            store.pop(f"{service}/{user}", None)
+
+        mocker.patch.object(kc, "_read_raw", side_effect=_read)
+        mocker.patch.object(kc, "_delete_raw", side_effect=_delete)
+        return store
+
+    def test_login_credential_moves_to_dpc(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        assert kc.get_password("kamp", "bandcamp") == SENTINEL
+        assert helper.dpc == {"kamp/bandcamp": SENTINEL}
+        assert login == {}, "Login Keychain copy was not removed after migrating"
+
+    def test_second_read_is_served_from_dpc(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        kc.get_password("kamp", "bandcamp")
+        helper.ops.clear()
+
+        assert kc.get_password("kamp", "bandcamp") == SENTINEL
+        assert helper.ops == ["get_dpc"]
+
+    def test_failed_dpc_write_keeps_the_login_copy(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        """Deleting before a verified write would lose the credential."""
+        helper.fail_set = True
+
+        assert kc.get_password("kamp", "bandcamp") == SENTINEL
+        assert login == {"kamp/bandcamp": SENTINEL}
+
+    def test_unverified_dpc_write_keeps_the_login_copy(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        helper.corrupt_set = True
+
+        assert kc.get_password("kamp", "bandcamp") == SENTINEL
+        assert login == {"kamp/bandcamp": SENTINEL}
+
+    def test_failed_login_delete_still_returns_the_value(
+        self,
+        kc: ModuleType,
+        helper: _FakeHelper,
+        login: dict[str, str],
+        mocker: MockerFixture,
+    ) -> None:
+        """The DPC copy is authoritative from here on, so a stale duplicate is harmless."""
+        mocker.patch.object(
+            kc, "_delete_raw", side_effect=keyring.errors.KeyringError("-25244")
+        )
+        assert kc.get_password("kamp", "bandcamp") == SENTINEL
+        assert helper.dpc == {"kamp/bandcamp": SENTINEL}
+
+    def test_migration_is_logged_without_the_value(
+        self,
+        kc: ModuleType,
+        helper: _FakeHelper,
+        login: dict[str, str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="kamp_core.macos_keychain"):
+            kc.get_password("kamp", "bandcamp")
+
+        assert "migrated" in caplog.text
+        assert SENTINEL not in caplog.text
+
+    def test_absent_everywhere_writes_nothing(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        login.clear()
+        assert kc.get_password("kamp", "bandcamp") is None
+        assert "set_dpc" not in helper.ops
+
+    def test_doctor_reads_login_keychain_in_process(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        """_FakeHelper raises if a Login op reaches it."""
+        assert kc._get_login_keychain_password("kamp", "bandcamp") == SENTINEL
+
+    def test_delete_password_clears_login_keychain_in_process(
+        self, kc: ModuleType, helper: _FakeHelper, login: dict[str, str]
+    ) -> None:
+        helper.dpc["kamp/bandcamp"] = SENTINEL
+
+        kc.delete_password("kamp", "bandcamp")
+
+        assert helper.dpc == {}
+        assert login == {}
+
+    def test_backend_state_reports_helper_only_while_usable(
+        self, kc: ModuleType, mocker: MockerFixture
+    ) -> None:
+        """KAMP-743: never claim the DPC on the strength of the path alone."""
+        assert kc.backend_state()["implementation"] == "helper"
+        mocker.patch.object(kc, "_helper_unusable", True)
+        assert kc.backend_state()["implementation"] == "ctypes"
 
 
 class TestTimeout:

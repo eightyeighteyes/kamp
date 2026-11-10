@@ -474,11 +474,15 @@ def get_password(service: str, username: str) -> str | None:
     """
     if _use_helper():
         try:
-            return _helper_get(service, username, login=False)
+            value = _helper_get(service, username, login=False)
         except _HelperUnusable as exc:
             _note_fallback("get", exc)
             # Fall through to ctypes below rather than reporting absence: the
             # helper never ran, so it learned nothing about this credential.
+        else:
+            if value is not None:
+                return value
+            return _migrate_from_login_keychain(service, username)
 
     global _dpc_unavailable
     if not _dpc_unavailable:
@@ -504,6 +508,70 @@ def get_password(service: str, username: str) -> str | None:
             _raise_for_status(status)
 
     return _read_raw(service, username, use_dpc=False)
+
+
+def _migrate_from_login_keychain(service: str, username: str) -> str | None:
+    """Move a Login Keychain credential into the DPC once the helper works.
+
+    KAMP-753: until the helper could run, the KAMP-749 fallback wrote every
+    packaged-build credential to the Login Keychain. The helper reads only the
+    DPC, so without this the first build with a working helper would report
+    every such user as logged out.
+
+    Login Keychain items were created over ctypes by ``kamp``, so their ACL
+    trusts ``kamp``; they are read and deleted in-process, never through the
+    helper (which would prompt in its own name and block for the timeout on
+    every retry). After an app update ``kamp``'s hash has changed too, so the
+    read prompts once — that is the last prompt, since the DPC copy is scoped
+    by access group rather than binary hash.
+
+    The Login copy is deleted only after the DPC write reads back intact, so a
+    failure at any step keeps the credential where it was and still returns it.
+    """
+    value = _read_raw(service, username, use_dpc=False)
+    if value is None:
+        return None
+
+    try:
+        _helper_set(service, username, value)
+        migrated = _helper_get(service, username, login=False) == value
+    except Exception as exc:
+        logger.warning(
+            "macos_keychain: could not migrate %s/%s to the Data Protection"
+            " Keychain (%s); keeping the Login Keychain copy",
+            service,
+            username,
+            exc,
+        )
+        return value
+    if not migrated:
+        logger.warning(
+            "macos_keychain: DPC copy of %s/%s did not read back intact;"
+            " keeping the Login Keychain copy",
+            service,
+            username,
+        )
+        return value
+
+    try:
+        _delete_raw(service, username, use_dpc=False)
+    except Exception as exc:
+        # Harmless: reads try the DPC first, so the stale copy is never used.
+        logger.warning(
+            "macos_keychain: migrated %s/%s but could not delete the Login"
+            " Keychain copy (%s)",
+            service,
+            username,
+            exc,
+        )
+        return value
+    logger.info(
+        "macos_keychain: migrated %s/%s from the Login Keychain to the Data"
+        " Protection Keychain",
+        service,
+        username,
+    )
+    return value
 
 
 def set_password(service: str, username: str, password: str) -> None:
@@ -584,14 +652,16 @@ def _write_login_keychain_blocking(service: str, username: str, password: str) -
 def delete_password(service: str, username: str) -> None:
     """Delete a generic password, preferring the Data Protection Keychain.
 
-    In the built .app delegates to kamp-keychain-helper (tries DPC then Login KC).
+    In the built .app the helper deletes the DPC copy; the Login Keychain copy
+    is deleted in-process, because its ACL trusts ``kamp`` (which created it
+    over ctypes), not the helper.
     In dev falls back to ctypes / Login Keychain.
     Silently ignores the case where the item is absent in either keychain.
     """
     if _use_helper():
         try:
             _helper_delete(service, username, login=False)
-            _helper_delete(service, username, login=True)
+            _delete_raw(service, username, use_dpc=False)
             return
         except _HelperUnusable as exc:
             _note_fallback("delete", exc)
@@ -722,21 +792,10 @@ def credential_provenance(service: str, username: str) -> dict[str, object]:
 
 
 def _get_login_keychain_password(service: str, username: str) -> str | None:
-    """Read directly from the Login Keychain — used only for DPC migration."""
-    if _use_helper():
-        try:
-            return _helper_get(service, username, login=True)
-        except _HelperUnusable as exc:
-            _note_fallback("get_login", exc)
+    """Read directly from the Login Keychain, in-process (see _migrate_from_login_keychain)."""
     return _read_raw(service, username, use_dpc=False)
 
 
 def _delete_login_keychain_password(service: str, username: str) -> None:
-    """Delete directly from the Login Keychain — used only for DPC migration cleanup."""
-    if _use_helper():
-        try:
-            _helper_delete(service, username, login=True)
-            return
-        except _HelperUnusable as exc:
-            _note_fallback("delete_login", exc)
+    """Delete directly from the Login Keychain, in-process."""
     _delete_raw(service, username, use_dpc=False)

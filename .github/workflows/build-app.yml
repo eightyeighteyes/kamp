@@ -806,10 +806,11 @@ jobs:
           }
           Write-Host "OK: kamp.exe built, Playwright excluded"
 
-      - name: Build minimal mpv from source (MSYS2 + mingw-w64)
+      - name: Build minimal mpv from source (MSYS2 UCRT64)
         # Mirrors the macOS source-build approach. Pinned to mpv v0.41.0 with
-        # the same audio-only feature set; uses the MSYS2 mingw-w64 toolchain
-        # preinstalled on windows-latest. Output: resources\mpv\mpv.exe + DLLs.
+        # the same audio-only feature set; uses the MSYS2 UCRT64 toolchain
+        # preinstalled on windows-latest (KAMP-751: MINGW64 lost luajit).
+        # Output: resources\mpv\mpv.exe + DLLs.
         run: pwsh scripts/build_mpv_windows.ps1
 
       - name: Bundle Node.js + npm for extension installs
@@ -818,18 +819,18 @@ jobs:
       - name: Generate icon.ico from SVG
         # ImageMagick on windows-latest does not ship a reliable SVG delegate,
         # and Inkscape is no longer guaranteed to be on the runner image.
-        # Use librsvg's rsvg-convert from MSYS2 (already on the box from the
-        # mpv build step's pacman; install explicitly here so this step is
-        # not coupled to a transitive dep) to render PNGs at standard Windows
-        # shell sizes, then merge them into a single multi-resolution .ico
-        # via ImageMagick (magick.exe is preinstalled on windows-latest).
+        # Use librsvg's rsvg-convert from MSYS2 UCRT64 (the same environment
+        # as the mpv build, so a future MINGW64 package drop like KAMP-751's
+        # cannot break this step separately) to render PNGs at standard
+        # Windows shell sizes, then merge them into a single multi-resolution
+        # .ico via ImageMagick (magick.exe is preinstalled on windows-latest).
         run: |
-          & C:\msys64\usr\bin\bash.exe -lc 'pacman -S --needed --noconfirm mingw-w64-x86_64-librsvg'
+          & C:\msys64\usr\bin\bash.exe -lc 'pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-librsvg'
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to install mingw-w64-x86_64-librsvg via pacman"
+            Write-Error "Failed to install mingw-w64-ucrt-x86_64-librsvg via pacman"
             exit 1
           }
-          $rsvg = "C:\msys64\mingw64\bin\rsvg-convert.exe"
+          $rsvg = "C:\msys64\ucrt64\bin\rsvg-convert.exe"
           if (-not (Test-Path $rsvg)) {
             Write-Error "rsvg-convert not found at $rsvg after pacman install"
             exit 1

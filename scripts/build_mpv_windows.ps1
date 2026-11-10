@@ -1,16 +1,17 @@
 # scripts/build_mpv_windows.ps1
 #
 # Builds a minimal audio-only mpv from source on Windows using the MSYS2
-# mingw-w64 toolchain that is pre-installed on `windows-latest` GitHub runners.
+# UCRT64 toolchain that is pre-installed on `windows-latest` GitHub runners.
 # Produces kamp_ui\resources\mpv\mpv.exe plus the runtime DLLs it needs.
 #
 # Mirrors the macOS source-build in build-app.yml: pinned to mpv v0.41.0 with
 # the same audio-only meson feature set. Windows uses WASAPI for audio output;
-# all video, scripting, optical-disc, and X11/Wayland features are disabled.
+# all video, optical-disc, and X11/Wayland features are disabled. Lua stays
+# ENABLED: kamp_fade.lua implements pause/resume/stop (KAMP-519).
 #
 # Output layout (sibling DLL pattern is the Windows analog of macOS mpv-libs/):
 #   kamp_ui\resources\mpv\mpv.exe
-#   kamp_ui\resources\mpv\<dll>.dll       # mingw-supplied transitive deps
+#   kamp_ui\resources\mpv\<dll>.dll       # UCRT64-supplied transitive deps
 #
 # Usage: pwsh scripts/build_mpv_windows.ps1
 
@@ -26,24 +27,35 @@ $out = Join-Path $repo "kamp_ui\resources\mpv"
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-# windows-latest runners ship MSYS2 at C:\msys64. Use the mingw64 bash so
-# pacman, meson, and ninja resolve the mingw-w64 toolchain consistently.
+# windows-latest runners ship MSYS2 at C:\msys64.
 $msys2 = "C:\msys64"
 if (-not (Test-Path $msys2)) {
     throw "MSYS2 not found at $msys2. windows-latest runners are expected to have MSYS2 preinstalled."
 }
 $msysBash = Join-Path $msys2 "usr\bin\bash.exe"
 
-# Inherit the Windows PATH so curl/git/etc. resolve, but prepend mingw64 so
-# the mingw toolchain takes precedence inside the bash session.
+# The MSYS2 environment is ONE fact, and every prefix, path and package name
+# below is derived from it. UCRT64 (GCC + the modern UCRT C runtime) replaced
+# MINGW64 (GCC + legacy msvcrt.dll) in KAMP-751: MSYS2 stopped publishing
+# mingw-w64-x86_64-luajit, and mpv must link Lua. The whole dependency chain
+# has to move together -- msvcrt and UCRT keep separate heaps and FILE*
+# layouts, so a mixed bundle crashes at runtime instead of failing the build.
+$msysEnv = "UCRT64"
+$prefix = $msysEnv.ToLowerInvariant()           # /ucrt64 and C:\msys64\ucrt64
+$pkg = "mingw-w64-ucrt-x86_64"                  # package-name prefix for UCRT64
+$prefixBinUnix = "/$prefix/bin/"
+$prefixBinWin = Join-Path $msys2 "$prefix\bin"
+
+# Inherit the Windows PATH so curl/git/etc. resolve, but prepend the
+# environment's bin dir so its toolchain takes precedence inside bash.
 $env:MSYS2_PATH_TYPE = "inherit"
 $env:CHERE_INVOKING = "1"
-$env:MSYSTEM = "MINGW64"
+$env:MSYSTEM = $msysEnv
 
 # All MSYS2 commands run through a single bash -lc invocation per logical step
 # so that pacman/PATH state propagates within the step. Shell-quoting note:
-# we use single-quoted PowerShell here-strings (@'...'@) so $vars are passed
-# through to bash literally rather than expanded by PowerShell.
+# double-quoted PowerShell strings expand $prefix etc. before bash sees them;
+# a bash variable that must survive is escaped with a backtick (`$PATH).
 
 function Invoke-Msys($script) {
     & $msysBash -lc $script
@@ -59,20 +71,15 @@ Write-Host "==> Updating MSYS2 package database"
 & $msysBash -lc "pacman -Syu --noconfirm"
 Invoke-Msys "pacman -Syu --noconfirm"
 
-Write-Host "==> Installing mingw-w64 toolchain + mpv build deps via pacman"
-Invoke-Msys @'
-set -euo pipefail
-pacman -S --needed --noconfirm \
-    git \
-    mingw-w64-x86_64-toolchain \
-    mingw-w64-x86_64-meson \
-    mingw-w64-x86_64-ninja \
-    mingw-w64-x86_64-pkgconf \
-    mingw-w64-x86_64-ffmpeg \
-    mingw-w64-x86_64-libass \
-    mingw-w64-x86_64-libplacebo \
-    mingw-w64-x86_64-luajit
-'@
+# git is an MSYS package (no environment prefix); everything else is built
+# against the chosen environment's C runtime. The toolchain group also
+# supplies objdump, used by the C-runtime guard below.
+$packages = @("git") + (
+    @("toolchain", "meson", "ninja", "pkgconf", "ffmpeg", "libass", "libplacebo", "luajit") |
+        ForEach-Object { "$pkg-$_" }
+)
+Write-Host "==> Installing $msysEnv toolchain + mpv build deps via pacman"
+Invoke-Msys "set -euo pipefail; pacman -S --needed --noconfirm $($packages -join ' ')"
 
 Write-Host "==> Cloning mpv $MpvTag"
 $mpvSrcUnix = "/tmp/mpv-src"
@@ -91,7 +98,7 @@ Invoke-Msys "rm -rf $mpvSrcUnix && git clone --depth=1 --branch $MpvTag https://
 Write-Host "==> Configuring mpv with audio-only feature set"
 Invoke-Msys @"
 set -euo pipefail
-export PATH=/mingw64/bin:`$PATH
+export PATH=/$prefix/bin:`$PATH
 cd $mpvSrcUnix
 meson setup build \
     -Dbuildtype=release \
@@ -131,7 +138,7 @@ meson setup build \
 "@
 
 Write-Host "==> Building mpv (ninja)"
-Invoke-Msys "export PATH=/mingw64/bin:`$PATH && cd $mpvSrcUnix && ninja -C build"
+Invoke-Msys "export PATH=/$prefix/bin:`$PATH && cd $mpvSrcUnix && ninja -C build"
 
 # Copy the built executable. mpv's meson build emits TWO front-ends on Windows:
 #   mpv.exe -- GUI subsystem (no console); what the daemon spawns headlessly.
@@ -154,40 +161,99 @@ if (-not (Test-Path $mpvComWin)) {
 Copy-Item -Force $mpvComWin (Join-Path $out "mpv.com")
 
 # Walk mpv.exe's import table via ldd (the MSYS2 analog of macOS otool -L)
-# and copy every transitive dep that lives under /mingw64/bin into the same
+# and copy every transitive dep that lives under /ucrt64/bin into the same
 # directory as mpv.exe. Windows resolves bare DLL names from the executable's
 # directory first, so siblings need no further rewriting (unlike the macOS
 # @executable_path/mpv-libs/ rewrite handled by dylibbundler).
-Write-Host "==> Walking dependency tree and copying mingw runtime DLLs"
-$lddRaw = & $msysBash -lc "ldd $mpvSrcUnix/build/mpv.exe"
+#
+# The walk is an ALLOWLIST: every resolved DLL must come from the environment's
+# bin dir (bundled) or from C:\Windows (the OS provides it). Anything else --
+# a DLL found via the inherited runner PATH (Strawberry Perl, Git's mingw64
+# and similar carry their own zlib1/libgcc), an unresolved "not found"/???,
+# or a stray /mingw64 runtime -- fails the build. Silently skipping such a DLL
+# is how a bundle builds green and then dies with 0xc0000135 on a clean machine.
+Write-Host "==> Walking dependency tree and copying $msysEnv runtime DLLs"
+$lddRaw = & $msysBash -lc "export PATH=/$prefix/bin:`$PATH && ldd $mpvSrcUnix/build/mpv.exe"
 if ($LASTEXITCODE -ne 0) {
     throw "ldd on built mpv.exe failed"
 }
 
 $copiedDlls = New-Object System.Collections.Generic.HashSet[string]
+$rejected = New-Object System.Collections.Generic.List[string]
 foreach ($line in $lddRaw) {
-    if ($line -match '=>\s+(/mingw64/bin/[^\s]+\.dll)') {
-        $unixPath = $matches[1]
-        $rel = $unixPath.Substring("/mingw64/bin/".Length)
-        $winPath = Join-Path $msys2 "mingw64\bin\$rel"
-        if (Test-Path $winPath) {
-            Copy-Item -Force $winPath (Join-Path $out $rel)
-            [void]$copiedDlls.Add($rel)
+    $text = "$line".Trim()
+    if (-not $text) { continue }
+    if ($text -notmatch '^(\S+)\s+=>\s+(\S+)') {
+        $rejected.Add($text)
+        continue
+    }
+    $target = $matches[2]
+    if ($target.StartsWith($prefixBinUnix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $rel = $target.Substring($prefixBinUnix.Length)
+        $winPath = Join-Path $prefixBinWin $rel
+        if (-not (Test-Path $winPath)) {
+            $rejected.Add("$text (resolved but missing at $winPath)")
+            continue
         }
+        Copy-Item -Force $winPath (Join-Path $out $rel)
+        [void]$copiedDlls.Add($rel)
+    }
+    elseif ($target -match '^/c/Windows/') {
+        # OS-provided (ntdll, kernel32, ucrtbase, api-ms-win-crt-*); not bundled.
+        continue
+    }
+    else {
+        $rejected.Add($text)
     }
 }
 
-Write-Host "-> Copied $($copiedDlls.Count) mingw DLLs alongside mpv.exe"
+Write-Host "-> Copied $($copiedDlls.Count) $msysEnv DLLs alongside mpv.exe"
 $copiedDlls | Sort-Object | ForEach-Object { Write-Host "    $_" }
 
-# luajit (mingw-w64-x86_64-luajit) ships as lua51.dll; mpv links it dynamically
-# so the generic ldd walk above should have carried it. Fail loud if it didn't:
-# without it the kamp_fade.lua script never loads and pause/stop/resume become
-# silent no-ops (KAMP-519) -- a regression that is invisible until you press a
-# transport button in the packaged app.
+if ($rejected.Count -gt 0) {
+    $rejected | ForEach-Object { Write-Host "    REJECTED: $_" }
+    throw "$($rejected.Count) mpv.exe dependencies resolved outside $prefixBinUnix and C:\Windows -- they would be missing from the bundle (see REJECTED lines above)."
+}
+
+# luajit (mingw-w64-ucrt-x86_64-luajit) ships as lua51.dll; mpv links it
+# dynamically so the ldd walk above should have carried it. Fail loud if it
+# didn't: without it the kamp_fade.lua script never loads and pause/stop/resume
+# become silent no-ops (KAMP-519) -- a regression that is invisible until you
+# press a transport button in the packaged app.
 if (-not ($copiedDlls -contains "lua51.dll")) {
     throw "lua51.dll was not bundled -- luajit missing from mpv.exe import table. Lua scripting (kamp_fade.lua) would not load; pause/stop/resume would be no-ops (KAMP-519)."
 }
+
+# C-runtime guard: no staged binary may import msvcrt.dll directly. A mixed
+# msvcrt/UCRT process corrupts heaps at runtime rather than failing to load,
+# so neither the build nor the smoke test would notice. Only DIRECT imports
+# (objdump -p) are meaningful -- Windows' own system DLLs legitimately import
+# msvcrt.dll, and ldd's recursive walk would report those too.
+# Positive control: mpv.exe must import the UCRT, so a change in objdump's
+# output format cannot make this check pass vacuously.
+Write-Host "==> Checking staged binaries for a mixed C runtime"
+$objdump = Join-Path $prefixBinWin "objdump.exe"
+if (-not (Test-Path $objdump)) {
+    throw "objdump not found at $objdump (expected from the $pkg-toolchain group)"
+}
+$msvcrtUsers = New-Object System.Collections.Generic.List[string]
+$staged = Get-ChildItem -Path $out -File | Where-Object { $_.Extension -in ".exe", ".com", ".dll" }
+foreach ($bin in $staged) {
+    $imports = & $objdump -p $bin.FullName
+    if ($LASTEXITCODE -ne 0) {
+        throw "objdump -p failed on $($bin.Name)"
+    }
+    if ($imports -match 'DLL Name:\s*msvcrt\.dll') {
+        $msvcrtUsers.Add($bin.Name)
+    }
+    if ($bin.Name -eq "mpv.exe" -and -not ($imports -match 'DLL Name:\s*(api-ms-win-crt-|ucrtbase)')) {
+        throw "mpv.exe does not import the UCRT -- either the build is not $msysEnv or objdump output changed; the msvcrt guard cannot be trusted."
+    }
+}
+if ($msvcrtUsers.Count -gt 0) {
+    throw "Mixed C runtime: these staged binaries import msvcrt.dll directly: $($msvcrtUsers -join ', ')"
+}
+Write-Host "-> $($staged.Count) staged binaries checked; none import msvcrt.dll"
 
 # Smoke test: a sibling-DLL layout problem would surface here as a
 # 0xc0000135 ("DLL not found") exit code. This is the Windows analog of
@@ -196,6 +262,10 @@ if (-not ($copiedDlls -contains "lua51.dll")) {
 # subsystem) emits nothing. Both front-ends load the identical sibling-DLL
 # set, so either validates the staged layout via its exit code.
 #
+# PATH is cut down to the Windows directories for the duration, so a DLL
+# that only resolves via the runner's toolchains cannot mask a missing
+# sibling -- the test sees what a clean machine sees.
+#
 # NOTE: do NOT try to assert Lua here by grepping --version. `mpv --version`
 # only prints mpv/libplacebo/FFmpeg version banners -- it does not enumerate
 # scripting backends (lua/javascript), so there is no "lua" line to match on
@@ -203,9 +273,11 @@ if (-not ($copiedDlls -contains "lua51.dll")) {
 # import-table check above: mpv links lua51.dll only when built -Dlua=enabled,
 # and nothing else in the bundle pulls it in, so its presence is proof and a
 # -Dlua regression fails that check (not the user).
-Write-Host "==> Smoke-testing mpv.com --version from staged directory"
+Write-Host "==> Smoke-testing mpv.com --version from staged directory (clean PATH)"
+$savedPath = $env:PATH
 Push-Location $out
 try {
+    $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
     $versionOut = & .\mpv.com --version 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "mpv.com --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
@@ -214,6 +286,7 @@ try {
     Write-Host "-> mpv.com runs from the staged directory (all sibling DLLs resolved)"
 }
 finally {
+    $env:PATH = $savedPath
     Pop-Location
 }
 

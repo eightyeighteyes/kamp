@@ -30,7 +30,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 SENTINEL = "kamp-test-secret-7f3a9c"
-FAKE_HELPER = "/fake/Contents/Resources/kamp-keychain-helper"
+FAKE_HELPER = (
+    "/fake/Contents/Helpers/KampKeychainHelper.app/Contents/MacOS/kamp-keychain-helper"
+)
 
 
 def _completed(returncode: int, stdout: bytes = b"") -> MagicMock:
@@ -51,6 +53,59 @@ def kc(mocker: MockerFixture) -> ModuleType:
     # which is the branch the fallback is supposed to reach.
     mocker.patch.object(_kc, "_dpc_unavailable", True)
     return _kc
+
+
+class TestFindHelper:
+    """KAMP-753: the helper lives in its own bundle so AMFI can find its profile.
+
+    A restricted entitlement is authorised by the ``embedded.provisionprofile``
+    of the bundle *containing the executable*; a bare Mach-O in
+    Contents/Resources has no bundle, which is why it was SIGKILLed.
+    """
+
+    @staticmethod
+    def _frozen_app(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kc: ModuleType
+    ) -> Path:
+        contents = tmp_path / "Kamp.app" / "Contents"
+        exe = contents / "Resources" / "kamp" / "kamp"
+        exe.parent.mkdir(parents=True)
+        exe.touch()
+        monkeypatch.setattr(kc.sys, "frozen", True, raising=False)
+        monkeypatch.setattr(kc.sys, "executable", str(exe))
+        return contents
+
+    def test_resolves_the_executable_inside_the_helper_bundle(
+        self, kc: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        contents = self._frozen_app(tmp_path, monkeypatch, kc)
+        helper = (
+            contents
+            / "Helpers"
+            / "KampKeychainHelper.app"
+            / "Contents"
+            / "MacOS"
+            / "kamp-keychain-helper"
+        )
+        helper.parent.mkdir(parents=True)
+        helper.touch()
+
+        assert kc._find_helper() == str(helper)
+
+    def test_ignores_the_old_bare_resources_location(
+        self, kc: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare helper can never be authorised, so using one is guaranteed to fail."""
+        contents = self._frozen_app(tmp_path, monkeypatch, kc)
+        (contents / "Resources" / "kamp-keychain-helper").touch()
+
+        assert kc._find_helper() is None
+
+    def test_none_when_not_frozen(
+        self, kc: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(kc.sys, "frozen", False, raising=False)
+        assert kc._find_helper() is None
 
 
 class TestHelperCannotRun:

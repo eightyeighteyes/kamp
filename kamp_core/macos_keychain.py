@@ -1,11 +1,21 @@
 """Security.framework wrapper for the macOS Data Protection Keychain.
 
-In the built .app, all keychain operations are delegated to the
-kamp-keychain-helper binary, which has a bound Info.plist
-(CFBundleIdentifier = com.kamp.app) and the keychain-access-groups
-entitlement. Items are stored in the Data Protection Keychain using the
-code-signing identity (team ID + bundle ID), which is stable across app
-updates — no keychain dialog after upgrading.
+In the built .app, Data Protection Keychain operations are delegated to
+kamp-keychain-helper, which ships as its own bundle
+(Contents/Helpers/KampKeychainHelper.app, bundle ID
+com.kamp.app.keychain-helper) carrying the keychain-access-groups
+entitlement and an embedded Developer ID provisioning profile. Items live in
+the X6K4L8ZMLS.com.kamp.app access group, which is scoped by team rather than
+binary hash, so they survive app updates without a keychain dialog.
+
+KAMP-753: the bundle and profile are not optional. keychain-access-groups is
+a restricted entitlement; AMFI authorises it only from the profile of the
+bundle containing the executable, and SIGKILLs the process at exec
+otherwise. A bound __info_plist is not a bundle and is not enough — that is
+how the helper was killed in every release before this ticket.
+
+Login Keychain operations always run in-process over ctypes, because those
+items were created by ``kamp`` and their ACL trusts ``kamp``.
 
 In dev / unsigned builds the helper is absent. The module falls back to
 direct Security.framework calls via ctypes. Those calls return
@@ -57,14 +67,23 @@ _HELPER_EXIT_ERROR = 3
 def _find_helper() -> str | None:
     """Return the path to kamp-keychain-helper, or None if not bundled.
 
-    In the built .app, the helper sits at Contents/Resources/kamp-keychain-helper
-    (one level above the kamp onedir bundle). sys.executable inside a frozen
-    PyInstaller binary points to the kamp executable inside the onedir directory,
-    so parent.parent resolves to Contents/Resources/.
+    sys.executable in the frozen app is Contents/Resources/kamp/kamp, so three
+    parents up is Contents/. The helper is the executable *inside* its own
+    bundle at Contents/Helpers/KampKeychainHelper.app (see the module
+    docstring for why it must be a bundle). The old bare
+    Contents/Resources/kamp-keychain-helper is deliberately not consulted: it
+    can never be authorised, so using it would only ever be SIGKILLed.
     """
     if not getattr(sys, "frozen", False):
         return None
-    candidate = Path(sys.executable).parent.parent / "kamp-keychain-helper"
+    candidate = (
+        Path(sys.executable).parent.parent.parent
+        / "Helpers"
+        / "KampKeychainHelper.app"
+        / "Contents"
+        / "MacOS"
+        / "kamp-keychain-helper"
+    )
     return str(candidate) if candidate.exists() else None
 
 

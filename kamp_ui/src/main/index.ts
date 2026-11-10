@@ -699,20 +699,36 @@ async function cleanBandcampSessions(): Promise<void> {
   }
 
   try {
-    const ses = bandcampSession()
-    const stranded = (await ses.cookies.get({})).filter(
-      (c) => isBandcampCookieDomain(c.domain) && !isCloudflareCookie(c.name)
-    )
-    for (const c of stranded) await ses.cookies.remove(cookieUrl(c), c.name)
-    await ses.cookies.flushStore()
-    if (stranded.length > 0) {
-      console.log(
-        `[kamp] removed ${stranded.length} stranded cookie(s) from the Bandcamp partition`
-      )
+    const removed = await purgeBandcampPartitionCookies(bandcampSession())
+    if (removed > 0) {
+      console.log(`[kamp] removed ${removed} stranded cookie(s) from the Bandcamp partition`)
     }
   } catch (err) {
     console.error('[kamp] Bandcamp partition cleanup failed:', err)
   }
+}
+
+/**
+ * Remove every cookie from the Bandcamp partition except Cloudflare's, and
+ * flush the deletions to disk.  Returns how many were removed.
+ *
+ * Any domain, not just Bandcamp's: the login page leaves third-party trackers
+ * behind (facebook.com `fr`, google.com `_GRECAPTCHA`, measured on a real
+ * login), and nothing but Bandcamp traffic uses this partition, so there is
+ * nothing on it worth keeping.  Cloudflare's cookies stay because Chromium is
+ * their only holder and the relay needs them to stay unchallenged (KAMP-746).
+ */
+async function purgeBandcampPartitionCookies(ses: Electron.Session): Promise<number> {
+  const doomed = (await ses.cookies.get({})).filter((c) => !isCloudflareCookie(c.name))
+  for (const c of doomed) {
+    try {
+      await ses.cookies.remove(cookieUrl(c), c.name)
+    } catch {
+      // Non-fatal: one cookie that will not delete must not strand the rest.
+    }
+  }
+  await ses.cookies.flushStore()
+  return doomed.length
 }
 
 /**
@@ -755,6 +771,7 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     loginWin.loadURL('https://bandcamp.com/login')
 
     let settled = false
+    let harvesting = false
     // Mutable ref — clearInterval needs to see the id assigned below.
     const poll = { timer: undefined as ReturnType<typeof setInterval> | undefined }
 
@@ -824,6 +841,10 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     }
 
     const sendLoginComplete = async (): Promise<void> => {
+      // Once set, this call owns settling: the poll must not start a second
+      // harvest while the POST is in flight, and the 'closed' handler must not
+      // report the window this call destroys as a user cancel.
+      harvesting = true
       const cookies = await loginSession.cookies.get({ url: 'https://bandcamp.com' })
       const payload = {
         cookies: cookies.map((c) => ({
@@ -845,24 +866,28 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
           body: JSON.stringify(payload)
         })
         if (!res.ok) throw new Error(`login-complete returned ${res.status}`)
+        // Close the page BEFORE cleaning up.  While it is alive its scripts
+        // keep writing cookies: on a real login, bandcamp's analytics re-set
+        // _ga after the removals below had already run, and it survived until
+        // the next launch's sweep.  `harvesting` keeps the 'closed' handler
+        // from reporting this as a user cancel.
+        clearInterval(poll.timer)
+        if (!loginWin.isDestroyed()) loginWin.destroy()
         // The daemon has persisted the auth cookies it needs (it filters to its
         // own allowlist, KAMP-746 — this side sends everything and keeps no
         // copy of that list).  Clear the jar from the Chromium profile so
         // neither the credential nor the trackers linger on disk as plaintext.
+        // Cloudflare's own state is kept: see purgeBandcampPartitionCookies.
         //
-        // Cloudflare's own state is the exception.  The daemon never persists
-        // it (it is bound to this browser's fingerprint and goes stale), so
-        // Chromium is its only holder, and the relay's net.fetch needs it to
-        // stay unchallenged; deleting it here would only invite a fresh
-        // challenge on the next relayed request.
-        for (const c of payload.cookies) {
-          if (isCloudflareCookie(c.name)) continue
-          await loginSession.cookies.remove('https://bandcamp.com', c.name)
-        }
         // The partition is its own on-disk profile (Partitions/bandcamp), so
         // the login page's other storage lands there too.  Nothing needs it
         // after login; cookies are excluded so Cloudflare's state survives.
+        //
+        // A failure here does not fail the login — the daemon already holds
+        // the session — and the next launch's cleanBandcampSessions sweep
+        // removes whatever was left.
         try {
+          await purgeBandcampPartitionCookies(loginSession)
           await loginSession.clearStorageData({
             storages: [
               'localstorage',
@@ -874,10 +899,8 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
             ]
           })
           await loginSession.clearCache()
-          await loginSession.cookies.flushStore()
         } catch (err) {
-          // Hygiene only — the credential is already gone from the jar.
-          console.warn('[kamp login] partition storage cleanup failed:', err)
+          console.warn('[kamp login] partition cleanup failed:', err)
         }
         await settle({ ok: true })
       } catch (err) {
@@ -929,13 +952,16 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     })
 
     poll.timer = setInterval(async () => {
-      if (settled) return
+      if (settled || harvesting) return
       const cookies = await loginSession.cookies.get({ url: 'https://bandcamp.com' })
       const loggedIn = cookies.some((c) => c.name === 'js_logged_in' && c.value === '1')
-      if (loggedIn) await sendLoginComplete()
+      // Re-check: another tick may have started harvesting during the await.
+      if (loggedIn && !harvesting) await sendLoginComplete()
     }, 1000)
 
     loginWin.on('closed', () => {
+      // sendLoginComplete destroys the window itself and settles on its own.
+      if (harvesting) return
       // Name the refused navigation if there was one: this is the only channel
       // that reaches the user in a packaged build, where the console warnings
       // above go nowhere.  Both callers render result.error already.

@@ -4269,7 +4269,8 @@ class LibraryIndex:
 
         On macOS, reads from the Data Protection Keychain (stable across app
         updates) with a one-time migration from the Login Keychain for existing
-        credentials.  Falls back to the Login Keychain in unsigned dev builds.
+        credentials (``macos_keychain._migrate_from_login_keychain``, KAMP-753).
+        Falls back to the Login Keychain in unsigned dev builds.
         On other platforms, reads from the ``keyring`` backend with exponential
         backoff on transient lock errors.  Falls through to the DB column when
         no keychain is available.

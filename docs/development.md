@@ -83,6 +83,18 @@ value; differing digests mean one is stale.
 poetry run kamp doctor-credentials
 ```
 
+That reports on the **dev** interpreter, which always takes the ctypes path. To
+check a packaged build, run its own frozen binary instead. Only that one looks
+for the keychain helper:
+
+```bash
+/Applications/Kamp.app/Contents/Resources/kamp/kamp doctor-credentials
+```
+
+A healthy packaged build reports `implementation: helper` and `dpc: present`.
+`scripts/smoke_keychain_helper.sh /Applications/Kamp.app/Contents/Helpers/KampKeychainHelper.app`
+checks the helper on its own (KAMP-753).
+
 Two things to know before trusting the output:
 
 - **`dpc: unknown (no entitlement)` is the honest answer in dev, not a bug.**

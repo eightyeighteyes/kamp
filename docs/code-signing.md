@@ -9,7 +9,7 @@ How kamp's installers are signed (or not) on each platform.
 
 ## macOS
 
-This section walks through getting the five values needed to sign and notarize
+This section walks through getting the six values needed to sign and notarize
 the Kamp `.app` so macOS accepts it on any machine without a security warning.
 
 **Prerequisites:** An [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/year).
@@ -26,6 +26,7 @@ You do not need to publish to the App Store — Developer ID is the outside-the-
 | `APPLE_TEAM_ID` | Your 10-character team identifier |
 | `APPLE_ID` | The Apple ID email on your developer account |
 | `APPLE_APP_SPECIFIC_PASSWORD` | A one-time password for notarization (not your Apple ID password) |
+| `MACOS_KEYCHAIN_HELPER_PROFILE` | The keychain helper's Developer ID provisioning profile, base64-encoded ([step 4b](#step-4b--keychain-helper-provisioning-profile)) |
 
 ---
 
@@ -114,6 +115,56 @@ That's your `APPLE_APP_SPECIFIC_PASSWORD`. Your `APPLE_ID` is the email you used
 | `APPLE_TEAM_ID` | The 10-character ID from step 2 |
 | `APPLE_ID` | Your Apple ID email |
 | `APPLE_APP_SPECIFIC_PASSWORD` | The app-specific password from step 3 |
+
+---
+
+### Step 4b — Keychain helper provisioning profile
+
+`kamp-keychain-helper` stores credentials in the Data Protection Keychain. Items there are
+scoped by team rather than by binary hash, so they survive app updates without a keychain
+prompt. To reach that keychain, the helper needs the `keychain-access-groups` entitlement,
+and that entitlement is **restricted**. macOS honours it only when the helper's bundle
+embeds a provisioning profile that authorises it. Without one, the kernel kills the helper
+at launch and the daemon falls back to the Login Keychain, which prompts again after every
+update (KAMP-753).
+
+The helper therefore ships as its own bundle,
+`Kamp.app/Contents/Helpers/KampKeychainHelper.app`, with its own App ID and profile.
+
+1. **App ID.** In **Certificates, IDs & Profiles → Identifiers → +**, choose
+   **App IDs → App**. Use description `Kamp Keychain Helper` and an **Explicit** bundle
+   ID `com.kamp.app.keychain-helper`. Leave every capability unchecked; the keychain
+   group is granted through the profile, not a checkbox.
+2. **Profile.** In **Profiles → +**, choose **Distribution → Developer ID**. Select the
+   `com.kamp.app.keychain-helper` App ID and **the same Developer ID Application
+   certificate that is in `CSC_LINK`**, then generate and download it.
+3. **Check it:** `security cms -D -i <file>.provisionprofile`. Under `Entitlements`,
+   `keychain-access-groups` should be `<TEAMID>.*`.
+4. **Store it:**
+   ```bash
+   base64 -i <file>.provisionprofile | gh secret set MACOS_KEYCHAIN_HELPER_PROFILE
+   ```
+
+The **Embed and check the keychain helper's provisioning profile** step in
+`build-app.yml` runs `scripts/check_provision_profile.py` before anything is signed. It
+fails the build if the profile:
+- is for a different App ID;
+- does not cover the helper's keychain group;
+- does not list the signing certificate;
+- or expires within 30 days (it warns at 60).
+
+#### Renewal: the date to watch is the certificate, not the profile
+
+The profile shows an expiry about 18 years out, but it is tied to one specific Developer ID
+certificate, and that certificate expires much sooner. The current one expires
+**2027-02-01**. When you renew the certificate:
+
+1. Create the new Developer ID Application certificate and update `CSC_LINK` and
+   `CSC_KEY_PASSWORD` (step 1).
+2. **Regenerate the helper profile** for the new certificate (step 4b.2) and update
+   `MACOS_KEYCHAIN_HELPER_PROFILE`. If you skip this, CI fails with "signing certificate
+   … is not in the profile". Without that check, the build would ship with a helper that
+   gets killed at launch.
 
 ---
 

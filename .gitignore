@@ -37,6 +37,10 @@ kamp_ui/resources/mpv
 kamp_ui/resources/node
 kamp_ui/resources/npm/
 kamp_ui/resources/icon_1024.png
+# Keychain helper (KAMP-753). The bundle holds an embedded provisioning profile
+# in CI. The bare binary is the pre-KAMP-753 layout, which local builds still leave behind.
+kamp_ui/resources/KampKeychainHelper.app/
+kamp_ui/resources/kamp-keychain-helper
 # Rendered by scripts/make_dmg_assets.sh (KAMP-675), the same way icon_1024.png
 # is rendered from icon_source.svg. CI regenerates them in the build-bundle job;
 # the SVGs beside them are the source of truth.

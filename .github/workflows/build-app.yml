@@ -299,26 +299,32 @@ jobs:
           chmod +x kamp_ui/resources/now-playing-helper
           echo "→ $(file kamp_ui/resources/now-playing-helper)"
 
-      - name: Build Keychain helper
+      - name: Build Keychain helper bundle
         # Compile the Swift helper that gives the kamp daemon access to the
-        # Data Protection Keychain. The helper carries a bound Info.plist
-        # (CFBundleIdentifier = com.kamp.app) via __TEXT,__info_plist so that
-        # macOS validates the keychain-access-groups entitlement at exec time.
-        # Items in the DPC are tied to the code-signing identity (team ID +
-        # bundle ID) rather than the binary hash, so they survive app updates
-        # without triggering a keychain dialog.
+        # Data Protection Keychain, as its own app bundle (KAMP-753).
+        #
+        # It must be a bundle. keychain-access-groups is a restricted
+        # entitlement, and AMFI authorises it only from the
+        # embedded.provisionprofile of the bundle containing the executable.
+        # The helper used to ship as a bare Mach-O with a bound __info_plist,
+        # which is not a bundle, so no profile could apply and the kernel
+        # SIGKILLed it at exec in every release. The profile itself is added
+        # in sign-and-package, where the secret is available.
         run: |
           SWIFT_ARCH=$([ "${{ matrix.arch }}" = "x64" ] && echo "x86_64" || echo "arm64")
+          APP=kamp_ui/resources/KampKeychainHelper.app
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS"
+          cp kamp_ui/native/KeychainHelper.plist "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
           swiftc -O \
             -target "${SWIFT_ARCH}-apple-macosx11.0" \
             -framework Security \
             -framework Foundation \
-            -Xlinker -sectcreate -Xlinker __TEXT \
-            -Xlinker __info_plist -Xlinker kamp_ui/native/KeychainHelper.plist \
-            -o kamp_ui/resources/kamp-keychain-helper \
+            -o "$APP/Contents/MacOS/kamp-keychain-helper" \
             kamp_ui/native/KeychainHelper.swift
-          chmod +x kamp_ui/resources/kamp-keychain-helper
-          echo "→ $(file kamp_ui/resources/kamp-keychain-helper)"
+          chmod +x "$APP/Contents/MacOS/kamp-keychain-helper"
+          echo "→ $(file "$APP/Contents/MacOS/kamp-keychain-helper")"
 
       - name: Bundle Node.js + npm for extension installs
         # Each runner fetches a native node binary for its own architecture.
@@ -386,7 +392,7 @@ jobs:
                    kamp_ui/resources/mpv \
                    kamp_ui/resources/node \
                    kamp_ui/resources/now-playing-helper \
-                   kamp_ui/resources/kamp-keychain-helper
+                   kamp_ui/resources/KampKeychainHelper.app/Contents/MacOS/kamp-keychain-helper
           find kamp_ui/resources/mpv-libs -name "*.dylib" -exec chmod +x {} \;
 
       - name: Import signing certificate
@@ -406,6 +412,46 @@ jobs:
             -S apple-tool:,apple: -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           rm /tmp/cert.p12
+
+      - name: Embed and check the keychain helper's provisioning profile
+        # KAMP-753. A profile that does not authorise the helper produces no
+        # build error. The helper is SIGKILLed at exec on users' machines, the
+        # daemon quietly falls back to the Login Keychain, and the app looks
+        # fine. So refuse the build here, with the reason, before any signing
+        # time is spent: wrong App ID, uncovered keychain group, a certificate
+        # the profile doesn't list, or expiry within 30 days.
+        #
+        # The certificate is the date to watch. The profile says it lasts
+        # until 2044, but it pins the Developer ID certificate in CSC_LINK,
+        # which expires 2027-02-01. Renewing that certificate means
+        # regenerating this profile and updating MACOS_KEYCHAIN_HELPER_PROFILE.
+        env:
+          MACOS_KEYCHAIN_HELPER_PROFILE: ${{ secrets.MACOS_KEYCHAIN_HELPER_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_KEYCHAIN_HELPER_PROFILE" ]; then
+            echo "::error::MACOS_KEYCHAIN_HELPER_PROFILE secret is not set — see KAMP-753"
+            exit 1
+          fi
+          PROFILE=kamp_ui/resources/KampKeychainHelper.app/Contents/embedded.provisionprofile
+          echo "$MACOS_KEYCHAIN_HELPER_PROFILE" | base64 --decode > "$PROFILE"
+
+          # SHA-256s of the "Developer ID Application" certificates codesign
+          # will choose between, which are the certificates the profile must
+          # list. find-certificate -Z rather than find-identity because only
+          # find-certificate prints SHA-256; find-identity is SHA-1 only.
+          CERT_ARGS=()
+          while read -r sha256; do
+            CERT_ARGS+=(--signing-cert-sha256 "$sha256")
+          done < <(security find-certificate -a -c "Developer ID Application" -Z \
+                     "$RUNNER_TEMP/signing.keychain-db" \
+                     | awk '/^SHA-256 hash:/ {print $3}')
+          echo "→ signing certificates: $(( ${#CERT_ARGS[@]} / 2 ))"
+
+          python3 scripts/check_provision_profile.py \
+            --profile "$PROFILE" \
+            --entitlements kamp_ui/build/entitlements.keychain-helper.plist \
+            ${CERT_ARGS[@]+"${CERT_ARGS[@]}"}  # bash 3.2-safe under set -u when empty
 
       - name: Pre-sign PyInstaller bundle and native resources
         # Sign all Mach-O binaries in parallel before electron-builder runs.
@@ -453,7 +499,7 @@ jobs:
           echo "→ Signing standalone kamp Python binary..."
           codesign --force --sign "$IDENTITY" --options runtime --timestamp \
             kamp_ui/resources/kamp/_internal/Python
-          echo "→ Signing kamp binary (with entitlements for PyObjC/libffi + DPC keychain)..."
+          echo "→ Signing kamp binary (with entitlements for PyObjC/libffi)..."
           codesign --force --sign "$IDENTITY" \
             --options runtime --timestamp \
             --entitlements kamp_ui/build/entitlements.kamp.plist \
@@ -479,14 +525,16 @@ jobs:
           # MPRemoteCommandCenter are unprivileged MediaPlayer framework APIs.
           codesign --force --sign "$IDENTITY" --options runtime --timestamp \
             kamp_ui/resources/now-playing-helper
-          echo "→ Signing kamp-keychain-helper (with keychain-access-groups entitlement)..."
-          # The helper carries CFBundleIdentifier=com.kamp.app via __TEXT,__info_plist
-          # so macOS validates the keychain-access-groups entitlement at exec time.
-          # Items are bound to the team-ID+bundle-ID identity, surviving app updates.
+          echo "→ Signing KampKeychainHelper.app (restricted keychain entitlement)..."
+          # Signing the bundle signs its main executable with these entitlements
+          # and seals Contents/embedded.provisionprofile (added by the previous
+          # step), which is what AMFI reads to authorise keychain-access-groups
+          # at exec (KAMP-753). The profile must be in place before this runs.
           codesign --force --sign "$IDENTITY" \
             --options runtime --timestamp \
             --entitlements kamp_ui/build/entitlements.keychain-helper.plist \
-            kamp_ui/resources/kamp-keychain-helper
+            kamp_ui/resources/KampKeychainHelper.app
+          codesign --verify --strict --verbose=2 kamp_ui/resources/KampKeychainHelper.app
           END=$(date +%s)
           echo "→ Pre-signing done in $((END-START))s"
 
@@ -605,6 +653,24 @@ jobs:
             exit "$rc"
           done
         working-directory: kamp_ui
+
+      - name: Verify the keychain helper in the signed app
+        # KAMP-753. The helper was SIGKILLed at exec in every release for
+        # months, and nothing noticed: the daemon falls back quietly and the
+        # app looks fine. This runs it from the finished, signed Kamp.app,
+        # which is the exact code users get, and requires a real Data
+        # Protection Keychain round-trip. "Didn't crash" is not enough: a
+        # helper re-signed without its entitlements would run, exit 3 and pass
+        # a weaker check. Validated locally against both outcomes: a profiled
+        # bundle round-trips, and the same bundle without a profile is killed
+        # with signal 9, which this step reports as a profile failure.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          APP=$(ls -d kamp_ui/dist/mac*/Kamp.app | head -1)
+          echo "→ $APP"
+          codesign --verify --strict --deep --verbose=2 "$APP"
+          bash scripts/smoke_keychain_helper.sh "$APP/Contents/Helpers/KampKeychainHelper.app"
 
       - name: Brand the DMG install target
         # KAMP-675: swap the /Applications symlink for a Finder alias carrying
@@ -957,7 +1023,7 @@ jobs:
         run: |
           chmod +x kamp_ui/resources/mpv \
                    kamp_ui/resources/kamp/kamp \
-                   kamp_ui/resources/kamp-keychain-helper \
+                   kamp_ui/resources/KampKeychainHelper.app/Contents/MacOS/kamp-keychain-helper \
                    kamp_ui/resources/now-playing-helper
           find kamp_ui/resources/mpv-libs -name "*.dylib" \
             -exec chmod +x {} \; 2>/dev/null || true

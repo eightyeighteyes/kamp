@@ -16,8 +16,9 @@ Checks, against the entitlements file the helper is actually signed with
   helper claims;
 * every keychain access group the helper claims is covered by the profile
   (which grants a wildcard such as ``TEAMID.*``);
-* each signing certificate (SHA-1, as ``security find-identity`` prints it) is
-  among the profile's DeveloperCertificates;
+* each signing certificate (SHA-256 of its DER, as
+  ``security find-certificate -Z`` prints it) is among the profile's
+  DeveloperCertificates;
 * neither the profile nor its certificates expire within ``--fail-days``
   (warning within ``--warn-days``). The certificate is the real deadline: a
   Developer ID profile says it lasts ~18 years, but the certificate it pins
@@ -133,7 +134,7 @@ def _check_expiry(
 def check(
     profile: dict[str, Any],
     entitlements: dict[str, Any],
-    signing_sha1s: list[str],
+    signing_sha256s: list[str],
     now: dt.datetime,
     warn_days: int = 60,
     fail_days: int = 30,
@@ -169,13 +170,13 @@ def check(
             )
 
     certs: list[bytes] = list(profile.get("DeveloperCertificates", []))
-    profile_sha1s = {hashlib.sha1(c).hexdigest().upper() for c in certs}
-    if not signing_sha1s:
+    profile_sha256s = {hashlib.sha256(c).hexdigest().upper() for c in certs}
+    if not signing_sha256s:
         r.errors.append("no signing certificate given to compare against")
-    for sha1 in signing_sha1s:
-        if sha1.upper() not in profile_sha1s:
+    for sha256 in signing_sha256s:
+        if sha256.upper() not in profile_sha256s:
             r.errors.append(
-                f"signing certificate {sha1.upper()} is not in the profile —"
+                f"signing certificate {sha256.upper()} is not in the profile —"
                 " the profile was generated for a different Developer ID"
                 " certificate; regenerate it for the one in CSC_LINK"
             )
@@ -189,7 +190,7 @@ def check(
         r.errors.append("profile has no ExpirationDate")
     for cert in certs:
         _check_expiry(
-            f"profile certificate {hashlib.sha1(cert).hexdigest().upper()[:8]}…",
+            f"profile certificate {hashlib.sha256(cert).hexdigest().upper()[:8]}…",
             cert_not_after(cert),
             now,
             warn_days,
@@ -223,10 +224,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--profile", type=Path, required=True)
     p.add_argument("--entitlements", type=Path, required=True)
     p.add_argument(
-        "--signing-cert-sha1",
+        "--signing-cert-sha256",
         action="append",
         default=[],
-        help="SHA-1 of a signing identity (repeatable)",
+        help="SHA-256 of a signing certificate's DER (repeatable)",
     )
     p.add_argument("--warn-days", type=int, default=60)
     p.add_argument("--fail-days", type=int, default=30)
@@ -235,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     report = check(
         load_profile(args.profile),
         dict(plistlib.loads(args.entitlements.read_bytes())),
-        args.signing_cert_sha1,
+        args.signing_cert_sha256,
         now=dt.datetime.now(dt.timezone.utc),
         warn_days=args.warn_days,
         fail_days=args.fail_days,

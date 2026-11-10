@@ -71,7 +71,7 @@ def _cert(not_after: dt.datetime, *, generalized: bool = False, pad: int = 0) ->
 
 
 CERT = _cert(dt.datetime(2027, 2, 1, 22, 12, 15), pad=300)
-CERT_SHA1 = hashlib.sha1(CERT).hexdigest().upper()
+CERT_SHA256 = hashlib.sha256(CERT).hexdigest().upper()
 
 
 def _profile(**overrides: Any) -> dict[str, Any]:
@@ -110,12 +110,12 @@ class TestCertNotAfter:
 
 class TestCheck:
     def test_matching_profile_passes(self, cpp: ModuleType) -> None:
-        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA1], NOW)
+        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA256], NOW)
         assert r.errors == []
         assert r.warnings == []
 
-    def test_sha1_comparison_ignores_case(self, cpp: ModuleType) -> None:
-        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA1.lower()], NOW)
+    def test_sha256_comparison_ignores_case(self, cpp: ModuleType) -> None:
+        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA256.lower()], NOW)
         assert r.errors == []
 
     def test_profile_for_the_wrong_app_id_fails(self, cpp: ModuleType) -> None:
@@ -124,17 +124,19 @@ class TestCheck:
         profile["Entitlements"][
             "com.apple.application-identifier"
         ] = "X6K4L8ZMLS.com.kamp.app"
-        r = cpp.check(profile, ENTITLEMENTS, [CERT_SHA1], NOW)
+        r = cpp.check(profile, ENTITLEMENTS, [CERT_SHA256], NOW)
         assert any("wrong profile" in e for e in r.errors)
 
     def test_helper_without_application_identifier_fails(self, cpp: ModuleType) -> None:
         """The pre-KAMP-753 entitlements file: only keychain-access-groups."""
-        r = cpp.check(_profile(), {"keychain-access-groups": [GROUP]}, [CERT_SHA1], NOW)
+        r = cpp.check(
+            _profile(), {"keychain-access-groups": [GROUP]}, [CERT_SHA256], NOW
+        )
         assert any("application-identifier" in e for e in r.errors)
 
     def test_team_mismatch_fails(self, cpp: ModuleType) -> None:
         ents = {**ENTITLEMENTS, "com.apple.developer.team-identifier": "OTHERTEAM1"}
-        r = cpp.check(_profile(), ents, [CERT_SHA1], NOW)
+        r = cpp.check(_profile(), ents, [CERT_SHA256], NOW)
         assert any("team" in e for e in r.errors)
 
     def test_uncovered_keychain_group_fails(self, cpp: ModuleType) -> None:
@@ -142,22 +144,22 @@ class TestCheck:
         profile["Entitlements"]["keychain-access-groups"] = [
             "X6K4L8ZMLS.com.kamp.app.keychain-helper"
         ]
-        r = cpp.check(profile, ENTITLEMENTS, [CERT_SHA1], NOW)
+        r = cpp.check(profile, ENTITLEMENTS, [CERT_SHA256], NOW)
         assert any(GROUP in e for e in r.errors)
 
     def test_exact_keychain_group_is_covered(self, cpp: ModuleType) -> None:
         profile = _profile()
         profile["Entitlements"]["keychain-access-groups"] = [GROUP]
-        assert cpp.check(profile, ENTITLEMENTS, [CERT_SHA1], NOW).errors == []
+        assert cpp.check(profile, ENTITLEMENTS, [CERT_SHA256], NOW).errors == []
 
     def test_other_teams_wildcard_does_not_cover(self, cpp: ModuleType) -> None:
         profile = _profile()
         profile["Entitlements"]["keychain-access-groups"] = ["OTHERTEAM1.*"]
-        assert cpp.check(profile, ENTITLEMENTS, [CERT_SHA1], NOW).errors
+        assert cpp.check(profile, ENTITLEMENTS, [CERT_SHA256], NOW).errors
 
     def test_signing_cert_missing_from_profile_fails(self, cpp: ModuleType) -> None:
         """The renewal trap: a new certificate in CSC_LINK, the old profile kept."""
-        r = cpp.check(_profile(), ENTITLEMENTS, ["AB" * 20], NOW)
+        r = cpp.check(_profile(), ENTITLEMENTS, ["AB" * 32], NOW)
         assert any("not in the profile" in e for e in r.errors)
 
     def test_no_signing_cert_given_fails(self, cpp: ModuleType) -> None:
@@ -168,18 +170,18 @@ class TestCheck:
     def test_certificate_inside_fail_window_fails(self, cpp: ModuleType) -> None:
         """The profile says 2044; the certificate it pins is the real deadline."""
         now = dt.datetime(2027, 1, 10, tzinfo=dt.timezone.utc)
-        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA1], now)
+        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA256], now)
         assert any("certificate" in e and "2027-02-01" in e for e in r.errors)
 
     def test_certificate_inside_warn_window_warns(self, cpp: ModuleType) -> None:
         now = dt.datetime(2026, 12, 15, tzinfo=dt.timezone.utc)
-        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA1], now)
+        r = cpp.check(_profile(), ENTITLEMENTS, [CERT_SHA256], now)
         assert r.errors == []
         assert any("2027-02-01" in w for w in r.warnings)
 
     def test_expired_profile_fails(self, cpp: ModuleType) -> None:
         profile = _profile(ExpirationDate=dt.datetime(2026, 11, 1))
-        r = cpp.check(profile, ENTITLEMENTS, [CERT_SHA1], NOW)
+        r = cpp.check(profile, ENTITLEMENTS, [CERT_SHA256], NOW)
         assert any("provisioning profile expires" in e for e in r.errors)
 
 
@@ -199,11 +201,11 @@ class TestMain:
         profile.write_bytes(plistlib.dumps(_profile(DeveloperCertificates=[far_cert])))
         ents = tmp_path / "entitlements.plist"
         ents.write_bytes(plistlib.dumps(ENTITLEMENTS))
-        far_sha1 = hashlib.sha1(far_cert).hexdigest()
+        far_sha256 = hashlib.sha256(far_cert).hexdigest()
 
         args = ["--profile", str(profile), "--entitlements", str(ents)]
-        assert cpp.main([*args, "--signing-cert-sha1", far_sha1]) == 0
+        assert cpp.main([*args, "--signing-cert-sha256", far_sha256]) == 0
         assert "::error::" not in capsys.readouterr().out
 
-        assert cpp.main([*args, "--signing-cert-sha1", "AB" * 20]) == 1
+        assert cpp.main([*args, "--signing-cert-sha256", "AB" * 32]) == 1
         assert "::error::" in capsys.readouterr().out

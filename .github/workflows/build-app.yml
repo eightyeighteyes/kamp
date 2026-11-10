@@ -436,19 +436,22 @@ jobs:
           PROFILE=kamp_ui/resources/KampKeychainHelper.app/Contents/embedded.provisionprofile
           echo "$MACOS_KEYCHAIN_HELPER_PROFILE" | base64 --decode > "$PROFILE"
 
-          # SHA-1s of the identities codesign will choose between for
-          # "Developer ID Application" — the certificates the profile must list.
-          SHA1_ARGS=()
-          while read -r sha1; do
-            SHA1_ARGS+=(--signing-cert-sha1 "$sha1")
-          done < <(security find-identity -v -p codesigning "$RUNNER_TEMP/signing.keychain-db" \
-                     | awk '/"Developer ID Application/ {print $2}')
-          echo "→ signing identities: ${#SHA1_ARGS[@]} arg(s)"
+          # SHA-256s of the "Developer ID Application" certificates codesign
+          # will choose between, which are the certificates the profile must
+          # list. find-certificate -Z rather than find-identity because only
+          # find-certificate prints SHA-256; find-identity is SHA-1 only.
+          CERT_ARGS=()
+          while read -r sha256; do
+            CERT_ARGS+=(--signing-cert-sha256 "$sha256")
+          done < <(security find-certificate -a -c "Developer ID Application" -Z \
+                     "$RUNNER_TEMP/signing.keychain-db" \
+                     | awk '/^SHA-256 hash:/ {print $3}')
+          echo "→ signing certificates: $(( ${#CERT_ARGS[@]} / 2 ))"
 
           python3 scripts/check_provision_profile.py \
             --profile "$PROFILE" \
             --entitlements kamp_ui/build/entitlements.keychain-helper.plist \
-            ${SHA1_ARGS[@]+"${SHA1_ARGS[@]}"}  # bash 3.2-safe under set -u when empty
+            ${CERT_ARGS[@]+"${CERT_ARGS[@]}"}  # bash 3.2-safe under set -u when empty
 
       - name: Pre-sign PyInstaller bundle and native resources
         # Sign all Mach-O binaries in parallel before electron-builder runs.

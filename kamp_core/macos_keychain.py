@@ -211,7 +211,8 @@ def _note_fallback(op: str, exc: Exception) -> None:
     logger.warning(
         "macos_keychain: helper unusable for %s (%s); falling back to the"
         " Login Keychain via ctypes. The Data Protection Keychain is"
-        " unavailable until a provisioning profile authorises it (KAMP-753).",
+        " unavailable: the helper's embedded provisioning profile was not"
+        " honoured, or the helper bundle is damaged (KAMP-753).",
         op,
         exc,
     )

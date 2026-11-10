@@ -21,7 +21,7 @@ files:
   - '!resources/icon_1024.png'
   - '!resources/now-playing-helper'
   - '!resources/now-playing-helper.exe'
-  - '!resources/kamp-keychain-helper'
+  - '!resources/KampKeychainHelper.app/**'
   # Explicitly include compiled JS (electron-vite output) so it is packed into
   # the ASAR. Without this, the positive 'extensions/**' pattern below changes
   # electron-builder's default glob behavior and out/ is not included.
@@ -103,7 +103,19 @@ mac:
     - 'Contents/Resources/mpv-libs'
     - 'Contents/Resources/node'
     - 'Contents/Resources/now-playing-helper'
-    - 'Contents/Resources/kamp-keychain-helper'
+    # KAMP-753: must stay ignored. Re-signing it here would apply
+    # entitlementsInherit and strip the keychain entitlements, so the helper
+    # would run but get errSecMissingEntitlement.
+    - 'Contents/Helpers/KampKeychainHelper\.app'
+  # extraFiles is relative to Contents/ on macOS (extraResources is relative to
+  # Contents/Resources/). The keychain helper is a nested app bundle (KAMP-753),
+  # and Contents/Helpers is where Apple's bundle-layout guidance puts helper
+  # apps. Nested code under Resources is unsupported.
+  extraFiles:
+    - from: resources/KampKeychainHelper.app
+      to: Helpers/KampKeychainHelper.app
+      filter:
+        - '**/*'
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
@@ -128,9 +140,6 @@ mac:
     # Swift Now Playing helper → Contents/Resources/now-playing-helper
     - from: resources/now-playing-helper
       to: now-playing-helper
-    # Swift Keychain helper → Contents/Resources/kamp-keychain-helper
-    - from: resources/kamp-keychain-helper
-      to: kamp-keychain-helper
     # Node.js binary + npm CLI — required for extension install/uninstall in the
     # packaged app where the user may not have Node.js on their machine.
     - from: resources/node

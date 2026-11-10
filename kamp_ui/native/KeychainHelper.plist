@@ -1,16 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Contents/Info.plist of KampKeychainHelper.app (KAMP-753).
+
+  The helper must be a real bundle, not a bare Mach-O with an embedded
+  __info_plist: AMFI authorises its restricted keychain-access-groups
+  entitlement only from the embedded.provisionprofile of the bundle containing
+  the executable. Its own bundle ID (not com.kamp.app) keeps LaunchServices
+  from confusing it with the main app. The daemon execs the inner executable
+  directly; LSBackgroundOnly keeps it out of the Dock if anything ever opens
+  the bundle through LaunchServices.
+-->
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>com.kamp.app</string>
-  <key>CFBundleName</key>
+  <string>com.kamp.app.keychain-helper</string>
+  <key>CFBundleExecutable</key>
   <string>kamp-keychain-helper</string>
+  <key>CFBundleName</key>
+  <string>KampKeychainHelper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>CFBundleShortVersionString</key>
   <string>1.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
   <key>LSUIElement</key>
   <true/>
 </dict>

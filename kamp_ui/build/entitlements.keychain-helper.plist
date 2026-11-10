@@ -3,9 +3,22 @@
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Allows kSecUseDataProtectionKeychain — items are bound to the
-         code-signing identity (team ID + bundle ID), not the binary hash,
-         so they survive app updates without triggering a keychain dialog. -->
+    <!-- keychain-access-groups is a RESTRICTED entitlement (KAMP-753): AMFI
+         SIGKILLs the helper at exec unless the bundle's embedded
+         provisioning profile authorises it. The profile is matched through
+         the two identifier entitlements below, so they are not optional;
+         without them no profile can apply. They must equal the profile's
+         values — scripts/check_provision_profile.py enforces that in CI
+         against this very file. -->
+    <key>com.apple.application-identifier</key>
+    <string>X6K4L8ZMLS.com.kamp.app.keychain-helper</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>X6K4L8ZMLS</string>
+    <!-- Items are scoped by access group (team ID + group name), not by the
+         binary hash, so they survive app updates without a keychain dialog.
+         The group deliberately stays com.kamp.app even though the helper's
+         own bundle ID differs: the profile grants X6K4L8ZMLS.*, and the group
+         name becomes permanent once items exist in it. -->
     <key>keychain-access-groups</key>
     <array>
         <string>X6K4L8ZMLS.com.kamp.app</string>

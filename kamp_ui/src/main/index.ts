@@ -593,9 +593,147 @@ function isCloudflareCookie(name: string): boolean {
   return CLOUDFLARE_COOKIES.has(name)
 }
 
+// ---------------------------------------------------------------------------
+// Bandcamp session partition (KAMP-745)
+// ---------------------------------------------------------------------------
+// All Bandcamp traffic — the login window, the relay's cookie lease and its
+// net.request calls — runs on this partition, never on session.defaultSession.
+// The default session serves the Kamp UI and the community-extension iframes
+// and carries the X-Kamp-Token injector; keeping Bandcamp off it means neither
+// side can reach the other's credentials through a shared jar.
+//
+// "persist:" because cf_clearance lives only here (the daemon never persists
+// it, KAMP-746) and an in-memory partition would lose it on every restart,
+// inviting a fresh Cloudflare challenge on the relay.  The on-disk profile is
+// <userData>/Partitions/bandcamp/, which is what the cleanups below target.
+const BANDCAMP_PARTITION = 'persist:bandcamp'
+
+let _bandcampSession: Electron.Session | null = null
+
 /**
- * Open a BrowserWindow pointing at bandcamp.com/login.  Poll the default
- * session's cookie jar once per second; when ``js_logged_in=1`` appears,
+ * The Bandcamp partition's session.  Only valid after app ready.
+ *
+ * The Content-Disposition sanitiser is registered here, on first creation,
+ * rather than at a point in the startup sequence — so no request can ever
+ * reach the partition before it exists.
+ *
+ * Deliberately NOT registered here: the X-Kamp-Token injector.  Bandcamp
+ * traffic has no business carrying the Kamp token.
+ */
+function bandcampSession(): Electron.Session {
+  if (_bandcampSession !== null) return _bandcampSession
+  const ses = session.fromPartition(BANDCAMP_PARTITION)
+
+  // Bandcamp CDN responses include non-Latin-1 characters in
+  // Content-Disposition filenames.  The relay reads headers through
+  // net.request, but a value with code points > 0xFF can still throw inside
+  // Electron's header handling and crash the main process.  onHeadersReceived
+  // fires before ClientRequest processes the response, so sanitising here
+  // intercepts it in time.
+  ses.webRequest.onHeadersReceived(
+    { urls: ['https://bandcamp.com/*', 'https://*.bandcamp.com/*', 'https://*.bcbits.com/*'] },
+    (details, callback) => {
+      if (!details.responseHeaders) {
+        callback({})
+        return
+      }
+      const responseHeaders: Record<string, string[]> = {}
+      for (const [key, values] of Object.entries(details.responseHeaders)) {
+        responseHeaders[key] = values.map((v) =>
+          [...v].every((c) => c.charCodeAt(0) <= 0xff)
+            ? v
+            : [...v].map((c) => (c.charCodeAt(0) <= 0xff ? c : '?')).join('')
+        )
+      }
+      callback({ responseHeaders })
+    }
+  )
+
+  _bandcampSession = ses
+  return ses
+}
+
+function isBandcampCookieDomain(domain: string | undefined): boolean {
+  const d = (domain ?? '').replace(/^\./, '')
+  return (
+    d === 'bandcamp.com' ||
+    d.endsWith('.bandcamp.com') ||
+    d === 'bcbits.com' ||
+    d.endsWith('.bcbits.com')
+  )
+}
+
+/** URL to pass to cookies.remove() for a cookie read back from the store. */
+function cookieUrl(c: Electron.Cookie): string {
+  return `https://${(c.domain ?? 'bandcamp.com').replace(/^\./, '')}${c.path ?? '/'}`
+}
+
+/**
+ * Startup cleanup for both sessions.  Idempotent and a cheap no-op once
+ * clean, so it runs on every launch.
+ *
+ * (a) defaultSession: before KAMP-745 every Bandcamp cookie went through it,
+ *     and a crash or force-quit while a relay lease was held left the injected
+ *     auth cookies there — persistent, since they carry an expirationDate.
+ *     Remove them all, plus anything past logins left in its page storage.
+ * (b) the partition: the same crash hazard now applies here, so drop every
+ *     non-Cloudflare cookie a dead process stranded.
+ *
+ * MUST be awaited before the renderer exists.  The renderer is the only
+ * source of relayed requests, and sweep (b) running concurrently with a lease
+ * would delete the cookies that lease just injected — the KAMP-640 race one
+ * level down.
+ */
+async function cleanBandcampSessions(): Promise<void> {
+  try {
+    const def = session.defaultSession
+    const stray = (await def.cookies.get({})).filter((c) => isBandcampCookieDomain(c.domain))
+    for (const c of stray) await def.cookies.remove(cookieUrl(c), c.name)
+    await def.clearStorageData({ origin: 'https://bandcamp.com' })
+    await def.cookies.flushStore()
+    if (stray.length > 0) {
+      console.log(`[kamp] removed ${stray.length} Bandcamp cookie(s) from the default session`)
+    }
+  } catch (err) {
+    console.error('[kamp] default-session Bandcamp cleanup failed:', err)
+  }
+
+  try {
+    const removed = await purgeBandcampPartitionCookies(bandcampSession())
+    if (removed > 0) {
+      console.log(`[kamp] removed ${removed} stranded cookie(s) from the Bandcamp partition`)
+    }
+  } catch (err) {
+    console.error('[kamp] Bandcamp partition cleanup failed:', err)
+  }
+}
+
+/**
+ * Remove every cookie from the Bandcamp partition except Cloudflare's, and
+ * flush the deletions to disk.  Returns how many were removed.
+ *
+ * Any domain, not just Bandcamp's: the login page leaves third-party trackers
+ * behind (facebook.com `fr`, google.com `_GRECAPTCHA`, measured on a real
+ * login), and nothing but Bandcamp traffic uses this partition, so there is
+ * nothing on it worth keeping.  Cloudflare's cookies stay because Chromium is
+ * their only holder and the relay needs them to stay unchallenged (KAMP-746).
+ */
+async function purgeBandcampPartitionCookies(ses: Electron.Session): Promise<number> {
+  const doomed = (await ses.cookies.get({})).filter((c) => !isCloudflareCookie(c.name))
+  for (const c of doomed) {
+    try {
+      await ses.cookies.remove(cookieUrl(c), c.name)
+    } catch {
+      // Non-fatal: one cookie that will not delete must not strand the rest.
+    }
+  }
+  await ses.cookies.flushStore()
+  return doomed.length
+}
+
+/**
+ * Open a BrowserWindow pointing at bandcamp.com/login.  Poll the Bandcamp
+ * partition's cookie jar once per second; when ``js_logged_in=1`` appears,
  * collect all .bandcamp.com cookies, format them as a Playwright
  * storage_state payload, and POST to the Python daemon's login-complete
  * endpoint so it can persist bandcamp_session.json.
@@ -618,13 +756,22 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
         // contextIsolation off) has to say so in the diff.
         sandbox: true,
         nodeIntegration: false,
-        contextIsolation: true
+        contextIsolation: true,
+        // KAMP-745: the Bandcamp partition, not the default session.  Its jar
+        // stays out of reach of the Kamp UI and extension iframes, and it is
+        // outside the X-Kamp-Token injector.
+        partition: BANDCAMP_PARTITION
       }
     })
+    // Read and clean cookies through the window's own session, so the window
+    // and the code harvesting it cannot drift onto different partitions.
+    const loginSession = loginWin.webContents.session
+    bandcampSession() // ensure the partition's sanitiser is registered
 
     loginWin.loadURL('https://bandcamp.com/login')
 
     let settled = false
+    let harvesting = false
     // Mutable ref — clearInterval needs to see the id assigned below.
     const poll = { timer: undefined as ReturnType<typeof setInterval> | undefined }
 
@@ -694,7 +841,11 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     }
 
     const sendLoginComplete = async (): Promise<void> => {
-      const cookies = await session.defaultSession.cookies.get({ url: 'https://bandcamp.com' })
+      // Once set, this call owns settling: the poll must not start a second
+      // harvest while the POST is in flight, and the 'closed' handler must not
+      // report the window this call destroys as a user cancel.
+      harvesting = true
+      const cookies = await loginSession.cookies.get({ url: 'https://bandcamp.com' })
       const payload = {
         cookies: cookies.map((c) => ({
           name: c.name,
@@ -715,19 +866,41 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
           body: JSON.stringify(payload)
         })
         if (!res.ok) throw new Error(`login-complete returned ${res.status}`)
+        // Close the page BEFORE cleaning up.  While it is alive its scripts
+        // keep writing cookies: on a real login, bandcamp's analytics re-set
+        // _ga after the removals below had already run, and it survived until
+        // the next launch's sweep.  `harvesting` keeps the 'closed' handler
+        // from reporting this as a user cancel.
+        clearInterval(poll.timer)
+        if (!loginWin.isDestroyed()) loginWin.destroy()
         // The daemon has persisted the auth cookies it needs (it filters to its
         // own allowlist, KAMP-746 — this side sends everything and keeps no
         // copy of that list).  Clear the jar from the Chromium profile so
         // neither the credential nor the trackers linger on disk as plaintext.
+        // Cloudflare's own state is kept: see purgeBandcampPartitionCookies.
         //
-        // Cloudflare's own state is the exception.  The daemon never persists
-        // it (it is bound to this browser's fingerprint and goes stale), so
-        // Chromium is its only holder, and the relay's net.fetch needs it to
-        // stay unchallenged; deleting it here would only invite a fresh
-        // challenge on the next relayed request.
-        for (const c of payload.cookies) {
-          if (isCloudflareCookie(c.name)) continue
-          await session.defaultSession.cookies.remove('https://bandcamp.com', c.name)
+        // The partition is its own on-disk profile (Partitions/bandcamp), so
+        // the login page's other storage lands there too.  Nothing needs it
+        // after login; cookies are excluded so Cloudflare's state survives.
+        //
+        // A failure here does not fail the login — the daemon already holds
+        // the session — and the next launch's cleanBandcampSessions sweep
+        // removes whatever was left.
+        try {
+          await purgeBandcampPartitionCookies(loginSession)
+          await loginSession.clearStorageData({
+            storages: [
+              'localstorage',
+              'indexdb',
+              'serviceworkers',
+              'cachestorage',
+              'shadercache',
+              'websql'
+            ]
+          })
+          await loginSession.clearCache()
+        } catch (err) {
+          console.warn('[kamp login] partition cleanup failed:', err)
         }
         await settle({ ok: true })
       } catch (err) {
@@ -735,12 +908,11 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       }
     }
 
-    // KAMP-747: confine the window.  It carries a live Bandcamp cookie jar, and
-    // because it runs on session.defaultSession (it must — sendLoginComplete
-    // harvests cookies from there) it is also inside the webRequest filter that
-    // injects X-Kamp-Token into every 127.0.0.1:47483 request.  So whatever
-    // origin ends up here gets authenticated reach into the local API: fail
-    // closed.  Partitioning this window's session is KAMP-745.
+    // KAMP-747: confine the window.  It carries a live Bandcamp cookie jar, so
+    // whatever origin ends up here sees a logged-in Bandcamp session: fail
+    // closed.  Since KAMP-745 the window runs on the Bandcamp partition and is
+    // no longer inside the X-Kamp-Token injector, so this is defense in depth
+    // rather than the only thing between a stray origin and the local API.
     //
     // will-navigate covers link clicks and window.location writes.  It is
     // main-frame-only by definition, which is what keeps third-party sub-frames
@@ -766,9 +938,9 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       divertExternal(event.url, 'will-redirect')
     })
 
-    // Never open a second window: a child would share defaultSession and arrive
-    // with none of the guards above.  Everything goes through divertExternal,
-    // so a popup lands in the system browser as the main window's handler does
+    // Never open a second window: a child would share this window's Bandcamp
+    // session and arrive with none of the guards above.  Everything goes
+    // through divertExternal, so a popup lands in the system browser as the main window's handler does
     // — but unlike that handler the scheme is parsed first, so a non-http(s)
     // URL cannot be handed to the OS, and openExternal's rejectable promise
     // gets a catch.  A bandcamp.com popup is re-homed too rather than loaded in
@@ -780,13 +952,16 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
     })
 
     poll.timer = setInterval(async () => {
-      if (settled) return
-      const cookies = await session.defaultSession.cookies.get({ url: 'https://bandcamp.com' })
+      if (settled || harvesting) return
+      const cookies = await loginSession.cookies.get({ url: 'https://bandcamp.com' })
       const loggedIn = cookies.some((c) => c.name === 'js_logged_in' && c.value === '1')
-      if (loggedIn) await sendLoginComplete()
+      // Re-check: another tick may have started harvesting during the await.
+      if (loggedIn && !harvesting) await sendLoginComplete()
     }, 1000)
 
     loginWin.on('closed', () => {
+      // sendLoginComplete destroys the window itself and settles on its own.
+      if (harvesting) return
       // Name the refused navigation if there was one: this is the only channel
       // that reaches the user in a packaged build, where the console warnings
       // above go nowhere.  Both callers render result.error already.
@@ -805,8 +980,9 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
 // because PyInstaller's OpenSSL has a different TLS fingerprint that Cloudflare
 // flags.  The server broadcasts a "bandcamp.proxy-fetch" WebSocket event; the
 // preload receives it and calls ipcRenderer.invoke("bandcamp:proxy-fetch"),
-// which is handled here.  net.fetch uses session.defaultSession so Chromium's
-// TLS stack (real browser fingerprint, cf_clearance cookie) handles the request.
+// which is handled here.  net.request runs on the Bandcamp partition
+// (KAMP-745) so Chromium's TLS stack (real browser fingerprint, cf_clearance
+// cookie) handles the request.
 
 // x/y/width/height are always the window's *normal* (un-maximized,
 // non-fullscreen) geometry, so un-maximizing after a restore lands on the size
@@ -1263,7 +1439,8 @@ app.whenReady().then(async () => {
   // --- Bandcamp cookie lease (KAMP-640) ---------------------------------
   // Relayed requests run CONCURRENTLY: the preload fires ipcRenderer.invoke
   // per WebSocket event without awaiting, and ipcMain.handle runs each async
-  // callback concurrently. They all share one cookie jar — session.defaultSession.
+  // callback concurrently. They all share one cookie jar — the Bandcamp
+  // partition (KAMP-745; session.defaultSession before that).
   //
   // Injecting and deleting per request therefore raced: whichever request
   // finished first deleted the cookies out from under every request still in
@@ -1281,8 +1458,8 @@ app.whenReady().then(async () => {
   let cookieRemoval: Promise<void> | null = null
 
   async function injectBandcampCookies(): Promise<string[]> {
-    // In the PyInstaller bundle, cookies are stored in library.db rather than
-    // in session.defaultSession (cleared after login to avoid plaintext on disk).
+    // In the PyInstaller bundle, cookies are stored by the daemon rather than
+    // in the Bandcamp partition (cleared after login to avoid plaintext on disk).
     // Fetch them from the daemon endpoint rather than reading from the WS payload
     // so auth cookies are never broadcast to all WS clients.
     const cookieResp = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/session-cookies', {
@@ -1298,7 +1475,7 @@ app.whenReady().then(async () => {
         ? (sameSiteLower as 'unspecified' | 'no_restriction' | 'lax' | 'strict')
         : 'unspecified'
       try {
-        await session.defaultSession.cookies.set({
+        await bandcampSession().cookies.set({
           url: `https://${c.domain.replace(/^\./, '')}`,
           name: c.name,
           value: c.value,
@@ -1354,7 +1531,7 @@ app.whenReady().then(async () => {
       }
       for (const name of names) {
         try {
-          await session.defaultSession.cookies.remove('https://bandcamp.com', name)
+          await bandcampSession().cookies.remove('https://bandcamp.com', name)
         } catch {
           // Non-fatal: a cookie that will not delete must not break the response.
         }
@@ -1418,7 +1595,7 @@ app.whenReady().then(async () => {
         const request = net.request({
           method: req.method,
           url: req.url,
-          session: session.defaultSession,
+          session: bandcampSession(),
           useSessionCookies: true
         })
         for (const [k, v] of Object.entries(safeHeaders)) {
@@ -1576,6 +1753,9 @@ app.whenReady().then(async () => {
   // <img src> image loads, which cannot carry custom headers from JS.
   // This keeps art URLs free of the token so the browser HTTP cache is stable
   // across daemon restarts (the token changes each time, but the URL doesn't).
+  //
+  // Default session ONLY (KAMP-745).  It is deliberately not registered on the
+  // Bandcamp partition: nothing on that partition should carry the Kamp token.
   session.defaultSession.webRequest.onBeforeSendHeaders(
     { urls: ['http://127.0.0.1:47483/*', 'ws://127.0.0.1:47483/*'] },
     (details, callback) => {
@@ -1586,31 +1766,11 @@ app.whenReady().then(async () => {
     }
   )
 
-  // Bandcamp CDN responses include non-Latin-1 characters in Content-Disposition
-  // filenames (e.g. a Chinese album name starting at index 22 of the value:
-  // `attachment; filename="<non-ASCII>..."`). Electron's net.fetch wraps response
-  // headers using undici's Headers.set, which throws an uncaught TypeError on
-  // code points > 0xFF — crashing the main process. Sanitize before values
-  // reach the JS layer. onHeadersReceived fires before ClientRequest processes
-  // the response, so this intercepts it in time.
-  session.defaultSession.webRequest.onHeadersReceived(
-    { urls: ['https://bandcamp.com/*', 'https://*.bandcamp.com/*', 'https://*.bcbits.com/*'] },
-    (details, callback) => {
-      if (!details.responseHeaders) {
-        callback({})
-        return
-      }
-      const responseHeaders: Record<string, string[]> = {}
-      for (const [key, values] of Object.entries(details.responseHeaders)) {
-        responseHeaders[key] = values.map((v) =>
-          [...v].every((c) => c.charCodeAt(0) <= 0xff)
-            ? v
-            : [...v].map((c) => (c.charCodeAt(0) <= 0xff ? c : '?')).join('')
-        )
-      }
-      callback({ responseHeaders })
-    }
-  )
+  // The Bandcamp Content-Disposition sanitiser lives on the Bandcamp partition
+  // (see bandcampSession()).  Clean both sessions before the renderer exists:
+  // it is the only source of relayed requests, so awaiting here is what keeps
+  // the partition sweep from racing a lease (see cleanBandcampSessions).
+  await cleanBandcampSessions()
 
   // Start the Now Playing helper after the server so it can accept key events
   // immediately. The preload primes it with current player state on WS connect.

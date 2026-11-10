@@ -85,7 +85,7 @@ A frontend extension is any npm package whose `package.json` contains `"kamp-ext
 | `player.read` | `api.player` |
 | `library.read` | `api.library` |
 | `player.control` | `api.player` (control methods) |
-| `network.fetch` | Arbitrary HTTP fetch (community extensions; sandbox CSP limits to kamp server origin) |
+| `network.fetch` | Backend extensions only (`ctx.fetch()`). Community UI extensions have no network access — the sandbox CSP has no `connect-src` |
 | `settings` | `api.settings` |
 
 **`kamp.settings`** — declares a settings schema. kamp renders a form from this in the Extensions preferences panel. Each entry:
@@ -376,7 +376,7 @@ Community (non-bundled) extensions run inside a sandboxed `<iframe>` with `sandb
 
 - **No `allow-same-origin`** — the iframe is cross-origin. You cannot access `window.parent`, `localStorage`, IndexedDB, or cookies.
 - **No `contextBridge` access** — `window.KampAPI` is not available inside the iframe. Use `api.player`, `api.library`, etc. instead; the SDK proxies calls through the host via postMessage.
-- **No external network** — the CSP limits `connect-src` to the kamp server origin (`http://127.0.0.1:8000`). Requests to other origins are blocked.
+- **No network** — the CSP has no `connect-src`, so `fetch`, XHR and WebSocket are blocked for every origin, including the kamp server. Talk to kamp only through the SDK (`api.*`). The one exception is `<img>` loads from the kamp server (`img-src`), which is how `api.library.getAlbumArtUrl()` works. Requests the iframe makes to the kamp server are not authenticated, except album-art images (KAMP-744).
 - **No subframes** — `allow-popups` and `allow-top-navigation` are not granted.
 - **State resets on tab switch** — kamp creates a fresh iframe on each panel activation; the previous iframe is torn down.
 

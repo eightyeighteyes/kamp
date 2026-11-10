@@ -3988,6 +3988,116 @@ class TestBandcampSessionCookies:
         assert response.json() == {"cookies": cookies}
 
 
+class TestBandcampSessionCookiesMainToken:
+    """KAMP-744: session-cookies needs the main-process-only secret.
+
+    Electron's token injector puts ``X-Kamp-Token`` on renderer requests, so
+    any frame that obtains it — historically the community-extension iframe —
+    must still not be able to read the Bandcamp cookie jar.
+    """
+
+    _COOKIES = [{"name": "identity", "value": "sentinel-7f3a", "domain": ".bc.com"}]
+
+    def _client(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        main_token: str | None = "main-secret",
+    ) -> TestClient:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            auth_token="secret",
+            main_token=main_token,
+            get_bandcamp_session=lambda: {"cookies": self._COOKIES},
+        )
+        return TestClient(app)
+
+    def test_renderer_token_alone_is_forbidden(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """What an extension iframe holds (the injected token) is not enough."""
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/bandcamp/session-cookies", headers={"X-Kamp-Token": "secret"}
+        )
+        assert resp.status_code == 403
+        assert "sentinel-7f3a" not in resp.text
+
+    def test_both_tokens_return_cookies(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/bandcamp/session-cookies",
+            headers={"X-Kamp-Token": "secret", "X-Kamp-Main-Token": "main-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"cookies": self._COOKIES}
+
+    def test_wrong_main_token_is_forbidden(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/bandcamp/session-cookies",
+            headers={"X-Kamp-Token": "secret", "X-Kamp-Main-Token": "guess"},
+        )
+        assert resp.status_code == 403
+
+    def test_non_ascii_main_token_is_forbidden_not_500(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """compare_digest raises TypeError on non-ASCII str; must not crash."""
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/bandcamp/session-cookies",
+            headers={
+                "X-Kamp-Token": "secret",
+                "X-Kamp-Main-Token": "café".encode("latin-1"),
+            },
+        )
+        assert resp.status_code == 403
+
+    def test_main_token_without_renderer_token_is_unauthorized(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The ordinary auth middleware still applies first."""
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/bandcamp/session-cookies",
+            headers={"X-Kamp-Main-Token": "main-secret"},
+        )
+        assert resp.status_code == 401
+
+    def test_auth_without_main_token_configured_fails_closed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue, main_token=None)
+        resp = c.get(
+            "/api/v1/bandcamp/session-cookies", headers={"X-Kamp-Token": "secret"}
+        )
+        assert resp.status_code == 403
+
+    def test_forbidden_even_when_no_session_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The check runs before the no-session early return."""
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            auth_token="secret",
+            main_token="main-secret",
+        )
+        resp = TestClient(app).get(
+            "/api/v1/bandcamp/session-cookies", headers={"X-Kamp-Token": "secret"}
+        )
+        assert resp.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Bandcamp proxy endpoints
 # ---------------------------------------------------------------------------

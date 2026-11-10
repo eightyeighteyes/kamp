@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ from kamp_core.library import (
     AlbumInfo,
     ArtistInfo,
     Condition,
+    CredentialStorageError,
     Group,
     LibraryIndex,
     LibraryScanner,
@@ -5839,20 +5841,13 @@ class TestMtimeReindex:
 
 
 class TestSessionManagement:
-    """Tests the DB-fallback path (no keyring backend available)."""
+    """Session store/read/clear contract against a store that works.
 
-    @pytest.fixture(autouse=True)
-    def no_keyring(self, mocker: MockerFixture) -> None:
-        """Simulate a platform without a keyring backend."""
-        mocker.patch("kamp_core.library._mac_kc", None)
-        # Force the Linux/keyring code path even on Windows runners (where
-        # _win_cred is otherwise the real DPAPI module and would short-circuit
-        # the keyring branch entirely).  See KAMP-280.
-        mocker.patch("kamp_core.library._win_cred", None)
-        err = keyring.errors.NoKeyringError()
-        mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
-        mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
-        mocker.patch("kamp_core.library.keyring.delete_password", side_effect=err)
+    Runs on the autouse ``working_secret_store`` in conftest.py: an in-memory
+    keyring, so the success path is what is under test. This class used to
+    force ``NoKeyringError`` and so exercised only the plaintext fallback that
+    KAMP-750 removed; the failure paths have their own tests below.
+    """
 
     def _make_index(self, tmp_path: Path) -> LibraryIndex:
         return LibraryIndex(tmp_path / "library.db")
@@ -5890,19 +5885,29 @@ class TestSessionManagement:
         index.clear_session("bandcamp")  # must not raise
         index.close()
 
-    def test_clear_session_truncates_wal(self, tmp_path: Path) -> None:
+    def test_clear_session_truncates_wal(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A size check alone is not enough — see the positive control (KAMP-748).
 
         This asserted only that the WAL was 0 bytes afterwards, which passes
         just as happily when the credential was never written to the WAL in the
-        first place. On macOS dev that is exactly what happens without the
-        `no_keyring` fixture: `set_session` succeeds against the Login Keychain
-        and leaves `session_json` NULL, so there is nothing to truncate and the
-        test was green for the wrong reason.
+        first place -- which is what happens whenever the store works and
+        leaves `session_json` NULL.
+
+        So a credential row must actually exist in the DB files. Since KAMP-750
+        the only ways to get one are Windows DPAPI and the explicit
+        plaintext escape hatch; this uses the hatch, because clearing such a
+        row is exactly the contract under test.
 
         Byte-level coverage of what survives in the files lives in
         tests/test_credential_bytes.py; this keeps the WAL-size contract.
         """
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        monkeypatch.setenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", "1")
         marker = "js_logged_in"
         db_path = tmp_path / "library.db"
         index = LibraryIndex(db_path)
@@ -5910,8 +5915,7 @@ class TestSessionManagement:
         wal_path = db_path.with_suffix(".db-wal")
 
         # Positive control: the credential really did reach the DB files, so a
-        # clean result below means erasure rather than absence. The autouse
-        # no_keyring fixture forces the plaintext fallback that makes this true.
+        # clean result below means erasure rather than absence.
         needle = marker.encode("utf-8")
         planted = sum(
             p.read_bytes().count(needle) for p in (db_path, wal_path) if p.exists()
@@ -6312,31 +6316,59 @@ class TestSessionManagementKeyringErrors:
         sleep_mock.assert_not_called()
         index.close()
 
-    def test_set_session_falls_back_to_db_when_readback_fails(
+    def test_set_session_raises_when_readback_fails(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        """When keychain write appears to succeed but read-back returns None, fall back to DB."""
+        """A write that does not round-trip is not stored anywhere (KAMP-750).
+
+        The unverified item is also deleted: get_session reads the keychain
+        first, so leaving it would make the app quietly "connected" right after
+        telling the user the login was not saved.
+        """
         mocker.patch("kamp_core.library.keyring.set_password")
         mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
-        mocker.patch("kamp_core.library.keyring.delete_password")
+        delete = mocker.patch("kamp_core.library.keyring.delete_password")
 
         index = self._make_index(tmp_path)
         data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        index.set_session("bandcamp", data)
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", data)
 
         row = index._conn.execute(
             "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
         ).fetchone()
-        assert row is not None
-        assert (
-            row["session_json"] is not None
-        ), "should fall back to DB when read-back returns None"
+        assert row is None, "no row may be written when the store failed"
+        delete.assert_called_once_with("kamp", "bandcamp")
         index.close()
 
-    def test_set_session_falls_back_to_db_on_keyring_error(
+    def test_set_session_raises_and_deletes_when_readback_raises(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        """When keychain write fails, the session is stored in the DB."""
+        """The write landed but could not be verified: treat it as unverified.
+
+        Same reasoning as a mismatching read-back -- the item may now hold the
+        new credential, and leaving it would make get_session report a login
+        the user was just told failed.
+        """
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=OSError("helper timed out"),
+        )
+        delete = mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        with pytest.raises(CredentialStorageError) as info:
+            index.set_session("bandcamp", {"cookies": []})
+
+        assert isinstance(info.value.__cause__, OSError)
+        delete.assert_called_once_with("kamp", "bandcamp")
+        index.close()
+
+    def test_set_session_raises_on_keyring_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A failed write raises, and does NOT delete: the old item may be intact."""
         mocker.patch(
             "kamp_core.library.keyring.set_password",
             side_effect=keyring.errors.KeyringError("write failed"),
@@ -6345,17 +6377,31 @@ class TestSessionManagementKeyringErrors:
             "kamp_core.library.keyring.get_password",
             side_effect=keyring.errors.KeyringError("read failed"),
         )
-        mocker.patch("kamp_core.library.keyring.delete_password")
+        delete = mocker.patch("kamp_core.library.keyring.delete_password")
 
         index = self._make_index(tmp_path)
         data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        index.set_session("bandcamp", data)
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", data)
 
         row = index._conn.execute(
             "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
         ).fetchone()
-        assert row is not None
-        assert row["session_json"] is not None
+        assert row is None
+        delete.assert_not_called()
+        index.close()
+
+    def test_set_session_raises_when_no_keyring_backend(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """NoKeyringError used to be the silent plaintext path (KAMP-743)."""
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        index = self._make_index(tmp_path)
+        with pytest.raises(CredentialStorageError):
+            index.set_session("lastfm", {"session_key": "abc"})
         index.close()
 
     def test_clear_session_does_not_raise_on_keyring_error(
@@ -6373,17 +6419,15 @@ class TestSessionManagementKeyringErrors:
         index.clear_session("bandcamp")  # must not raise
         index.close()
 
-    def test_set_session_falls_back_to_db_on_unexpected_exception(
+    def test_set_session_raises_storage_error_on_unexpected_exception(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
         """KAMP-282: backends may raise outside the keyring exception hierarchy.
 
-        WinVaultKeyring is ctypes-based and can surface ``OSError`` (or any
-        platform-specific subclass) directly.  Without the broad ``except``
-        in ``set_session`` such exceptions propagated out and turned the
-        Bandcamp ``login-complete`` handler into a 422.  This test pins the
-        hardened behaviour: an unexpected exception type must not propagate;
-        the credential must land in the DB fallback.
+        WinVaultKeyring is ctypes-based and can surface ``OSError`` directly.
+        That must still come out as the one stable ``CredentialStorageError``,
+        so the login handler gets a fixed, credential-free message to show
+        rather than a raw backend error string.
         """
         mocker.patch(
             "kamp_core.library.keyring.set_password",
@@ -6394,13 +6438,13 @@ class TestSessionManagementKeyringErrors:
 
         index = self._make_index(tmp_path)
         data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        index.set_session("bandcamp", data)  # must not raise
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", data)
 
         row = index._conn.execute(
             "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
         ).fetchone()
-        assert row is not None
-        assert row["session_json"] is not None
+        assert row is None
         index.close()
 
     def test_get_session_falls_back_to_db_on_unexpected_exception(
@@ -6442,6 +6486,106 @@ class TestSessionManagementKeyringErrors:
 
         index = self._make_index(tmp_path)
         index.clear_session("bandcamp")  # must not raise
+        index.close()
+
+
+class TestSessionFailClosed:
+    """KAMP-750: no confidentiality mechanism means no write, not plaintext."""
+
+    SENTINEL = "kamp750-9d2c41e7b05a-cookie-value"
+
+    @pytest.fixture()
+    def failing_store(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("write failed"),
+        )
+
+    def test_previous_login_survives_a_failed_write(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """The error says "your previous login is unchanged" -- make it true.
+
+        Positive control first: the old credential really is stored.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        old = {"cookies": [{"name": "identity", "value": "old-account"}]}
+        index.set_session("bandcamp", old)
+        assert index.get_session("bandcamp") == old
+
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("write failed"),
+        )
+        with pytest.raises(CredentialStorageError):
+            index.set_session(
+                "bandcamp", {"cookies": [{"name": "identity", "value": "new"}]}
+            )
+
+        assert index.get_session("bandcamp") == old
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row["session_json"] is None, "the failed write must not add a row"
+        index.close()
+
+    def test_message_carries_no_credential_material(
+        self, tmp_path: Path, failing_store: None
+    ) -> None:
+        """server.py turns str(exc) into the 422 detail the UI renders."""
+        index = LibraryIndex(tmp_path / "library.db")
+        with pytest.raises(CredentialStorageError) as info:
+            index.set_session(
+                "bandcamp", {"cookies": [{"name": "identity", "value": self.SENTINEL}]}
+            )
+        message = str(info.value)
+        assert self.SENTINEL not in message
+        assert "write failed" not in message, "backend text must not leak either"
+        assert "Bandcamp" in message
+        assert "unchanged" in message
+        assert info.value.service == "bandcamp"
+        index.close()
+
+    def test_escape_hatch_permits_plaintext(
+        self,
+        tmp_path: Path,
+        failing_store: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", "1")
+        index = LibraryIndex(tmp_path / "library.db")
+        data = {"cookies": [{"name": "identity", "value": self.SENTINEL}]}
+        with caplog.at_level(logging.WARNING, logger="kamp_core.library"):
+            index.set_session("bandcamp", data)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row["session_json"] is not None and self.SENTINEL in row["session_json"]
+        assert "KAMP_ALLOW_PLAINTEXT_CREDENTIALS" in caplog.text
+        assert self.SENTINEL not in caplog.text
+        index.close()
+
+    def test_maybe_protect_is_identity_off_windows(self) -> None:
+        """Only Windows wraps; elsewhere the keychain is the mechanism."""
+        from kamp_core.library import _maybe_protect
+
+        assert _maybe_protect('{"a": 1}', "bandcamp") == '{"a": 1}'
+
+    @pytest.mark.parametrize("value", ["", "0", "true", "yes"])
+    def test_escape_hatch_requires_exactly_one(
+        self,
+        tmp_path: Path,
+        failing_store: None,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str,
+    ) -> None:
+        """Only the literal "1" opts out; anything else stays closed."""
+        monkeypatch.setenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", value)
+        index = LibraryIndex(tmp_path / "library.db")
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", {"cookies": []})
         index.close()
 
 
@@ -6561,10 +6705,10 @@ class TestSessionManagementWindowsDPAPI:
         assert index.get_session("bandcamp") == {"cookies": []}
         index.close()
 
-    def test_set_session_falls_back_to_plaintext_when_dpapi_raises(
+    def test_set_session_raises_when_dpapi_raises(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        """A DPAPI failure must not block writing — a session row beats no row."""
+        """KAMP-750 reverses "a session row beats no row": no plaintext row."""
         mocker.patch(
             "kamp_core.library._win_cred.protect_str",
             side_effect=OSError("CryptProtectData failed"),
@@ -6572,14 +6716,32 @@ class TestSessionManagementWindowsDPAPI:
 
         index = self._make_index(tmp_path)
         data = {"cookies": [{"name": "x", "value": "y"}]}
-        index.set_session("bandcamp", data)  # must not raise
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", data)
 
-        # Even on DPAPI failure, the row should still be present (plaintext).
         row = index._conn.execute(
             "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
         ).fetchone()
-        assert row is not None
+        assert row is None
+        index.close()
+
+    def test_dpapi_failure_with_escape_hatch_stores_plaintext(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mocker.patch(
+            "kamp_core.library._win_cred.protect_str",
+            side_effect=OSError("CryptProtectData failed"),
+        )
+        monkeypatch.setenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", "1")
+
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": [{"name": "x", "value": "y"}]})
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
         assert row["session_json"] is not None
+        assert not row["session_json"].startswith(_FakeDPAPI.DPAPI_PREFIX)
         index.close()
 
     def test_set_session_does_not_call_keyring_on_windows(
@@ -6715,6 +6877,35 @@ class TestMigrationV12ToV13:
         ), "v13 migration should have wrapped the plaintext row"
         # And the round-trip still works through get_session.
         assert index.get_session("bandcamp") == {"cookies": [{"name": "x"}]}
+        index.close()
+
+    def test_migration_leaves_row_when_dpapi_fails(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """KAMP-750 made _maybe_protect raise; the migration must still finish.
+
+        The row is pre-existing plaintext, so leaving it creates nothing new --
+        whereas aborting would strand every later migration step.
+        """
+        import json as _json
+
+        db_path = tmp_path / "library.db"
+        self._build_v12_db(db_path)
+        mocker.patch(
+            "kamp_core.library._win_cred.protect_str",
+            side_effect=OSError("CryptProtectData failed"),
+        )
+
+        index = LibraryIndex(db_path)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row["session_json"] == _json.dumps({"cookies": [{"name": "x"}]})
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        assert version == _SCHEMA_VERSION
         index.close()
 
     def test_migration_skips_already_wrapped_rows(self, tmp_path: Path) -> None:
@@ -7020,48 +7211,67 @@ class TestSessionManagementMacOS:
         assert index.get_session("bandcamp") is None
         index.close()
 
-    def test_set_session_falls_back_to_db_when_write_fails(
-        self, tmp_path: Path, mocker: MockerFixture
+    @pytest.mark.parametrize(
+        "error",
+        [keyring.errors.KeyringError("write failed"), OSError("helper died")],
+        ids=["keyring-error", "unexpected"],
+    )
+    def test_set_session_raises_when_write_fails(
+        self, tmp_path: Path, mocker: MockerFixture, error: BaseException
     ) -> None:
-        """KeyringError from mac_kc.set_password causes DB fallback."""
+        """A failed keychain write raises; nothing reaches the DB (KAMP-750).
+
+        No delete either: the write may never have happened, and the item
+        already in the keychain is the user's still-working previous login.
+        """
         mock = MagicMock()
-        mock.set_password.side_effect = keyring.errors.KeyringError("write failed")
+        mock.set_password.side_effect = error
         mock.get_password.return_value = None
         mocker.patch("kamp_core.library._mac_kc", mock)
-        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
-        mocker.patch("kamp_core.library.keyring.set_password")
-        mocker.patch("kamp_core.library.keyring.delete_password")
 
         index = self._make_index(tmp_path)
-        index.set_session("bandcamp", {"cookies": []})
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", {"cookies": []})
 
         row = index._conn.execute(
             "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
         ).fetchone()
-        assert row is not None
-        assert row["session_json"] is not None, "must fall back to DB on write failure"
+        assert row is None
+        mock.delete_password.assert_not_called()
         index.close()
 
-    def test_set_session_verification_mismatch_stores_in_db(
+    def test_set_session_verification_mismatch_raises_and_deletes(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        """When read-back returns wrong value, credential falls back to DB."""
+        """A write that does not round-trip is removed, then raised."""
         mock = MagicMock()
         mock.set_password.return_value = None
         mock.get_password.return_value = '{"wrong": "value"}'
         mocker.patch("kamp_core.library._mac_kc", mock)
-        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
-        mocker.patch("kamp_core.library.keyring.set_password")
-        mocker.patch("kamp_core.library.keyring.delete_password")
 
         index = self._make_index(tmp_path)
-        index.set_session("bandcamp", {"cookies": []})
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", {"cookies": []})
 
         row = index._conn.execute(
             "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
         ).fetchone()
-        assert row is not None
-        assert row["session_json"] is not None, "verification mismatch must store in DB"
+        assert row is None
+        mock.delete_password.assert_called_once_with("kamp", "bandcamp")
+        index.close()
+
+    def test_verification_cleanup_failure_still_raises_storage_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """The cleanup delete is best effort; its failure must not mask the cause."""
+        mock = MagicMock()
+        mock.get_password.return_value = None
+        mock.delete_password.side_effect = keyring.errors.KeyringError("nope")
+        mocker.patch("kamp_core.library._mac_kc", mock)
+
+        index = self._make_index(tmp_path)
+        with pytest.raises(CredentialStorageError):
+            index.set_session("bandcamp", {"cookies": []})
         index.close()
 
     def test_clear_session_logs_warning_on_keyring_error(

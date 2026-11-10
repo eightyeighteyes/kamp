@@ -4,8 +4,10 @@ import logging
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from kamp_core.library import LibraryIndex
-from kamp_daemon.__main__ import _build_config_values
+from kamp_daemon.__main__ import _build_config_values, _credential_startup
 from kamp_daemon.config import _CONFIG_KEY_TYPES, Config
 
 
@@ -91,3 +93,41 @@ class TestLogNoiseSuppression:
     def test_pil_tiff_not_suppressed_at_debug(self) -> None:
         self._run_main_with_log_level("DEBUG")
         assert logging.getLogger("PIL.TiffImagePlugin").level != logging.WARNING
+
+
+class TestCredentialStartup:
+    """KAMP-750 startup housekeeping: hatch warning and the Last.fm move."""
+
+    def test_warns_when_plaintext_escape_hatch_is_set(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", "1")
+        index = LibraryIndex(tmp_path / "library.db")
+        with caplog.at_level(logging.WARNING):
+            _credential_startup(index)
+        assert "KAMP_ALLOW_PLAINTEXT_CREDENTIALS=1 is set" in caplog.text
+        index.close()
+
+    def test_silent_without_escape_hatch(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        with caplog.at_level(logging.WARNING):
+            _credential_startup(index)
+        assert "PLAINTEXT" not in caplog.text
+        index.close()
+
+    def test_migrates_legacy_lastfm_key(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.set_setting("lastfm.session_key", "oldkey")
+        index.set_setting("lastfm.username", "olduser")
+        _credential_startup(index)
+        assert index.get_session("lastfm") == {
+            "session_key": "oldkey",
+            "username": "olduser",
+        }
+        assert index.get_setting("lastfm.session_key") == ""
+        index.close()

@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import keyring
+import keyring.errors
 import pytest
 from pytest_mock import MockerFixture
 
-from kamp_core.library import LibraryIndex
+from kamp_core.library import CredentialStorageError, LibraryIndex
 from kamp_daemon.bandcamp import (
     AUTH_COOKIE_NAMES,
+    _store_username_in_session,
     filter_session_cookies,
     prune_stored_session,
     store_login_session,
@@ -49,14 +50,12 @@ def _names(session: dict[str, Any]) -> set[str]:
 
 
 @pytest.fixture
-def index(tmp_path: Path, mocker: MockerFixture) -> Any:
-    """A real LibraryIndex whose sessions land in the DB column (no keyring)."""
-    mocker.patch("kamp_core.library._mac_kc", None)
-    mocker.patch("kamp_core.library._win_cred", None)
-    err = keyring.errors.NoKeyringError()
-    mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
-    mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
-    mocker.patch("kamp_core.library.keyring.delete_password", side_effect=err)
+def index(tmp_path: Path) -> Any:
+    """A real LibraryIndex on conftest's working in-memory credential store.
+
+    Used to force ``NoKeyringError`` so sessions landed in the plaintext DB
+    column; since KAMP-750 that path raises instead.
+    """
     idx = LibraryIndex(tmp_path / "library.db")
     yield idx
     idx.close()
@@ -195,5 +194,58 @@ class TestPruneStoredSession:
         session = {"cookies": _login_jar()}
         with patch.object(index, "set_session", side_effect=OSError("locked")):
             result = prune_stored_session(index, session)
+        assert result is not None
+        assert _names(result) == set(AUTH_COOKIE_NAMES)
+
+
+class TestFailClosedCallers:
+    """KAMP-750: where a credential write may fail, and what each caller does."""
+
+    @pytest.fixture
+    def failing_store(self, mocker: MockerFixture) -> None:
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("locked"),
+        )
+
+    def test_login_propagates_storage_error(
+        self, index: LibraryIndex, failing_store: None
+    ) -> None:
+        """The login handler must see it, so the user is told and can retry."""
+        with pytest.raises(CredentialStorageError):
+            store_login_session(index, {"cookies": _login_jar(), "origins": []})
+
+    def test_username_enrichment_does_not_kill_sync(
+        self, index: LibraryIndex, mocker: MockerFixture
+    ) -> None:
+        """All three sync entry points funnel through this before the walk.
+
+        A raise here would abort the whole sync before any work happened, for
+        the sake of a cosmetic username field. The in-memory session is still
+        updated, so this run uses the right name.
+        """
+        session = {"cookies": [_cookie("identity")], "username": "old"}
+        index.set_session("bandcamp", dict(session))
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("locked"),
+        )
+
+        _store_username_in_session("new", session, index)  # must not raise
+
+        assert session["username"] == "new"
+        stored = index.get_session("bandcamp")
+        assert stored is not None and stored["username"] == "old"
+
+    def test_prune_survives_storage_error(
+        self, index: LibraryIndex, mocker: MockerFixture
+    ) -> None:
+        stored = {"cookies": _login_jar(), "origins": []}
+        index.set_session("bandcamp", stored)
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("locked"),
+        )
+        result = prune_stored_session(index, stored)
         assert result is not None
         assert _names(result) == set(AUTH_COOKIE_NAMES)

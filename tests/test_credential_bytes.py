@@ -18,9 +18,11 @@ one of them was the actual cause of residue found in a production database:
 
 Design notes, each of which cost a measurement to learn:
 
-* **The ``no_keyring`` fixture is mandatory, not hygiene.** Without it, on macOS
-  dev ``set_session`` succeeds against the Login Keychain and sets
-  ``session_json = None``, so the test plants nothing and passes vacuously.
+* **The ``no_keyring`` fixture is mandatory, not hygiene.** Without it,
+  ``set_session`` succeeds against the store (conftest's in-memory keyring, or
+  the real keychain) and sets ``session_json = None``, so the test plants
+  nothing and passes vacuously. Since KAMP-750 it must also set the plaintext
+  escape hatch, or ``set_session`` raises instead of planting.
 * **Every test asserts a positive control** -- that the sentinel really is on
   disk before the operation under test. ``test_clear_session_truncates_wal``
   shows why: it asserts the WAL is 0 bytes without ever checking the credential
@@ -81,13 +83,20 @@ def _total_hits(db_path: Path, needle: str = SENTINEL) -> int:
 
 
 @pytest.fixture()
-def no_keyring(mocker: MockerFixture) -> None:
+def no_keyring(mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the plaintext DB fallback so there is something to find on disk.
 
-    Mirrors ``TestSessionManagement.no_keyring`` in test_library.py. Without it
-    these tests plant nothing and pass for the wrong reason -- see the module
-    docstring.
+    Without it these tests plant nothing and pass for the wrong reason -- see
+    the module docstring.
+
+    Since KAMP-750 the fallback exists only behind the
+    ``KAMP_ALLOW_PLAINTEXT_CREDENTIALS`` escape hatch, so it is set here. This
+    is the one place a fixture should set it: plaintext on disk is the subject
+    under test, not an accident of the environment. Byte hygiene still matters
+    with the hatch off -- legacy rows the KAMP-755 heal clears, and the DPAPI
+    rows Windows stores by design, are erased by these same code paths.
     """
+    monkeypatch.setenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", "1")
     mocker.patch("kamp_core.library._mac_kc", None)
     mocker.patch("kamp_core.library._win_cred", None)
     err = keyring.errors.NoKeyringError()

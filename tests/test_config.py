@@ -16,18 +16,19 @@ from kamp_daemon.config import (
     BandcampConfig,
     config_set,
     config_show,
+    migrate_lastfm_settings,
     write_secret_file,
 )
 
 
 @pytest.fixture()
-def db(tmp_path: Path, mocker: MockerFixture) -> LibraryIndex:
-    """Return a fresh LibraryIndex backed by a temp DB, with keyring mocked out."""
-    mocker.patch("kamp_core.library._mac_kc", None)
-    err = keyring.errors.NoKeyringError()
-    mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
-    mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
-    mocker.patch("kamp_core.library.keyring.delete_password", side_effect=err)
+def db(tmp_path: Path) -> LibraryIndex:
+    """Return a fresh LibraryIndex backed by a temp DB.
+
+    Credentials go to conftest's autouse in-memory keyring. This fixture used
+    to force ``NoKeyringError`` and so ran on the plaintext fallback that
+    KAMP-750 removed.
+    """
     index = LibraryIndex(tmp_path / "library.db")
     yield index
     index.close()
@@ -137,22 +138,64 @@ class TestLoad:
         config = Config.load(db)
         assert config.lastfm is None
 
-    def test_load_migrates_lastfm_from_settings_table(self, db: LibraryIndex) -> None:
-        """One-time migration: session_key in settings → moved to session store."""
+
+class TestMigrateLastfmSettings:
+    """One-time move of a Last.fm session key out of the settings table.
+
+    Lived inside ``Config.load`` until KAMP-750. ``Config.load`` runs from ~8
+    call sites -- the sync worker, every config PATCH, per-album enrichment --
+    so once ``set_session`` could fail, a keychain that stayed unavailable
+    would have meant a keychain write (on macOS possibly a 10 s helper
+    timeout) on every one of them.
+    """
+
+    def _seed(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
         db.set_setting("lastfm.username", "olduser")
         db.set_setting("lastfm.session_key", "oldkey")
+
+    def test_migrates_into_session_store(self, db: LibraryIndex) -> None:
+        self._seed(db)
+        assert migrate_lastfm_settings(db) is True
+
+        # Credentials must be cleared from the settings table after migration.
+        assert db.get_setting("lastfm.session_key") == ""
+        assert db.get_setting("lastfm.username") == ""
+        session = db.get_session("lastfm")
+        assert session == {"session_key": "oldkey", "username": "olduser"}
         config = Config.load(db)
         assert config.lastfm is not None
         assert config.lastfm.session_key == "oldkey"
         assert config.lastfm.username == "olduser"
-        # Credentials must be cleared from the settings table after migration.
-        assert db.get_setting("lastfm.session_key") == ""
-        assert db.get_setting("lastfm.username") == ""
-        # Session store must hold the migrated data.
-        session = db.get_session("lastfm")
-        assert session is not None
-        assert session["session_key"] == "oldkey"
+
+    def test_noop_without_legacy_key(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        assert migrate_lastfm_settings(db) is False
+        assert db.get_session("lastfm") is None
+
+    def test_store_failure_leaves_settings_for_next_start(
+        self, db: LibraryIndex, mocker: MockerFixture
+    ) -> None:
+        self._seed(db)
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("locked"),
+        )
+        assert migrate_lastfm_settings(db) is False  # must not raise
+
+        assert db.get_setting("lastfm.session_key") == "oldkey"
+        assert db.get_setting("lastfm.username") == "olduser"
+        # Config still loads; scrobbling just stays off until it succeeds.
+        assert Config.load(db).lastfm is None
+
+    def test_config_load_never_touches_the_credential_store(
+        self, db: LibraryIndex, mocker: MockerFixture
+    ) -> None:
+        self._seed(db)
+        spy = mocker.spy(db, "set_session")
+        Config.load(db)
+        spy.assert_not_called()
+        assert db.get_setting("lastfm.session_key") == "oldkey"
 
 
 # ---------------------------------------------------------------------------

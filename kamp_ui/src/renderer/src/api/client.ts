@@ -505,7 +505,9 @@ export const connectLastfm = (
   username: string,
   password: string
 ): Promise<{ ok: boolean; username: string }> =>
-  post('/api/v1/lastfm/connect', { username, password })
+  // postWithDetail so a 422's message reaches the user (KAMP-750: "couldn't
+  // store your Last.fm login securely...") instead of "422 Unprocessable Entity".
+  postWithDetail('/api/v1/lastfm/connect', { username, password })
 
 export const disconnectLastfm = (): Promise<{ ok: boolean }> => del('/api/v1/lastfm/connect')
 

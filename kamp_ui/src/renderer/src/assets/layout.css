@@ -343,6 +343,18 @@ html[data-fullscreen='true'] .view-tabs {
   background: var(--surface-hover);
 }
 
+/* KAMP-750: reconnect failure, e.g. "couldn't store your Bandcamp login
+   securely". Same container as the context menu, but the message is a sentence
+   or two, so it wraps instead of inheriting the menu's nowrap. */
+.bandcamp-login-error {
+  white-space: normal;
+  width: 280px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
 /* Panel picker ------------------------------------------------------------- */
 
 .prefs-btn {

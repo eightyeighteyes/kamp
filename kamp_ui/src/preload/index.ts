@@ -64,8 +64,11 @@ const api = {
     return () => ipcRenderer.off('cycle-view', handler)
   },
   bandcamp: {
-    /** Open the Bandcamp login BrowserWindow. Resolves when login succeeds or the window is closed. */
-    beginLogin: (): Promise<{ ok: boolean; error?: string }> =>
+    /**
+     * Open the Bandcamp login BrowserWindow. Resolves when login succeeds or the
+     * window is closed. `cancelled` is set when the user closed it themselves.
+     */
+    beginLogin: (): Promise<{ ok: boolean; error?: string; cancelled?: boolean }> =>
       ipcRenderer.invoke('bandcamp:begin-login'),
     /** Subscribe to sync status changes pushed via WebSocket. Returns an unsubscribe function. */
     onSyncStatus: onBandcampSyncStatus,

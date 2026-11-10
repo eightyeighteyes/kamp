@@ -17,7 +17,6 @@ import importlib.metadata
 import logging
 import os
 import platform
-import secrets
 import shutil
 import signal
 import sys
@@ -31,7 +30,9 @@ from .config import (
     _state_dir,
     config_set,
     config_show,
+    main_token_path,
     token_path,
+    write_secret_file,
 )
 from .daemon_core import DaemonCore, _PID_PATH
 
@@ -1514,11 +1515,12 @@ def _cmd_daemon(
 
     # Generate a fresh shared-secret token on every daemon start.  Electron
     # re-reads the file on reconnect so there is no persistent state to sync.
-    _tp = token_path()
-    _tp.parent.mkdir(parents=True, exist_ok=True)
-    _auth_token = secrets.token_hex(32)
-    _tp.write_text(_auth_token)
-    os.chmod(_tp, 0o600)
+    _auth_token = write_secret_file(token_path())
+    # KAMP-744: a second secret for credential-returning endpoints.  Electron
+    # injects _auth_token into renderer requests (album art, WebSockets), so it
+    # cannot also guard the Bandcamp cookie jar; only the main process reads
+    # this file and sends it.
+    _main_token = write_secret_file(main_token_path())
 
     # Filled after DaemonCore is constructed; the lambdas above capture these
     # lists so endpoints can call syncer methods without forward-reference issues.
@@ -1597,6 +1599,7 @@ def _cmd_daemon(
         check_stream_url=_check_stream_url,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
+        main_token=_main_token,
         mb_search_fn=search_release_candidates,
         mb_release_fn=lookup_release_by_mbid,
         genre_fetch_fn=_genre_fetch_fn,

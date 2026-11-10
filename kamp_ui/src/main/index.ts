@@ -7,6 +7,7 @@ import {
   Menu,
   session,
   net,
+  webContents,
   screen as electronScreen
 } from 'electron'
 import { dirname, join, resolve } from 'path'
@@ -21,6 +22,8 @@ import { theme, themes } from '../shared/theme'
 import type { ThemeName } from '../shared/theme'
 import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
 import { readManifest } from './communityManifest'
+import { shouldInjectKampToken } from './kampTokenScope'
+import type { FrameIds } from './kampTokenScope'
 import {
   diagnosticsEnabled,
   startDiagnostics,
@@ -53,6 +56,36 @@ function readKampToken(): string | null {
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const token = readKampToken()
   return token ? { 'X-Kamp-Token': token, ...extra } : { ...extra }
+}
+
+// KAMP-744: the main-process-only secret.  Credential-returning endpoints
+// (session-cookies) require it on top of X-Kamp-Token, because the token
+// injector puts X-Kamp-Token on renderer requests.  Never add this header in
+// the injector or expose it through the preload.  Re-read per call, like
+// readKampToken, so a daemon restart's fresh value is picked up.
+function readMainToken(): string | null {
+  try {
+    return readFileSync(join(dirname(kampTokenFilePath()), '.main-token'), 'utf8').trim()
+  } catch {
+    return null
+  }
+}
+
+function mainAuthHeaders(): Record<string, string> {
+  const main = readMainToken()
+  return authHeaders(main ? { 'X-Kamp-Main-Token': main } : undefined)
+}
+
+// webContents ids whose MAIN FRAME may receive the injected X-Kamp-Token.
+// Populated by createWindow(); see kampTokenScope.ts for why it is an allowlist.
+const trustedWebContents = new Set<number>()
+
+function trustedMainFrame(webContentsId: number): FrameIds | null {
+  if (!trustedWebContents.has(webContentsId)) return null
+  const wc = webContents.fromId(webContentsId)
+  if (!wc || wc.isDestroyed()) return null
+  const { processId, routingId } = wc.mainFrame
+  return { processId, routingId }
 }
 
 // Set the app name before the app is ready so the macOS menu bar and all
@@ -1268,6 +1301,13 @@ function createWindow(): void {
     flushWindowState()
   })
 
+  // KAMP-744: only this window's main frame is trusted with the injected
+  // X-Kamp-Token (see kampTokenScope.ts).  Keyed by id and removed on destroy
+  // so a window recreated on macOS 'activate' is trusted and a stale id is not.
+  const wcId = mainWindow.webContents.id
+  trustedWebContents.add(wcId)
+  mainWindow.webContents.once('destroyed', () => trustedWebContents.delete(wcId))
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -1463,8 +1503,13 @@ app.whenReady().then(async () => {
     // Fetch them from the daemon endpoint rather than reading from the WS payload
     // so auth cookies are never broadcast to all WS clients.
     const cookieResp = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/session-cookies', {
-      headers: authHeaders()
+      headers: mainAuthHeaders()
     })
+    if (!cookieResp.ok) {
+      // A 403 here means the main token is missing or stale; surface it rather
+      // than proceeding unauthenticated (which Bandcamp answers with 429).
+      throw new Error(`session-cookies: HTTP ${cookieResp.status}`)
+    }
     const { cookies } = (await cookieResp.json()) as { cookies: BandcampCookie[] }
     const injectedNames: string[] = []
     for (const c of cookies) {
@@ -1511,9 +1556,10 @@ app.whenReady().then(async () => {
     }
     try {
       await cookieInjection
-    } catch {
+    } catch (err) {
       // Injection failed — the request proceeds and fails on its own terms
       // rather than hanging. The lease is still released by the caller.
+      console.warn('[kamp] Bandcamp cookie injection failed:', err)
     }
   }
 
@@ -1749,17 +1795,30 @@ app.whenReady().then(async () => {
   // existing reconnect loop handles the brief gap while the server starts up.
   await startServer()
 
-  // Inject X-Kamp-Token on every outgoing request to the local API — including
-  // <img src> image loads, which cannot carry custom headers from JS.
-  // This keeps art URLs free of the token so the browser HTTP cache is stable
-  // across daemon restarts (the token changes each time, but the URL doesn't).
+  // Inject X-Kamp-Token on requests to the local API that cannot carry it
+  // themselves — <img src> art loads and the WebSockets.  This keeps art URLs
+  // free of the token so the browser HTTP cache is stable across daemon
+  // restarts (the token changes each time, but the URL doesn't).
+  //
+  // KAMP-744: SCOPED, not blanket.  Only the main window's main frame, plus
+  // album-art images from any frame (the extension SDK's getAlbumArtUrl).
+  // The community-extension iframe shares this session; injecting for every
+  // frame authenticated it against the whole API, Bandcamp cookie jar
+  // included.  The rules and their rationale live in kampTokenScope.ts — do
+  // not widen this filter or bypass the predicate.
   //
   // Default session ONLY (KAMP-745).  It is deliberately not registered on the
   // Bandcamp partition: nothing on that partition should carry the Kamp token.
   session.defaultSession.webRequest.onBeforeSendHeaders(
     { urls: ['http://127.0.0.1:47483/*', 'ws://127.0.0.1:47483/*'] },
     (details, callback) => {
-      const token = readKampToken()
+      let inject = false
+      try {
+        inject = shouldInjectKampToken(details, trustedMainFrame)
+      } catch {
+        // A disposed WebFrameMain throws on property access: fail closed.
+      }
+      const token = inject ? readKampToken() : null
       const requestHeaders = { ...details.requestHeaders }
       if (token) requestHeaders['X-Kamp-Token'] = token
       callback({ requestHeaders })

@@ -16,6 +16,7 @@ from kamp_daemon.config import (
     BandcampConfig,
     config_set,
     config_show,
+    write_secret_file,
 )
 
 
@@ -422,3 +423,28 @@ class TestConfigSet:
         config = Config.load(db)
         assert config.bandcamp is not None
         assert config.bandcamp.collection_mode == "download"
+
+
+class TestWriteSecretFile:
+    """KAMP-744: daemon secrets are created 0600 with no world-readable window."""
+
+    def test_returns_fresh_hex_token_and_writes_it(self, tmp_path: Path) -> None:
+        path = tmp_path / "sub" / ".main-token"
+        first = write_secret_file(path)
+        assert path.read_text() == first
+        assert len(first) == 64 and int(first, 16) >= 0
+        second = write_secret_file(path)
+        assert second != first
+        assert path.read_text() == second
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX file-permission semantics (chmod / st_mode 0o600) do not "
+        "apply on Windows; see KAMP-281 for Windows ACL hardening follow-up",
+    )
+    def test_file_is_owner_only(self, tmp_path: Path) -> None:
+        path = tmp_path / ".main-token"
+        path.write_text("old")
+        path.chmod(0o644)
+        write_secret_file(path)
+        assert path.stat().st_mode & 0o777 == 0o600

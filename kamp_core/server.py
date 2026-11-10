@@ -17,6 +17,7 @@ import json as _json
 import logging
 import queue as _queue
 import re
+import secrets
 import sys
 import threading as _threading
 import uuid as _uuid
@@ -1272,6 +1273,7 @@ def create_app(
     art_cache_dir: Path | None = None,
     dev_mode: bool = False,
     auth_token: str | None = None,
+    main_token: str | None = None,
     mb_search_fn: Callable[[str, str], list[Any]] | None = None,
     mb_release_fn: Callable[[str], Any] | None = None,
     genre_fetch_fn: Callable[[str, str], list[str]] | None = None,
@@ -3923,15 +3925,32 @@ def create_app(
             return {"connected": False, "username": None}
         return {"connected": True, "username": session.get("username")}
 
+    def _main_token_ok(request: Request) -> bool:
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str, and
+        # Starlette decodes header values as latin-1, so any byte can arrive.
+        received = request.headers.get("X-Kamp-Main-Token")
+        if main_token is None or received is None:
+            return False
+        return secrets.compare_digest(
+            received.encode("utf-8"), main_token.encode("utf-8")
+        )
+
     @app.get("/api/v1/bandcamp/session-cookies")
-    def get_bandcamp_session_cookies() -> dict[str, Any]:
+    def get_bandcamp_session_cookies(request: Request) -> dict[str, Any]:
         """Return the raw cookie list from the stored Bandcamp session.
 
-        Used by the Electron main process to reload cookies into
-        ``session.defaultSession`` before each proxy-fetch request so that
-        ``net.fetch`` carries valid credentials in the PyInstaller bundle.
-        Returns an empty list when no session is stored.
+        Used by the Electron main process to load cookies into the Bandcamp
+        session partition under the KAMP-640 lease, so relayed ``net.fetch``
+        requests carry valid credentials.  Returns an empty list when no
+        session is stored.
+
+        KAMP-744: requires ``X-Kamp-Main-Token`` on top of the ordinary token.
+        Electron injects ``X-Kamp-Token`` into renderer requests, so that token
+        alone must never be enough to read a credential.  Checked before any
+        early return, and fails closed when auth is on but no main token is set.
         """
+        if auth_token is not None and not _main_token_ok(request):
+            raise HTTPException(status_code=403)
         if get_bandcamp_session is None:
             return {"cookies": []}
         session_data = get_bandcamp_session()

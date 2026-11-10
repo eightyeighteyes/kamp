@@ -3,6 +3,10 @@
   "include": ["electron.vite.config.*", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
   "compilerOptions": {
     "composite": true,
+    // KAMP-744: `node --test` loads *.test.ts with native type stripping, which
+    // needs explicit `.ts` import specifiers.  This option permits them (and
+    // only affects tsc emit, which this project never uses — Vite bundles).
+    "rewriteRelativeImportExtensions": true,
     "types": ["electron-vite/node"]
   }
 }

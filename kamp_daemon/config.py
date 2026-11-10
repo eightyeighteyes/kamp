@@ -32,6 +32,34 @@ def token_path() -> Path:
     return _state_dir() / ".token"
 
 
+def main_token_path() -> Path:
+    """Return the path to the Electron-main-process-only secret (KAMP-744).
+
+    Distinct from ``token_path()`` because Electron injects that token into
+    renderer requests; endpoints returning credentials need a secret only the
+    main process sends.
+    """
+    return _state_dir() / ".main-token"
+
+
+def write_secret_file(path: Path) -> str:
+    """Generate a fresh 32-byte hex secret and write it to *path*, mode 0600.
+
+    Created with the mode at ``open`` time rather than write-then-chmod, so the
+    secret is never briefly readable under the default umask.
+    """
+    import secrets
+
+    value = secrets.token_hex(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(value)
+    # O_CREAT's mode only applies to a new file; tighten a pre-existing one.
+    os.chmod(path, 0o600)
+    return value
+
+
 @dataclass
 class PathsConfig:
     watch_folder: Path | None

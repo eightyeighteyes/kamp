@@ -53,6 +53,15 @@ The standard uniforms are set every frame:
 
 Cost is linear in pixels × frames, with no measurable fixed overhead (KAMP-776). Each background states its `resScale` and `fps` and is measured against a GPU-busy target on the Intel integrated GPU. The target starts at about 20% or less and will be refined once KAMP-778 brings in the Windows numbers.
 
+**The base itself is free.** The flat reference background, at the default ¼ resolution and 30 fps, measured on the Intel Mac on 2026-11-11 (n = 60 each):
+
+| Variant | GPU busy | Avg cores active |
+|---|---|---|
+| None | 2.25% ± 0.77 | 1.64 ± 0.31 |
+| Reference | 2.73% ± 2.02 | 2.17 ± 0.90 |
+
+That is +0.5 GPU-busy points, inside noise. So a background's cost is its shader's per-pixel work multiplied by its draw rate. The CPU rise is within noise too, but check it first if a background shows main-thread cost.
+
 ## Measuring
 
 Launch with `KAMP_DIAGNOSTICS=1 npm start`. Keep music playing and the display pinned at 60 Hz. Then, in DevTools:

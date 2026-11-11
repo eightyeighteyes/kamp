@@ -29,3 +29,11 @@ test('the legacy key is written so an older build still honours None', () => {
   assert.equal(legacyGlowValue('none'), 'false')
   assert.equal(legacyGlowValue('bokeh'), 'true')
 })
+
+test('chapel is a known id that survives a reload (KAMP-775)', () => {
+  assert.equal(resolveNowPlayingAnimation('chapel', 'false'), 'chapel')
+})
+
+test('an older build sees chapel as glow on, not None', () => {
+  assert.equal(legacyGlowValue('chapel'), 'true')
+})

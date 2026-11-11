@@ -11,11 +11,19 @@
 //     reduced-motion is off (reduced-motion paints a static frame instead);
 //   * stopping every loop and listener on unmount. NowPlayingBackground keys the
 //     engine by id, so switching animations always unmounts the old one.
+//
+// KAMP-780: a WebGL background satisfies all of this by being a ShaderSpec
+// wrapped in webgl/ShaderCanvas (see webgl/README.md). Its canvas is opaque and
+// paints --bg itself, so it keeps the backdrop class for layout only.
 // Kept as .ts (no component definitions) so react-refresh lint stays happy.
 
 import type { ComponentType } from 'react'
-import type { NowPlayingAnimationId } from '../../../../shared/nowPlayingAnimation'
+import type {
+  NowPlayingAnimationId,
+  NowPlayingOverrideId
+} from '../../../../shared/nowPlayingAnimation'
 import { BokehCanvas } from './BokehCanvas'
+import { FlatReference } from './webgl/reference/FlatReference'
 
 export interface NowPlayingEngineProps {
   /** The Now Playing pane is the visible view. */
@@ -34,3 +42,9 @@ export const NOW_PLAYING_ANIMATIONS = {
   none: { label: 'None', Engine: null },
   bokeh: { label: 'Bokeh', Engine: BokehCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>
+
+// KAMP-780: diagnostics-only backgrounds, selected via window.__kampGL and shown
+// in place of the user's choice. Never in the picker, never persisted.
+export const NOW_PLAYING_OVERRIDES = {
+  'webgl-reference': FlatReference
+} satisfies Record<NowPlayingOverrideId, ComponentType<NowPlayingEngineProps>>

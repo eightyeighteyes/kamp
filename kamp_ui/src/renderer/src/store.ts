@@ -40,7 +40,7 @@ import {
   legacyGlowValue,
   resolveNowPlayingAnimation
 } from '../../shared/nowPlayingAnimation'
-import type { NowPlayingAnimationId } from '../../shared/nowPlayingAnimation'
+import type { NowPlayingAnimationId, NowPlayingOverrideId } from '../../shared/nowPlayingAnimation'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 import { jsonEqual } from './utils/jsonEqual'
 
@@ -117,6 +117,9 @@ type PlayerStore = {
   highlightStyle: string
   // KAMP-561/766: which ambient animation plays behind the Now Playing art.
   nowPlayingAnimation: NowPlayingAnimationId
+  // KAMP-780: diagnostics-only background shown instead of nowPlayingAnimation.
+  // Ephemeral by design (never written to localStorage).
+  nowPlayingOverride: NowPlayingOverrideId | null
   // KAMP-769: whether Now Playing shows the album art over the animation.
   nowPlayingArtVisible: boolean
   // KAMP-544: ephemeral, non-persisted "played this session" echo — album key ->
@@ -270,6 +273,7 @@ type PlayerStore = {
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
   setNowPlayingAnimation: (id: NowPlayingAnimationId) => void
+  setNowPlayingOverride: (id: NowPlayingOverrideId | null) => void
   setNowPlayingArtVisible: (visible: boolean) => void
   setHighlightStyle: (style: string) => void
   markHighlightPlayed: (album: Album) => void
@@ -571,6 +575,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     localStorage.getItem(NOW_PLAYING_ANIMATION_KEY),
     localStorage.getItem(LEGACY_GLOW_KEY)
   ),
+  nowPlayingOverride: null,
   // Only an explicit 'false' hides the art, so an unset key keeps the default.
   nowPlayingArtVisible: localStorage.getItem('kamp:nowplaying-art-visible') !== 'false',
   highlightCutoffSecs: Date.now() / 1000 - 5 * 86400,
@@ -1155,6 +1160,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     localStorage.setItem(LEGACY_GLOW_KEY, legacyGlowValue(id))
     set({ nowPlayingAnimation: id })
   },
+
+  setNowPlayingOverride: (id) => set({ nowPlayingOverride: id }),
 
   setNowPlayingArtVisible: (visible) => {
     localStorage.setItem('kamp:nowplaying-art-visible', String(visible))

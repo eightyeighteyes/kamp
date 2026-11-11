@@ -6,6 +6,12 @@
 export const NOW_PLAYING_ANIMATION_IDS = ['none', 'bokeh'] as const
 export type NowPlayingAnimationId = (typeof NOW_PLAYING_ANIMATION_IDS)[number]
 
+// KAMP-780: diagnostics-only backgrounds (measurement and wiring references).
+// Deliberately NOT animation ids: they are never listed in the picker and never
+// persisted, so a restart without KAMP_DIAGNOSTICS can't land on a hidden entry.
+// Selected only through window.__kampGL (webgl/devHooks.ts).
+export type NowPlayingOverrideId = 'webgl-reference'
+
 export const NOW_PLAYING_ANIMATION_KEY = 'kamp:nowplaying-animation'
 // Pre-KAMP-766 boolean toggle. Still written on every change so a downgraded
 // build (which reads only this key) keeps honouring "None".

@@ -16,6 +16,8 @@ export function StyleRail(): React.JSX.Element | null {
   const setHighlightStyle = useStore((s) => s.setHighlightStyle)
   const nowPlayingAnimation = useStore((s) => s.nowPlayingAnimation)
   const setNowPlayingAnimation = useStore((s) => s.setNowPlayingAnimation)
+  const nowPlayingArtVisible = useStore((s) => s.nowPlayingArtVisible)
+  const setNowPlayingArtVisible = useStore((s) => s.setNowPlayingArtVisible)
 
   if (!styleRailVisible) return null
 
@@ -56,6 +58,14 @@ export function StyleRail(): React.JSX.Element | null {
             </option>
           ))}
         </select>
+      </label>
+      <label className="style-rail-control">
+        <input
+          type="checkbox"
+          checked={nowPlayingArtVisible}
+          onChange={(e) => setNowPlayingArtVisible(e.target.checked)}
+        />
+        Show album art
       </label>
     </div>
   )

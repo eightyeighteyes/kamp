@@ -59,7 +59,7 @@ export function NowPlayingView({ active = false }: { active?: boolean }): React.
 
   return (
     <div
-      className={`now-playing${artVisible ? '' : ' no-art'}`}
+      className="now-playing"
       // KAMP-769: the menu covers the whole panel so it survives hidden art.
       onContextMenu={(e) => {
         // ContextMenu portals, but React events still bubble through the
@@ -73,19 +73,25 @@ export function NowPlayingView({ active = false }: { active?: boolean }): React.
       {/* Always pass the art URL: the background derives its palette from it
           even when the art itself is hidden. */}
       <NowPlayingBackground active={active} artUrl={nowPlayingArtUrl} />
-      {artVisible && <NowPlayingArt src={nowPlayingArtUrl} />}
-      <div className="now-playing-meta">
-        <div className="now-playing-title">
-          {current_track.title}
-          {current_track.id in deferredOps && (
-            <span
-              className="deferred-op-pip"
-              {...tooltip(TOOLTIPS.META_WILL_REORGANIZE)}
-              aria-label="Pending rename"
-            />
-          )}
-        </div>
-      </div>
+      {/* The title hides with the art: on its own it just floats over the
+          background, so "art hidden" means the animation fills the panel. */}
+      {artVisible && (
+        <>
+          <NowPlayingArt src={nowPlayingArtUrl} />
+          <div className="now-playing-meta">
+            <div className="now-playing-title">
+              {current_track.title}
+              {current_track.id in deferredOps && (
+                <span
+                  className="deferred-op-pip"
+                  {...tooltip(TOOLTIPS.META_WILL_REORGANIZE)}
+                  aria-label="Pending rename"
+                />
+              )}
+            </div>
+          </div>
+        </>
+      )}
       {menu && menu.trackId === current_track.id && currentAlbum?.album_url && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <button

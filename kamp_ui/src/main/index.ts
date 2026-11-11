@@ -93,6 +93,10 @@ function trustedMainFrame(webContentsId: number): FrameIds | null {
 // default menu items ("About Kamp", "Quit Kamp") reflect the correct name.
 app.setName('Kamp')
 
+// KAMP-776 spike (not for merge): simulate a machine with hardware acceleration
+// off, to exercise the WebGL background's fallback. Must run before `ready`.
+if (process.env.KAMP_DISABLE_GPU === '1') app.disableHardwareAcceleration()
+
 // ---------------------------------------------------------------------------
 // Now Playing helper (per-platform)
 // ---------------------------------------------------------------------------

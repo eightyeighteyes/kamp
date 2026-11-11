@@ -16,6 +16,7 @@
 import type { ComponentType } from 'react'
 import type { NowPlayingAnimationId } from '../../../../shared/nowPlayingAnimation'
 import { BokehCanvas } from './BokehCanvas'
+import { ThalassaCanvas } from './ThalassaCanvas'
 
 export interface NowPlayingEngineProps {
   /** The Now Playing pane is the visible view. */
@@ -32,5 +33,6 @@ interface NowPlayingAnimation {
 
 export const NOW_PLAYING_ANIMATIONS = {
   none: { label: 'None', Engine: null },
-  bokeh: { label: 'Bokeh', Engine: BokehCanvas }
+  bokeh: { label: 'Bokeh', Engine: BokehCanvas },
+  thalassa: { label: 'Thalassa (spike)', Engine: ThalassaCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>

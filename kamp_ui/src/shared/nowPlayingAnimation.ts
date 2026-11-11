@@ -3,7 +3,9 @@
 // (components/nowplaying/registry.ts) is keyed by NowPlayingAnimationId, so adding
 // an id here without a registry entry fails to compile.
 
-export const NOW_PLAYING_ANIMATION_IDS = ['none', 'bokeh'] as const
+// 'thalassa' is the KAMP-776 WebGL spike; hidden in the picker behind
+// localStorage['kamp:spike-webgl'] and never merged.
+export const NOW_PLAYING_ANIMATION_IDS = ['none', 'bokeh', 'thalassa'] as const
 export type NowPlayingAnimationId = (typeof NOW_PLAYING_ANIMATION_IDS)[number]
 
 export const NOW_PLAYING_ANIMATION_KEY = 'kamp:nowplaying-animation'

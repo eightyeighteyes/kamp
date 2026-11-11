@@ -2,6 +2,9 @@ import React from 'react'
 import '../assets/style-rail.css'
 import { useStore } from '../store'
 import { ThemePicker } from './ThemePicker'
+import { NOW_PLAYING_ANIMATIONS } from './nowplaying/registry'
+import { NOW_PLAYING_ANIMATION_IDS } from '../../../shared/nowPlayingAnimation'
+import type { NowPlayingAnimationId } from '../../../shared/nowPlayingAnimation'
 
 const HIGHLIGHT_STYLES = ['shiny', 'newmoji', 'vaporwave', 'proud', 'pressed', 'boring', 'static']
 
@@ -11,8 +14,8 @@ export function StyleRail(): React.JSX.Element | null {
   const highlightStyle = useStore((s) => s.highlightStyle)
   const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
   const setHighlightStyle = useStore((s) => s.setHighlightStyle)
-  const nowPlayingGlowEnabled = useStore((s) => s.nowPlayingGlowEnabled)
-  const setNowPlayingGlowEnabled = useStore((s) => s.setNowPlayingGlowEnabled)
+  const nowPlayingAnimation = useStore((s) => s.nowPlayingAnimation)
+  const setNowPlayingAnimation = useStore((s) => s.setNowPlayingAnimation)
 
   if (!styleRailVisible) return null
 
@@ -41,12 +44,18 @@ export function StyleRail(): React.JSX.Element | null {
         </label>
       )}
       <label className="style-rail-control">
-        <input
-          type="checkbox"
-          checked={nowPlayingGlowEnabled}
-          onChange={(e) => setNowPlayingGlowEnabled(e.target.checked)}
-        />
-        Now Playing glow
+        Now Playing animation
+        <select
+          value={nowPlayingAnimation}
+          // Options come only from NOW_PLAYING_ANIMATION_IDS, so the cast is sound.
+          onChange={(e) => setNowPlayingAnimation(e.target.value as NowPlayingAnimationId)}
+        >
+          {NOW_PLAYING_ANIMATION_IDS.map((id) => (
+            <option key={id} value={id}>
+              {NOW_PLAYING_ANIMATIONS[id].label}
+            </option>
+          ))}
+        </select>
       </label>
     </div>
   )

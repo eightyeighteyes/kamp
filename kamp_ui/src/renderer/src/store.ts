@@ -34,6 +34,13 @@ import type {
 import type { DisplayStyle } from './components/modules/registry'
 import { applyTheme } from '../../shared/theme'
 import type { ThemeName } from '../../shared/theme'
+import {
+  LEGACY_GLOW_KEY,
+  NOW_PLAYING_ANIMATION_KEY,
+  legacyGlowValue,
+  resolveNowPlayingAnimation
+} from '../../shared/nowPlayingAnimation'
+import type { NowPlayingAnimationId } from '../../shared/nowPlayingAnimation'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 import { jsonEqual } from './utils/jsonEqual'
 
@@ -108,8 +115,8 @@ type PlayerStore = {
   highlightEnabled: boolean
   highlightCutoffSecs: number
   highlightStyle: string
-  // KAMP-561: Now Playing album-color ambient bokeh background.
-  nowPlayingGlowEnabled: boolean
+  // KAMP-561/766: which ambient animation plays behind the Now Playing art.
+  nowPlayingAnimation: NowPlayingAnimationId
   // KAMP-544: ephemeral, non-persisted "played this session" echo — album key ->
   // epoch-seconds captured when playback started. Masks the latency between
   // hitting play and the server's last_played_at syncing back into the album list
@@ -260,7 +267,7 @@ type PlayerStore = {
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
-  setNowPlayingGlowEnabled: (enabled: boolean) => void
+  setNowPlayingAnimation: (id: NowPlayingAnimationId) => void
   setHighlightStyle: (style: string) => void
   markHighlightPlayed: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
@@ -557,7 +564,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return saved ? parseInt(saved) : 30
   })(),
   highlightEnabled: localStorage.getItem('kamp:highlight-enabled') !== 'false',
-  nowPlayingGlowEnabled: localStorage.getItem('kamp:nowplaying-glow-enabled') !== 'false',
+  nowPlayingAnimation: resolveNowPlayingAnimation(
+    localStorage.getItem(NOW_PLAYING_ANIMATION_KEY),
+    localStorage.getItem(LEGACY_GLOW_KEY)
+  ),
   highlightCutoffSecs: Date.now() / 1000 - 5 * 86400,
   highlightStyle: localStorage.getItem('kamp:highlight-style') ?? 'shiny',
   playedHighlights: new Map<string, number>(),
@@ -1134,9 +1144,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ highlightEnabled: enabled })
   },
 
-  setNowPlayingGlowEnabled: (enabled) => {
-    localStorage.setItem('kamp:nowplaying-glow-enabled', String(enabled))
-    set({ nowPlayingGlowEnabled: enabled })
+  setNowPlayingAnimation: (id) => {
+    localStorage.setItem(NOW_PLAYING_ANIMATION_KEY, id)
+    // Mirror into the legacy key so a downgraded build still honours "None".
+    localStorage.setItem(LEGACY_GLOW_KEY, legacyGlowValue(id))
+    set({ nowPlayingAnimation: id })
   },
 
   setHighlightStyle: (style) => {

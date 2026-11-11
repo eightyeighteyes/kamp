@@ -5,7 +5,7 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { artUrl } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { ShareIcon } from './TransportIcons'
-import { BokehBackground } from './nowplaying/BokehBackground'
+import { NowPlayingBackground } from './nowplaying/NowPlayingBackground'
 
 export function NowPlayingView({ active = false }: { active?: boolean }): React.JSX.Element {
   const player = useStore((s) => s.player)
@@ -43,7 +43,7 @@ export function NowPlayingView({ active = false }: { active?: boolean }): React.
 
   return (
     <div className="now-playing">
-      <BokehBackground active={active} artUrl={nowPlayingArtUrl} />
+      <NowPlayingBackground active={active} artUrl={nowPlayingArtUrl} />
       <div
         className={`now-playing-art${artLoaded ? ' has-art' : ''}`}
         onContextMenu={(e) => {

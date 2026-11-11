@@ -7,6 +7,9 @@
     "src/preload/*.d.ts",
     "src/shared/**/*"
   ],
+  // KAMP-766: shared *.test.ts run under node --test and import node:test with
+  // `.ts` specifiers; they are typechecked by tsconfig.node.json instead.
+  "exclude": ["**/*.test.ts"],
   "compilerOptions": {
     "composite": true,
     "jsx": "react-jsx",

@@ -1,17 +1,15 @@
 // KAMP-561: React wrapper mounting the bokeh engine behind the Now Playing art.
 // The only React-aware piece; the engine + palette math live in framework-free
 // modules. Gated hard on visibility so the rAF loop never runs while the pane is
-// display:none, the toggle is off, the window is hidden, or reduced-motion is set.
+// display:none, the window is hidden, or reduced-motion is set. KAMP-766: this is
+// the "bokeh" entry in ./registry; NowPlayingBackground mounts it only while that
+// animation is selected, so "None" means zero canvas and zero GPU.
 
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../../store'
 import { BokehEngine } from './bokehEngine'
 import { accentPalette, loadPalette } from './palette'
-
-interface Props {
-  active: boolean
-  artUrl: string
-}
+import type { NowPlayingEngineProps } from './registry'
 
 function accentHex(): string {
   return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#7c86e1'
@@ -22,9 +20,8 @@ function bgHex(): string {
   return getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#141414'
 }
 
-// Inner component: only mounted when the toggle is on, so "off" means zero canvas
-// and zero GPU. All effect hooks live here (always run while mounted).
-function BokehCanvas({ active, artUrl }: Props): React.JSX.Element {
+// All effect hooks live here (always run while mounted).
+export function BokehCanvas({ active, artUrl }: NowPlayingEngineProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const engineRef = useRef<BokehEngine | null>(null)
 
@@ -121,11 +118,7 @@ function BokehCanvas({ active, artUrl }: Props): React.JSX.Element {
     return undefined
   }, [shouldAnimate, active, reducedMotion])
 
-  return <canvas ref={canvasRef} className="now-playing-bokeh" aria-hidden="true" />
-}
-
-export function BokehBackground(props: Props): React.JSX.Element | null {
-  const enabled = useStore((s) => s.nowPlayingGlowEnabled)
-  if (!enabled) return null
-  return <BokehCanvas {...props} />
+  return (
+    <canvas ref={canvasRef} className="now-playing-backdrop now-playing-bokeh" aria-hidden="true" />
+  )
 }

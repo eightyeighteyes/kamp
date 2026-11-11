@@ -22,6 +22,7 @@ import { theme, themes } from '../shared/theme'
 import type { ThemeName } from '../shared/theme'
 import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
 import { readManifest } from './communityManifest'
+import { describeLoginCompleteFailure } from './bandcampLoginError'
 import { shouldInjectKampToken } from './kampTokenScope'
 import type { FrameIds } from './kampTokenScope'
 import {
@@ -579,7 +580,18 @@ async function checkForUpdate(win: BrowserWindow): Promise<void> {
 // Bandcamp login via BrowserWindow
 // ---------------------------------------------------------------------------
 
-type BandcampLoginResult = { ok: true } | { ok: false; error: string }
+// `cancelled` marks a window the user closed themselves, so a caller with no
+// room for an error (the reconnect button) can stay quiet about it.
+type BandcampLoginResult = { ok: true } | { ok: false; error: string; cancelled?: boolean }
+
+/**
+ * KAMP-750: true while the Bandcamp relay has cookies injected into the
+ * partition for in-flight requests.  The login window shares that partition,
+ * so purging it then would delete the cookies those requests depend on and
+ * send them out unauthenticated, which Bandcamp answers with 429 (KAMP-640).
+ * Replaced with the real lease check once the relay is set up.
+ */
+let relayHoldsBandcampCookies: () => boolean = () => false
 
 /**
  * KAMP-747: is this URL somewhere the login window is allowed to navigate?
@@ -892,52 +904,75 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
         })),
         origins: []
       }
+      let result: BandcampLoginResult
       try {
         const res = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/login-complete', {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload)
         })
-        if (!res.ok) throw new Error(`login-complete returned ${res.status}`)
-        // Close the page BEFORE cleaning up.  While it is alive its scripts
-        // keep writing cookies: on a real login, bandcamp's analytics re-set
-        // _ga after the removals below had already run, and it survived until
-        // the next launch's sweep.  `harvesting` keeps the 'closed' handler
-        // from reporting this as a user cancel.
-        clearInterval(poll.timer)
-        if (!loginWin.isDestroyed()) loginWin.destroy()
-        // The daemon has persisted the auth cookies it needs (it filters to its
-        // own allowlist, KAMP-746 — this side sends everything and keeps no
-        // copy of that list).  Clear the jar from the Chromium profile so
-        // neither the credential nor the trackers linger on disk as plaintext.
-        // Cloudflare's own state is kept: see purgeBandcampPartitionCookies.
-        //
-        // The partition is its own on-disk profile (Partitions/bandcamp), so
-        // the login page's other storage lands there too.  Nothing needs it
-        // after login; cookies are excluded so Cloudflare's state survives.
-        //
-        // A failure here does not fail the login — the daemon already holds
-        // the session — and the next launch's cleanBandcampSessions sweep
-        // removes whatever was left.
-        try {
-          await purgeBandcampPartitionCookies(loginSession)
-          await loginSession.clearStorageData({
-            storages: [
-              'localstorage',
-              'indexdb',
-              'serviceworkers',
-              'cachestorage',
-              'shadercache',
-              'websql'
-            ]
-          })
-          await loginSession.clearCache()
-        } catch (err) {
-          console.warn('[kamp login] partition cleanup failed:', err)
-        }
-        await settle({ ok: true })
+        // KAMP-750: a storage failure comes back as a 422 whose detail is the
+        // actionable message ("make sure your keychain is unlocked..."), so
+        // pass it through rather than a bare status code.
+        result = res.ok
+          ? { ok: true }
+          : { ok: false, error: describeLoginCompleteFailure(res.status, await res.text()) }
       } catch (err) {
-        await settle({ ok: false, error: String(err) })
+        result = { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+      await closeAndCleanPartition()
+      await settle(result)
+    }
+
+    /**
+     * Close the login page, then clear what it left in the partition -- on
+     * success AND failure.  The daemon either holds the auth cookies now, or
+     * (KAMP-750) refused to store them because no keychain was available; in
+     * neither case should the jar linger in the Chromium profile as plaintext,
+     * or failing closed would just move the credential from the database into
+     * Partitions/bandcamp.  A retry costs the user one more sign-in.
+     */
+    const closeAndCleanPartition = async (): Promise<void> => {
+      // Close the page BEFORE cleaning up.  While it is alive its scripts
+      // keep writing cookies: on a real login, bandcamp's analytics re-set
+      // _ga after the removals below had already run, and it survived until
+      // the next launch's sweep.  `harvesting` keeps the 'closed' handler
+      // from reporting this as a user cancel.
+      clearInterval(poll.timer)
+      if (!loginWin.isDestroyed()) loginWin.destroy()
+      // Not while the relay holds a cookie lease: this partition is the one
+      // it injects into, and purging mid-request de-authenticates in-flight
+      // Bandcamp traffic (KAMP-640).  The next launch's cleanBandcampSessions
+      // sweep removes what is left.
+      if (relayHoldsBandcampCookies()) {
+        console.warn('[kamp login] relay in flight; partition cleanup deferred to next launch')
+        return
+      }
+      // The daemon filters to its own allowlist (KAMP-746) — this side sends
+      // everything and keeps no copy of that list.  Cloudflare's own state is
+      // kept: see purgeBandcampPartitionCookies.
+      //
+      // The partition is its own on-disk profile (Partitions/bandcamp), so the
+      // login page's other storage lands there too.  Nothing needs it after
+      // login; cookies are excluded so Cloudflare's state survives.
+      //
+      // A failure here does not change the login's outcome, and the next
+      // launch's sweep removes whatever was left.
+      try {
+        await purgeBandcampPartitionCookies(loginSession)
+        await loginSession.clearStorageData({
+          storages: [
+            'localstorage',
+            'indexdb',
+            'serviceworkers',
+            'cachestorage',
+            'shadercache',
+            'websql'
+          ]
+        })
+        await loginSession.clearCache()
+      } catch (err) {
+        console.warn('[kamp login] partition cleanup failed:', err)
       }
     }
 
@@ -998,10 +1033,16 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       // Name the refused navigation if there was one: this is the only channel
       // that reaches the user in a packaged build, where the console warnings
       // above go nowhere.  Both callers render result.error already.
-      const error = lastBlocked
-        ? `Login window closed before completing sign-in. Navigation to ${lastBlocked} was blocked — report this if sign-in cannot be completed.`
-        : 'Login window closed before completing sign-in.'
-      void settle({ ok: false, error })
+      // A blocked navigation is not a plain cancel: the user may have closed
+      // the window because it dead-ended, so that one is still reported.
+      void settle(
+        lastBlocked
+          ? {
+              ok: false,
+              error: `Login window closed before completing sign-in. Navigation to ${lastBlocked} was blocked — report this if sign-in cannot be completed.`
+            }
+          : { ok: false, error: 'Login window closed before completing sign-in.', cancelled: true }
+      )
     })
   })
 }
@@ -1496,6 +1537,7 @@ app.whenReady().then(async () => {
   let cookieLeases = 0
   let cookieInjection: Promise<string[]> | null = null
   let cookieRemoval: Promise<void> | null = null
+  relayHoldsBandcampCookies = () => cookieLeases > 0
 
   async function injectBandcampCookies(): Promise<string[]> {
     // In the PyInstaller bundle, cookies are stored by the daemon rather than

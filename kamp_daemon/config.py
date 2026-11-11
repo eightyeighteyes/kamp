@@ -309,23 +309,11 @@ class Config:
             cls.write_defaults(db)
             existing = dict(_CONFIG_DEFAULTS)
 
-        # One-time migration: move Last.fm session key from the settings table
-        # (where it was stored as plaintext) to the OS keychain via the sessions
-        # table.  Runs once on first load after upgrading; afterwards the settings
-        # rows are empty and the session lives in the keychain.
-        _session_key = existing.get("lastfm.session_key", "")
-        if _session_key:
-            _username = existing.get("lastfm.username", "")
-            db.set_session(
-                "lastfm", {"session_key": _session_key, "username": _username}
-            )
-            db.set_setting("lastfm.session_key", "")
-            db.set_setting("lastfm.username", "")
-            existing["lastfm.session_key"] = ""
-            existing["lastfm.username"] = ""
-            logger.info(
-                "Migrated Last.fm session key from settings table to session store."
-            )
+        # The Last.fm settings -> session store migration used to run here. It
+        # is now migrate_lastfm_settings(), called once at daemon startup: this
+        # method runs from ~8 call sites (sync worker, every config PATCH,
+        # per-album enrichment), and since KAMP-750 a credential write can
+        # fail, so it must not be retried on every one of them.
 
         # Back-fill defaults for any keys added after the initial setup
         # (e.g. when a new config key is introduced in a later release).
@@ -400,6 +388,40 @@ class Config:
 # ---------------------------------------------------------------------------
 # CLI config management helpers
 # ---------------------------------------------------------------------------
+
+
+def migrate_lastfm_settings(db: "LibraryIndex") -> bool:
+    """Move a legacy Last.fm session key from settings into the session store.
+
+    Returns True when a key was migrated. Call once at daemon startup, never
+    from ``Config.load`` (see the note there).
+
+    Since KAMP-750 ``set_session`` raises ``CredentialStorageError`` rather
+    than writing plaintext, so a failure here is caught and the settings rows
+    are left for the next start. Until then the legacy key stays plaintext in
+    ``settings`` -- pre-existing state this does not worsen, and never served:
+    ``lastfm.session_key`` is a deprecated key, so neither ``config_show`` nor
+    ``GET /api/v1/config`` returns it. Scrobbling stays off meanwhile, because
+    ``Config.load`` reads Last.fm only from the session store.
+    """
+    from kamp_core.library import CredentialStorageError
+
+    session_key = db.get_setting("lastfm.session_key") or ""
+    if not session_key:
+        return False
+    username = db.get_setting("lastfm.username") or ""
+    try:
+        db.set_session("lastfm", {"session_key": session_key, "username": username})
+    except CredentialStorageError:
+        logger.warning(
+            "Could not move the legacy Last.fm session key into the credential"
+            " store; leaving it in settings and retrying on the next start."
+        )
+        return False
+    db.set_setting("lastfm.session_key", "")
+    db.set_setting("lastfm.username", "")
+    logger.info("Migrated Last.fm session key from settings table to session store.")
+    return True
 
 
 def config_show(db: "LibraryIndex") -> str:

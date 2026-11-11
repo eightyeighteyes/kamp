@@ -13,7 +13,7 @@ declare global {
       onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void
       onCycleView: (callback: (direction: 'next' | 'prev') => void) => () => void
       bandcamp: {
-        beginLogin: () => Promise<{ ok: boolean; error?: string }>
+        beginLogin: () => Promise<{ ok: boolean; error?: string; cancelled?: boolean }>
         onSyncStatus: (callback: (state: 'idle' | 'syncing') => void) => () => void
         triggerSync: () => Promise<{ ok: boolean; started?: boolean }>
         triggerSyncAll: () => Promise<{ ok: boolean; started?: boolean }>

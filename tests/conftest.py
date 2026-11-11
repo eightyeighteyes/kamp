@@ -1,14 +1,79 @@
 """Shared pytest fixtures.
 
-Currently one job: keep the test suite away from the developer's real macOS
-keychain.
+Two jobs: keep the test suite away from the developer's real macOS keychain,
+and give every test a credential store that actually works.
 """
 
 from __future__ import annotations
 
 from typing import Iterator
 
+import keyring
+import keyring.errors
 import pytest
+from keyring.backend import KeyringBackend
+
+
+class MemoryKeyring(KeyringBackend):
+    """A keyring backend that round-trips, held in a dict for one test.
+
+    keyring ships no in-memory backend, so this is the minimal one: the three
+    calls ``LibraryIndex`` makes, with keyring's own "missing item" semantics
+    (``None`` on read, ``PasswordDeleteError`` on delete).
+    """
+
+    priority = 1  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.store.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.store[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        try:
+            del self.store[(service, username)]
+        except KeyError:
+            raise keyring.errors.PasswordDeleteError(username) from None
+
+
+@pytest.fixture(autouse=True)
+def working_secret_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[MemoryKeyring]:
+    """Route every incidental ``set_session`` through a store that works.
+
+    Before KAMP-750 the suite ran entirely on the plaintext fallback: the
+    fixture below makes the real macOS keychain answer not-found, Linux CI has
+    only keyring's ``fail`` backend, so ``set_session`` "succeeded" by writing
+    plaintext into the DB. Now that it fails closed, that environment would
+    make every login, sync and config test raise ``CredentialStorageError``.
+
+    Both platform references in ``library`` are nulled so the keyring branch
+    serves all three CI OSes identically. ``_mac_kc`` is deliberately NOT a
+    fake by default: ``heal_plaintext_sessions`` switches on whenever it is
+    non-None. Tests exercising the macOS or Windows branch patch
+    ``kamp_core.library._mac_kc`` / ``_win_cred`` themselves, which takes
+    precedence (mocker undoes its patches before this fixture tears down).
+
+    Do NOT set ``KAMP_ALLOW_PLAINTEXT_CREDENTIALS`` here: that would put the
+    default path out of reach of every test, recreating what KAMP-750 removed.
+    """
+    from kamp_core import library
+
+    monkeypatch.setattr(library, "_mac_kc", None)
+    monkeypatch.setattr(library, "_win_cred", None)
+    monkeypatch.delenv("KAMP_ALLOW_PLAINTEXT_CREDENTIALS", raising=False)
+    backend = MemoryKeyring()
+    previous = keyring.get_keyring()
+    keyring.set_keyring(backend)
+    try:
+        yield backend
+    finally:
+        keyring.set_keyring(previous)
+
 
 # Security.framework entry points in kamp_core.macos_keychain. Patching at this
 # level — rather than at get_password/set_password — leaves the module's own

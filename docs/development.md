@@ -128,10 +128,20 @@ Two things to know before trusting the output:
   shutdown *keeps* both sidecars, so a stopped daemon alone does not cause
   this.
 
+New credentials are never written as plaintext (KAMP-750). If the keychain
+write does not verify — or, on Windows, DPAPI fails — `set_session` raises
+`CredentialStorageError` *before* touching the database, the login UI shows "Kamp
+couldn't store your … login securely", and any previous login is left as it was.
+The only way back to the old plaintext fallback is to launch the daemon with
+`KAMP_ALLOW_PLAINTEXT_CREDENTIALS=1`, intended for a platform with no usable
+store. It is deliberately an environment variable and not a config key, so it
+cannot be switched on through `PATCH /api/v1/config`; the daemon logs a warning
+at startup whenever it is set.
+
 On macOS the daemon moves any plaintext row into the Login Keychain at startup
 (KAMP-755). It is keyed on the row rather than a version or a marker, so it
-retries every start until it succeeds, and re-runs if a later failed keychain
-write ever puts a row back. Where the keychain already holds a value that value
+retries every start until it succeeds, and re-runs if a row ever comes back —
+which, since KAMP-750, only the escape hatch above can cause. Where the keychain already holds a value that value
 wins and the row is simply dropped — `get_session` already prefers the keychain,
 so an existing item is the credential in use and the row is unreachable. A row
 is **never** cleared unless the credential has been read back out of the

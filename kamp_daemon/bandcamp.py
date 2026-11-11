@@ -1453,10 +1453,24 @@ def _store_username_in_session(
     """Persist *username* into the stored session row if it has changed.
 
     No-op when *username* is empty or already matches the stored value.
+
+    A credential-store failure is swallowed (KAMP-750). All three sync entry
+    points call this *before* walking the collection, so letting
+    ``CredentialStorageError`` escape would abort an entire sync for the sake
+    of a cosmetic field. The in-memory ``session_data`` is still updated, so
+    this run uses the new name; the write is retried on the next sync.
     """
+    from kamp_core.library import CredentialStorageError
+
     if username and session_data.get("username") != username:
         session_data["username"] = username
-        index.set_session("bandcamp", session_data)
+        try:
+            index.set_session("bandcamp", session_data)
+        except CredentialStorageError:
+            logger.warning(
+                "Could not save the updated Bandcamp username to the credential"
+                " store; continuing the sync and retrying next time."
+            )
 
 
 def _extract_pagedata(html: str, url: str) -> dict[str, Any]:

@@ -2706,6 +2706,32 @@ class TestLastfmEndpoints:
         )
         assert response.status_code == 422
 
+    def test_connect_storage_failure_returns_fixed_detail_and_stays_disconnected(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """KAMP-750: Last.fm's session key is a credential too."""
+        from kamp_core.library import CredentialStorageError
+
+        def _on_connect(username: str, password: str) -> None:
+            raise CredentialStorageError("lastfm")
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"lastfm.username": None},
+            on_lastfm_connect=_on_connect,
+        )
+        c = TestClient(app)
+        response = c.post(
+            "/api/v1/lastfm/connect",
+            json={"username": "alice", "password": "pw"},
+        )
+        assert response.status_code == 422
+        assert "Last.fm" in response.json()["detail"]
+        assert "pw" not in response.json()["detail"].split()
+        assert c.get("/api/v1/config").json()["lastfm.username"] is None
+
     def test_connect_returns_503_when_no_callback(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
@@ -2993,6 +3019,40 @@ class TestBandcampStatus:
         )
         assert resp.status_code == 422
         assert "simulated keyring backend failure" in resp.json()["detail"]
+
+    def test_login_complete_storage_failure_returns_fixed_detail(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """KAMP-750: the detail is the renderer's error text, verbatim.
+
+        It must be the fixed, actionable message and carry no cookie value.
+        Nothing may be marked connected either.
+        """
+        from kamp_core.library import CredentialStorageError
+
+        secret = "kamp750-detail-must-not-echo-this"
+
+        def _store_fails(payload: dict[str, Any]) -> None:
+            raise CredentialStorageError("bandcamp")
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"bandcamp.connected": False},
+            on_bandcamp_login_complete=_store_fails,
+            get_bandcamp_session=lambda: None,
+        )
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/bandcamp/login-complete",
+            json={"cookies": [{"name": "identity", "value": secret}], "origins": []},
+        )
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail == str(CredentialStorageError("bandcamp"))
+        assert secret not in detail
+        assert c.get("/api/v1/config").json()["bandcamp.connected"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ Syncer, Config, etc.).
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import asyncio
 import importlib.metadata
 import logging
@@ -24,6 +24,9 @@ import tomllib
 from pathlib import Path
 
 import musicbrainzngs
+
+if TYPE_CHECKING:
+    from kamp_core.library import LibraryIndex
 
 from .config import (
     Config,
@@ -795,6 +798,29 @@ def _build_config_values(
     }
 
 
+def _credential_startup(index: "LibraryIndex") -> None:
+    """Credential housekeeping that must run once per daemon start (KAMP-750).
+
+    * The plaintext escape hatch is an environment variable only, so it can be
+      on without anyone having asked for it in this session. Say so once, here,
+      where it will be seen in the log.
+    * The legacy Last.fm settings -> session store move runs here rather than
+      in ``Config.load``, which has ~8 call sites; see
+      ``migrate_lastfm_settings``. It never raises.
+    """
+    from kamp_core.library import ALLOW_PLAINTEXT_ENV, _allow_plaintext_credentials
+
+    from .config import migrate_lastfm_settings
+
+    if _allow_plaintext_credentials():
+        logging.getLogger(__name__).warning(
+            "%s=1 is set: credentials will be stored as PLAINTEXT in the database"
+            " whenever no keychain is available.",
+            ALLOW_PLAINTEXT_ENV,
+        )
+    migrate_lastfm_settings(index)
+
+
 def _cmd_daemon(
     config: Config,
     host: str = "127.0.0.1",
@@ -864,8 +890,15 @@ def _cmd_daemon(
     if _swept:
         _logger.info("Cleared %d orphaned pending-ingest row(s) at startup", _swept)
 
+    _credential_startup(index)
+
     # Migrate legacy bandcamp_session.json → sessions DB table (one-time).
     # After migration the file is deleted so subsequent starts skip this block.
+    #
+    # Do not "tidy" the broad except below. Since KAMP-750 set_session raises
+    # CredentialStorageError when no keychain is available, and this ordering
+    # -- write, then unlink only on success -- is what makes that safe: the
+    # file survives and the migration retries next start.
     _legacy_session = _state_dir() / "bandcamp_session.json"
     if _legacy_session.exists():
         try:

@@ -45,29 +45,84 @@ import mutagen.oggvorbis
 
 logger = logging.getLogger(__name__)
 
+#: The only off-switch for KAMP-750's fail-closed credential storage.
+#:
+#: Deliberately an environment variable and NOT a config key: ``config_set``
+#: accepts any key in ``_CONFIG_KEY_TYPES`` and ``PATCH /api/v1/config`` routes
+#: straight into it, so a config key would put the off-switch for a security
+#: control on the same local HTTP API as ``ui.sort_order``. Only whoever
+#: launches the daemon can set this.
+ALLOW_PLAINTEXT_ENV = "KAMP_ALLOW_PLAINTEXT_CREDENTIALS"
 
-def _maybe_protect(plaintext: str) -> str:
+_SERVICE_DISPLAY_NAMES = {"bandcamp": "Bandcamp", "lastfm": "Last.fm"}
+
+
+class CredentialStorageError(RuntimeError):
+    """No confidentiality mechanism could be applied to a credential (KAMP-750).
+
+    The message is fixed and user-facing: ``server.py`` returns ``str(exc)`` as
+    the 422 detail and the UI renders it verbatim. It must therefore never
+    interpolate the payload *or* the underlying backend exception, whose text
+    is not ours to vouch for. The cause is chained (``raise ... from``) and
+    logged separately, where only lengths and backend ids appear.
+    """
+
+    def __init__(self, service: str) -> None:
+        self.service = service
+        name = _SERVICE_DISPLAY_NAMES.get(service, service)
+        super().__init__(
+            f"Kamp couldn't store your {name} login securely (the system"
+            " credential store was unavailable), so it was not saved. Your"
+            " previous login, if any, is unchanged. Make sure your keychain is"
+            " unlocked, then try again."
+        )
+
+
+def _allow_plaintext_credentials() -> bool:
+    """True only when the escape hatch is set to exactly ``"1"``.
+
+    Read at call time rather than cached at import, so tests can toggle it and
+    so it is never stale. Anything that can change the daemon's environment
+    can already write the database directly, so this is no weaker.
+    """
+    return os.environ.get(ALLOW_PLAINTEXT_ENV) == "1"
+
+
+def _maybe_protect(plaintext: str, service: str = "") -> str:
     """DPAPI-wrap *plaintext* on Windows, return as-is elsewhere.
 
     On Windows the SQLite ``sessions`` row sits in
     ``%APPDATA%\\kamp\\library.db`` in a form readable by anyone with
     file access; DPAPI ties the encryption key to the current Windows
     user account so a copy of the DB cannot be decrypted off-machine
-    (KAMP-280 AC #3).  If DPAPI itself fails we still write the row —
-    a failed login is worse than a non-encrypted credential — and log
-    a warning.
+    (KAMP-280 AC #3).
+
+    If DPAPI fails, this raises ``CredentialStorageError`` (KAMP-750). It used
+    to return the plaintext on the grounds that "a failed login is worse than
+    a non-encrypted credential" -- the policy KAMP-750 reverses. The escape
+    hatch restores the old behaviour, loudly.
     """
     if _win_cred is None:
         return plaintext
     try:
         return _win_cred.protect_str(plaintext)
     except Exception as exc:
+        if _allow_plaintext_credentials():
+            logger.warning(
+                "DPAPI protect failed (%s: %s); storing PLAINTEXT because %s=1",
+                type(exc).__name__,
+                exc,
+                ALLOW_PLAINTEXT_ENV,
+            )
+            return plaintext
         logger.warning(
-            "DPAPI protect failed (%s: %s); storing plaintext fallback",
+            "DPAPI protect failed for service=%s (%s: %s); refusing to store"
+            " plaintext",
+            service,
             type(exc).__name__,
             exc,
         )
-        return plaintext
+        raise CredentialStorageError(service) from exc
 
 
 def _maybe_unprotect(text: str) -> str:
@@ -89,6 +144,94 @@ def _maybe_unprotect(text: str) -> str:
         )
         return text
     return unwrapped if unwrapped is not None else text
+
+
+class _ReadbackMismatch(Exception):
+    """A keychain write reported success but did not round-trip.
+
+    Internal: only ever the chained ``__cause__`` of a
+    ``CredentialStorageError``, so a traceback names *why* the store failed.
+    """
+
+
+def _write_verified_secret(
+    store: Any, service: str, payload: str
+) -> BaseException | None:
+    """Write *payload* to *store* and verify it by read-back.
+
+    *store* is ``macos_keychain`` or the ``keyring`` module -- both expose
+    ``set_password`` / ``get_password`` / ``delete_password`` with the same
+    ``("kamp", service, ...)`` shape. Attribute lookup happens at call time,
+    so a patched ``keyring.set_password`` is honoured.
+
+    Returns ``None`` on a verified write, otherwise the exception describing
+    the failure. Never raises: the caller decides whether failure is fatal.
+
+    Anything raised is caught, not just ``keyring.errors``: ctypes backends
+    (WinVaultKeyring, KAMP-282) and the macOS helper's timeout wrapper raise
+    outside that hierarchy.
+
+    When the write *succeeded* but verification did not, the item is deleted
+    best-effort. ``get_session`` reads the keychain first, so leaving an
+    unverified credential there would make the app quietly "connected" right
+    after telling the user the login was not saved. When the write itself
+    raised, nothing is deleted: the existing item may be the user's previous,
+    still-working login, which the error message promises is unchanged.
+    """
+    try:
+        store.set_password("kamp", service, payload)
+    except Exception as exc:
+        logger.warning(
+            "set_session: keychain write failed for service=%s (%s: %s)"
+            " [backend=%s payload_len=%d]",
+            service,
+            type(exc).__name__,
+            exc,
+            _credential_backend_id(),
+            len(payload),
+        )
+        return exc
+
+    failure: BaseException
+    try:
+        verified = store.get_password("kamp", service)
+    except Exception as exc:
+        logger.warning(
+            "set_session: keychain read-back failed for service=%s (%s: %s)"
+            " [backend=%s payload_len=%d]",
+            service,
+            type(exc).__name__,
+            exc,
+            _credential_backend_id(),
+            len(payload),
+        )
+        failure = exc
+    else:
+        if verified == payload:
+            logger.debug("set_session: keychain write verified for service=%s", service)
+            return None
+        # Lengths only -- never the values (KAMP-743).
+        logger.warning(
+            "set_session: keychain write for service=%s did not verify"
+            " (read-back returned %s) [backend=%s payload_len=%d readback_len=%s]",
+            service,
+            "wrong value" if verified is not None else "None",
+            _credential_backend_id(),
+            len(payload),
+            len(verified) if verified is not None else "n/a",
+        )
+        failure = _ReadbackMismatch(f"read-back for {service} did not match")
+
+    try:
+        store.delete_password("kamp", service)
+    except Exception as exc:
+        logger.warning(
+            "set_session: could not remove the unverified keychain item for"
+            " service=%s (%s)",
+            service,
+            type(exc).__name__,
+        )
+    return failure
 
 
 def _credential_backend_id() -> str:
@@ -1575,9 +1718,15 @@ class LibraryIndex:
                 for row in rows:
                     if _win_cred.is_dpapi_blob(row["session_json"]):
                         continue  # already wrapped (paranoia)
-                    wrapped = _maybe_protect(row["session_json"])
+                    try:
+                        wrapped = _maybe_protect(row["session_json"], row["service"])
+                    except CredentialStorageError:
+                        # Leave the pre-existing row as it was: nothing new is
+                        # written, whereas aborting here would strand every
+                        # later migration step (KAMP-750).
+                        continue
                     if wrapped == row["session_json"]:
-                        continue  # protect failed, already logged
+                        continue  # escape hatch kept it plaintext; logged
                     self._conn.execute(
                         "UPDATE sessions SET session_json = ? WHERE service = ?",
                         (wrapped, row["service"]),
@@ -4418,134 +4567,52 @@ class LibraryIndex:
     def set_session(self, service: str, data: dict[str, Any]) -> None:
         """Persist session data for *service*, replacing any existing entry.
 
-        On macOS, writes to the Data Protection Keychain so that items remain
-        accessible across app updates without prompts.  Falls back to the DB
-        column when the keychain write fails.  On other platforms, writes via
-        ``keyring``.
+        Where the credential goes depends on the platform:
+
+        * macOS: the keychain via ``macos_keychain`` (Data Protection Keychain,
+          or the Login Keychain when the helper cannot run -- KAMP-749/753).
+        * Windows: a DPAPI-wrapped DB row. The OS keyring is skipped on purpose:
+          WinVaultKeyring caps credentials at 2560 bytes and the Bandcamp blob
+          exceeds it, so DPAPI *is* the store there (KAMP-280).
+        * Anything else: ``keyring``.
+
+        Fails closed (KAMP-750): when no confidentiality mechanism could be
+        applied -- the keychain write did not verify, or DPAPI failed -- this
+        raises ``CredentialStorageError`` instead of writing plaintext, and
+        does so *before* touching the DB, so the user's previous login is left
+        exactly as it was. ``KAMP_ALLOW_PLAINTEXT_CREDENTIALS=1`` restores the
+        old plaintext fallback for platforms with no usable store.
         """
         payload = json.dumps(data)
-        session_json: str | None = payload
 
+        failure: BaseException | None
         if _mac_kc is not None:
-            try:
-                _mac_kc.set_password("kamp", service, payload)
-                verified = _mac_kc.get_password("kamp", service)
-                if verified == payload:
-                    session_json = None  # stored in keychain; keep DB row metadata-only
-                    logger.debug(
-                        "set_session: keychain write verified for service=%s", service
-                    )
-                else:
-                    logger.warning(
-                        "set_session: keychain write for service=%s did not verify"
-                        " (read-back returned %s); falling back to DB"
-                        " [backend=%s payload_len=%d readback_len=%s]",
-                        service,
-                        "wrong value" if verified is not None else "None",
-                        _credential_backend_id(),
-                        len(payload),
-                        len(verified) if verified is not None else "n/a",
-                    )
-            except keyring.errors.KeyringError as exc:
-                logger.warning(
-                    "set_session: keychain write failed for service=%s (%s: %s);"
-                    " credential stored in DB fallback"
-                    " [backend=%s payload_len=%d]",
-                    service,
-                    type(exc).__name__,
-                    exc,
-                    _credential_backend_id(),
-                    len(payload),
-                )
-            except Exception as exc:
-                # The asymmetry this closes: the keyring branch below has had an
-                # equivalent arm since KAMP-282, and this one did not. The macOS
-                # path can still raise outside keyring.errors -- _call_with_timeout
-                # re-raises whatever the worker thread raised, and that is not
-                # guaranteed to be a keyring exception.
-                #
-                # Until now an escape only turned a login request into a 422.
-                # KAMP-755 calls set_session's sibling logic from daemon startup,
-                # where an escape would abort `kamp daemon` unattended on every
-                # start -- leaving a plaintext row the user cannot clear because
-                # the UI never comes up.
-                logger.warning(
-                    "set_session: keychain write raised unexpected %s for service=%s"
-                    " (%s); credential stored in DB fallback"
-                    " [backend=%s payload_len=%d]",
-                    type(exc).__name__,
-                    service,
-                    exc,
-                    _credential_backend_id(),
-                    len(payload),
-                )
+            failure = _write_verified_secret(_mac_kc, service, payload)
         elif _win_cred is None:
-            # Windows skips this branch — DPAPI-wrapped DB row is the
-            # storage path there (see KAMP-280).
-            try:
-                keyring.set_password("kamp", service, payload)
-                verified = keyring.get_password("kamp", service)
-                if verified == payload:
-                    session_json = None
-                    logger.debug(
-                        "set_session: keychain write verified for service=%s", service
-                    )
-                else:
-                    logger.warning(
-                        "set_session: keychain write for service=%s did not verify"
-                        " (read-back returned %s); falling back to DB"
-                        " [backend=%s payload_len=%d readback_len=%s]",
-                        service,
-                        "wrong value" if verified is not None else "None",
-                        _credential_backend_id(),
-                        len(payload),
-                        len(verified) if verified is not None else "n/a",
-                    )
-            except keyring.errors.NoKeyringError:
-                # Previously a bare pass: the one fallback path that wrote a
-                # plaintext credential while logging nothing at all, so a row
-                # produced here left no trace to diagnose (KAMP-743).
-                logger.warning(
-                    "set_session: no keyring backend for service=%s;"
-                    " credential stored as PLAINTEXT in DB fallback"
-                    " [backend=%s payload_len=%d]",
-                    service,
-                    _credential_backend_id(),
-                    len(payload),
-                )
-            except keyring.errors.KeyringError as exc:
-                logger.warning(
-                    "set_session: keychain write failed for service=%s (%s: %s);"
-                    " credential stored in DB fallback"
-                    " [backend=%s payload_len=%d]",
-                    service,
-                    type(exc).__name__,
-                    exc,
-                    _credential_backend_id(),
-                    len(payload),
-                )
-            except Exception as exc:
-                # Backend may raise OSError/RuntimeError outside the keyring
-                # exception hierarchy (e.g. ctypes failures from WinVaultKeyring).
-                # Without this branch the exception bubbles out of set_session
-                # and turns the bandcamp login-complete handler into a 422.
-                # See KAMP-282.
-                logger.warning(
-                    "set_session: keychain write raised unexpected %s for service=%s"
-                    " (%s); credential stored in DB fallback"
-                    " [backend=%s payload_len=%d]",
-                    type(exc).__name__,
-                    service,
-                    exc,
-                    _credential_backend_id(),
-                    len(payload),
-                )
+            failure = _write_verified_secret(keyring, service, payload)
+        else:
+            failure = None  # Windows: the DPAPI row below is the store.
 
-        # On Windows, wrap the DB fallback with DPAPI so the SQLite row is
-        # not readable as plaintext (KAMP-280 AC #3).  No-op when the
-        # credential lives in the OS keychain (session_json is None).
-        if session_json is not None:
-            session_json = _maybe_protect(session_json)
+        session_json: str | None
+        if _win_cred is not None and _mac_kc is None:
+            # Raises CredentialStorageError if DPAPI fails (unless the escape
+            # hatch is set): the wrap is the confidentiality mechanism here.
+            session_json = _maybe_protect(payload, service)
+        elif failure is None:
+            session_json = None  # verified in the keychain; row is metadata-only
+        elif _allow_plaintext_credentials():
+            logger.warning(
+                "set_session: storing service=%s as PLAINTEXT in the DB because"
+                " %s=1 [backend=%s payload_len=%d]",
+                service,
+                ALLOW_PLAINTEXT_ENV,
+                _credential_backend_id(),
+                len(payload),
+            )
+            session_json = payload
+        else:
+            raise CredentialStorageError(service) from failure
+
         self._conn.execute(
             """
             INSERT INTO sessions (service, session_json, updated_at)
@@ -4563,10 +4630,9 @@ class LibraryIndex:
         # credential's page image is left in the WAL. Ordinary (PASSIVE)
         # checkpointing recycles those frames only as new frames are appended,
         # which is neither prompt nor guaranteed -- a live install was observed
-        # with a 1.2 MB WAL four hours older than its last checkpoint. Every
-        # login writes the session at least twice (__main__.py fetches the
-        # username and persists again), so this path runs more often than
-        # clear_session does.
+        # with a 1.2 MB WAL four hours older than its last checkpoint. This
+        # path also runs more often than clear_session: every login, every
+        # username enrichment during sync, and every cookie prune.
         self._checkpoint_wal("set_session")
 
     def _checkpoint_wal(self, label: str) -> None:

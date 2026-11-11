@@ -25,7 +25,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from kamp_core import credential_probe, library
-from kamp_core.library import LibraryIndex
+from kamp_core.library import CredentialStorageError, LibraryIndex
 
 darwin_only = pytest.mark.skipif(
     sys.platform != "darwin", reason="macos_keychain is macOS-only"
@@ -379,11 +379,14 @@ class TestCredentialBackendId:
 
 
 class TestFallbackWarningsNameTheBackend:
-    """Every path that writes a plaintext credential must be attributable.
+    """Every failed credential write must be attributable.
 
     Before KAMP-743 these warnings did not say which of the three platform
     backends had run, and the no-keyring path logged nothing at all — so a
     plaintext row on disk could not be traced to the code that wrote it.
+    Since KAMP-750 a failed write raises instead of writing plaintext, but the
+    user-facing error is deliberately generic, so this log line is now the
+    *only* place the cause is recorded.
     """
 
     def _index(self, tmp_path: Path) -> LibraryIndex:
@@ -409,10 +412,11 @@ class TestFallbackWarningsNameTheBackend:
 
         index = self._index(tmp_path)
         with caplog.at_level(logging.WARNING, logger="kamp_core.library"):
-            index.set_session("bandcamp", {"cookies": [{"value": SENTINEL}]})
+            with pytest.raises(CredentialStorageError):
+                index.set_session("bandcamp", {"cookies": [{"value": SENTINEL}]})
 
-        assert "no keyring backend" in caplog.text
-        assert "PLAINTEXT" in caplog.text
+        assert "NoKeyringError" in caplog.text
+        assert "PLAINTEXT" not in caplog.text, "nothing was stored in plaintext"
         assert "payload_len=" in caplog.text
         # Not "backend=keyring": that contradicted "no keyring backend" in the
         # same sentence (PR #835 review).
@@ -434,7 +438,8 @@ class TestFallbackWarningsNameTheBackend:
 
         index = self._index(tmp_path)
         with caplog.at_level(logging.WARNING, logger="kamp_core.library"):
-            index.set_session("bandcamp", {"cookies": []})
+            with pytest.raises(CredentialStorageError):
+                index.set_session("bandcamp", {"cookies": []})
 
         assert "keychain write failed" in caplog.text
         assert "backend=keyring" in caplog.text
@@ -455,9 +460,12 @@ class TestFallbackWarningsNameTheBackend:
 
         index = self._index(tmp_path)
         with caplog.at_level(logging.WARNING, logger="kamp_core.library"):
-            index.set_session("bandcamp", {"cookies": []})
+            with pytest.raises(CredentialStorageError):
+                index.set_session("bandcamp", {"cookies": []})
 
-        assert "raised unexpected OSError" in caplog.text
+        # Exceptions outside keyring.errors share the one arm now, so the type
+        # name is what tells them apart in the log.
+        assert "OSError: stub data" in caplog.text
         assert "backend=keyring" in caplog.text
         index.close()
 
@@ -472,7 +480,8 @@ class TestFallbackWarningsNameTheBackend:
 
         index = self._index(tmp_path)
         with caplog.at_level(logging.WARNING, logger="kamp_core.library"):
-            index.set_session("bandcamp", {"cookies": []})
+            with pytest.raises(CredentialStorageError):
+                index.set_session("bandcamp", {"cookies": []})
 
         assert "did not verify" in caplog.text
         assert "readback_len=n/a" in caplog.text

@@ -105,6 +105,8 @@ interface DevHook {
   restore(): void
   /** Lose, then restore after `ms` — inside the fallback timeout. */
   cycle(ms?: number): void
+  /** Measurement knobs: backing-store scale (fraction of DPR) and frame cap. */
+  tune(opts: { scale?: number; fps?: number }): void
 }
 
 declare global {
@@ -141,6 +143,9 @@ export class ThalassaEngine {
   private pointerY = 0
 
   private readonly level = new LevelFollower()
+
+  private resScale = RES_SCALE
+  private frameMs = FRAME_MS
 
   private elapsed = 0
   private rafId: number | null = null
@@ -194,6 +199,14 @@ export class ThalassaEngine {
       cycle: (ms = 500) => {
         this.loseExt?.loseContext()
         window.setTimeout(() => this.loseExt?.restoreContext(), ms)
+      },
+      tune: ({ scale, fps }) => {
+        if (scale != null && scale > 0) this.resScale = scale
+        if (fps != null && fps > 0) this.frameMs = 1000 / fps
+        this.resize()
+        console.info(
+          `[KAMP-776] tune: scale=${this.resScale} fps=${(1000 / this.frameMs).toFixed(0)} backing=${this.canvas.width}x${this.canvas.height}`
+        )
       }
     }
   }
@@ -267,7 +280,7 @@ export class ThalassaEngine {
     const rect = this.canvas.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR)
-    const scale = dpr * RES_SCALE
+    const scale = dpr * this.resScale
     this.cssW = rect.width
     // Assigning width/height clears the drawing buffer (to opaque BLACK with
     // alpha:false), so always repaint straight after — running or not.
@@ -334,7 +347,7 @@ export class ThalassaEngine {
     const k = 1 - Math.exp(-dt / PARALLAX_TAU)
     this.pointerX += (this.pointerTargetX - this.pointerX) * k
     this.pointerY += (this.pointerTargetY - this.pointerY) * k
-    if (ts - this.lastDraw < FRAME_MS) return
+    if (ts - this.lastDraw < this.frameMs) return
     this.lastDraw = ts
     this.drawFrame(this.elapsed, this.levelNow())
   }

@@ -6,16 +6,6 @@ import { NOW_PLAYING_ANIMATIONS } from './nowplaying/registry'
 import { NOW_PLAYING_ANIMATION_IDS } from '../../../shared/nowPlayingAnimation'
 import type { NowPlayingAnimationId } from '../../../shared/nowPlayingAnimation'
 
-// KAMP-776 spike: not gated on import.meta.env.DEV, because the build being
-// measured (`npm start` = electron-vite preview) is a production build.
-function spikeWebglEnabled(): boolean {
-  try {
-    return localStorage.getItem('kamp:spike-webgl') === '1'
-  } catch {
-    return false
-  }
-}
-
 const HIGHLIGHT_STYLES = ['shiny', 'newmoji', 'vaporwave', 'proud', 'pressed', 'boring', 'static']
 
 export function StyleRail(): React.JSX.Element | null {
@@ -62,9 +52,7 @@ export function StyleRail(): React.JSX.Element | null {
           // Options come only from NOW_PLAYING_ANIMATION_IDS, so the cast is sound.
           onChange={(e) => setNowPlayingAnimation(e.target.value as NowPlayingAnimationId)}
         >
-          {NOW_PLAYING_ANIMATION_IDS.filter(
-            (id) => id !== 'thalassa' || spikeWebglEnabled() || nowPlayingAnimation === id
-          ).map((id) => (
+          {NOW_PLAYING_ANIMATION_IDS.map((id) => (
             <option key={id} value={id}>
               {NOW_PLAYING_ANIMATIONS[id].label}
             </option>

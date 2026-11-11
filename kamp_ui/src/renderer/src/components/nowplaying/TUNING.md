@@ -1,6 +1,7 @@
 # Now Playing bokeh — tuning cheat sheet
 
-The ambient glow behind Now Playing (KAMP-561) is built from tunable constants at
+The "Bokeh" Now Playing animation (KAMP-561; one entry in `registry.ts` since
+KAMP-766) is built from tunable constants at
 the top of two files, plus one CSS line. Nothing here needs a rebuild to try —
 Vite hot-reloads edits, so you can slide values with the app running. All knobs
 are at conservative midpoints; this is the map for adjusting the character by eye.
@@ -20,6 +21,8 @@ Grouped by what you actually _see_.
 
 - `filter: blur(28px)` — **the single biggest aesthetic lever.** Higher = dreamier
   and more diffuse; lower = defined, more distinct "orbs." Useful range ~20–40px.
+- Positioning and the KAMP-631 opaque backing live on the shared
+  `.now-playing-backdrop` class; `.now-playing-bokeh` holds only the blur.
 
 ## Motion feel — `bokehEngine.ts`
 
@@ -92,8 +95,9 @@ new colors are ~half arrived. A soft "inhale," never a flash; off under
 - `RES_SCALE` (0.5) — backing-store resolution as a fraction of clamped DPR. Drop to
   0.4 for cheaper and blurrier.
 - `MAX_DPR` (2) — caps the device-pixel-ratio the backing store honors.
-- The loop already pauses when the pane is hidden, the window is occluded, the toggle
-  is off, or reduced-motion is set — so idle cost is zero in those states.
+- The loop already pauses when the pane is hidden, the window is occluded, or
+  reduced-motion is set, and the canvas is not mounted at all when another animation
+  (or "None") is selected — so idle cost is zero in those states.
 
 ## Fastest path
 

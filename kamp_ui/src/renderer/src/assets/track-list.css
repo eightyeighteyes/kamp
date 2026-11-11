@@ -953,6 +953,12 @@
   background: var(--bg);
 }
 
+/* KAMP-769: with the art hidden nothing takes the flex:1 slot, so centre the meta
+   block instead of letting it ride to the top. */
+.now-playing.no-art {
+  justify-content: center;
+}
+
 /* KAMP-766: shared layer for every Now Playing animation canvas (see
    components/nowplaying/registry.ts). Engines add their own class on top. */
 .now-playing-backdrop {

@@ -87,6 +87,15 @@ CI runs mypy on Linux; dev runs it on macOS. mypy prunes `sys.platform` branches
 ## Skip/optimization logic
 Before implementing "skip if already done," define precisely what *correct* means for the skip condition. "Present ≠ best available" — skipping based on presence alone can degrade quality (e.g., skipping artwork fetch because art is embedded, when embedded art is lower quality than what the Archive would return). Validate skip conditions against the regression case explicitly.
 
+## Measuring renderer GPU cost — KAMP-776
+A Now Playing background's cost lives mostly in the **GPU and compositor**, not the renderer's CPU. Measure it with `sudo powermetrics --samplers cpu_power,gpu_power -i 1000 -n 60 -o <file>` per variant, then average the files with `scripts/summarize_powermetrics.py`. Full method and numbers: `docs/spikes/kamp-776-webgl.md`.
+- **Read GPU busy, not package power.** GPU busy held to about ±1–3 points. Package power swung by ±10 W from unrelated system activity, enough that a "None" run outscored Bokeh.
+- **Pin the display to 60 Hz and keep music playing in every run.** Otherwise rAF cadence and the ~20 Hz `audio.level` traffic differ between variants.
+- **In-app frame timers measure nothing useful.** WebGL calls are only queued on the main thread, and Chromium's Canvas 2D is GPU-rastered and deferred too.
+- **Always add an "effect off" variant.** Bokeh's `filter: blur(28px)` was about 50 of its 65 GPU points. Without a no-blur run, "WebGL is cheaper" would really have meant "no blur is cheaper".
+- **A fragment shader's cost is linear in pixels × frames, with no measurable fixed overhead.** So a shader background's cost can be budgeted through resolution scale, frame cap and shader complexity.
+- **Gate a spike option on something that works in the build you measure, not on `import.meta.env.DEV`.** `npm start` is `electron-vite preview`, a production build. A localStorage gate also hid the option from the user, so a branch that never merges should simply list it.
+
 ## Memory optimization
 When the goal is a runtime property (memory released, latency reduced), write a test that measures that property *before* implementing the mechanism. Mechanism tests (e.g. "modules removed from sys.modules") can pass while the property test fails — this is exactly what happened with the `sys.modules` eviction approach, which passed all tests but left pymalloc-held pages resident. A property test (measuring process RSS before and after) would have caught this immediately and driven the correct approach (subprocess isolation) from the start.
 

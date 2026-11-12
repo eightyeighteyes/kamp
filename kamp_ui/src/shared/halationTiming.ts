@@ -12,10 +12,7 @@
 //     stalled renderer would otherwise hand an envelope a whole second at once.
 // Node's strip-only TS mode: no parameter properties or enums in this file.
 
-const smoothstep = (t: number): number => {
-  const x = Math.max(0, Math.min(1, t))
-  return x * x * (3 - 2 * x)
-}
+import { clampDt, poissonGap, smoothstep } from './rareSchedule.ts'
 
 /** Deterministic 0..1 from an integer (the epoch index), stable across sessions. */
 function hashUnit(i: number): number {
@@ -118,7 +115,7 @@ export class BurnEnvelope {
 
   tick(dt: number): void {
     if (this.age === Infinity) return
-    this.age += Math.min(Math.max(0, dt), BurnEnvelope.MAX_DT)
+    this.age += clampDt(dt, BurnEnvelope.MAX_DT)
     this.value = this.at(this.age)
     if (this.value === 0 && this.age > BurnEnvelope.RISE_S) this.age = Infinity
   }
@@ -175,10 +172,11 @@ export class RareEvents {
   }
 
   private gap(): number {
-    const u = Math.max(1e-6, this.rng())
-    return Math.min(
-      RareEvents.GAP_MAX_S,
-      RareEvents.GAP_FLOOR_S - RareEvents.GAP_MEAN_S * Math.log(u)
+    return poissonGap(
+      this.rng(),
+      RareEvents.GAP_FLOOR_S,
+      RareEvents.GAP_MEAN_S,
+      RareEvents.GAP_MAX_S
     )
   }
 
@@ -189,7 +187,7 @@ export class RareEvents {
 
   /** `elapsed` is the animation clock; `idle` is seconds since pointer activity. */
   tick(dt: number, elapsed: number, idle: number, burning: boolean): void {
-    const step = Math.min(Math.max(0, dt), RareEvents.MAX_DT)
+    const step = clampDt(dt, RareEvents.MAX_DT)
     if (this.active) {
       this.active.age += step
       if (this.active.age >= this.active.life) {

@@ -1,13 +1,15 @@
 // KAMP-774: "Halation", a Now Playing background of film grain, projector dust
 // and warm light leaks, built on the shared WebGL base (KAMP-780).
 //
-// Motion type is "twinkle in place". Nothing here may strobe, so:
+// Motion type is "twinkle and drift". Nothing here may strobe, so:
 //   * grain is per-pixel hash noise locked to the backing-store grid (gate weave
 //     never moves it, or sub-pixel weave would shimmer it every frame). Its seed
 //     changes every 3-4 s with a 0.5 s variance-normalised crossfade
 //     (shared/halationTiming.ts, mirrored in grain() below);
 //   * dust glints live in a sparse hashed-cell field (one cell per pixel, no
-//     loops) on slow sin^6 envelopes, and glow brighter near the cursor;
+//     loops) on slow sin^6 envelopes, and glow brighter near the cursor. The
+//     field drifts slowly upward and each mote meanders inside its cell; motes
+//     are smooth Gaussians at least 2 px wide, so sub-pixel motion can't crawl;
 //   * light leaks, the track-change burn and the hair are smooth gradients whose
 //     intensities come from CPU envelopes with bounded slopes.
 // Every colour layer is a mix() toward a target, not an add, so a light theme
@@ -30,6 +32,14 @@ const STILL_LEAK = 0.7
 const WEAVE = 0.0011 // gate weave amplitude, fraction of pane height
 const JOLT = 0.006 // peak gate-jolt offset, fraction of pane height
 const LEAK_PERIODS_S = [23, 31, 37] // incommensurate, so the leaks never pulse together
+const CELL = 0.055 // dust cell, pane-height units (mirrored in the shader)
+const DUST_TILE = 64 // the dust field repeats every 64 cells, so its drift can wrap
+// Dust drift, pane heights per second: a slow rise (warm air over the projector)
+// with a lazy sideways sway. About 2 minutes to cross the pane.
+const DUST_RISE = 0.008
+const DUST_SLIDE = 0.003
+const DUST_SWAY = 0.025 // sideways sway amplitude, pane heights
+const DUST_SWAY_S = 41
 const TAU = Math.PI * 2
 
 const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}
@@ -39,6 +49,7 @@ uniform vec3 uLeak;     // per-leak intensity, 0..1
 uniform vec2 uBurn;     // envelope 0..1, edge (0 left, 1 right, 2 top)
 uniform vec4 uHair;     // progress 0..1, alpha 0..1, seed, unused
 uniform float uGlintT;  // seconds, wrapped at GLINT_PERIOD
+uniform vec2 uDust;     // dust field drift, pane-height units, y up, wrapped
 uniform float uArtShown;
 uniform vec4 uTitle;    // title text box in uv (y up); x1 <= x0 means none
 
@@ -46,8 +57,12 @@ const float GLINT_PERIOD = ${GLINT_PERIOD_S.toFixed(1)};
 const float GRAIN = 0.06;        // grain amplitude
 const float LEAK = 0.42;         // peak leak opacity
 const float BURN = 0.6;          // peak burn opacity
-const float CELL = 0.055;        // dust cell, pane-height units
+const float CELL = ${CELL.toFixed(3)};        // dust cell, pane-height units
 const float DUST_DENSITY = 0.09; // fraction of cells holding a mote
+const float DUST_TILE = ${DUST_TILE.toFixed(1)}; // dust field period, cells
+// Per-mote meander, cell units. With motes placed in 0.4..0.6 of the cell and a
+// 0.3-cell cutoff radius, 0.1 is the most that never clips at the cell edge.
+const float MEANDER = 0.1;
 const vec3 AMBER = vec3(1.0, 0.56, 0.20);
 const vec3 WARM_WHITE = vec3(1.0, 0.92, 0.80);
 
@@ -123,18 +138,26 @@ void main() {
   col += g * GRAIN * (1.0 - 0.5 * quiet) * (0.6 + 0.8 * lum(col));
 
   // Dust glints: one mote at most per cell, kept clear of the cell edge so the
-  // single-cell lookup never clips it.
-  vec2 cq = qw / CELL;
+  // single-cell lookup never clips it. The whole field drifts (uDust), and each
+  // mote meanders a little inside its cell, like dust in a quiet theatre's beam.
+  // The field tiles every DUST_TILE cells, so uDust wraps at DUST_TILE * CELL
+  // with no visible jump.
+  vec2 cq = (qw - uDust) / CELL;
   vec2 cell = floor(cq);
-  float h = hashNS(cell + 7.31);
+  vec2 ch = mod(cell, DUST_TILE);
+  float h = hashNS(ch + 7.31);
   if (h > 1.0 - DUST_DENSITY) {
-    vec2 pos = 0.3 + 0.4 * vec2(hashNS(cell + 19.7), hashNS(cell + 41.3));
+    // Integer kw: the meander's period divides GLINT_PERIOD, like the envelope's.
+    float kw = 40.0 + floor(hashNS(ch + 61.9) * 35.0);
+    float wt = 6.2831853 * uGlintT / GLINT_PERIOD;
+    vec2 wander = MEANDER * vec2(sin(kw * wt + h * 40.0), sin((kw - 13.0) * wt + h * 97.0));
+    vec2 pos = 0.4 + 0.2 * vec2(hashNS(ch + 19.7), hashNS(ch + 41.3)) + wander;
     float dist = length(cq - cell - pos) * CELL;
     float rad = max(0.0035, 2.0 / uRes.y); // never sub-pixel, or it would crawl
     float spot = exp(-(dist * dist) / (rad * rad)) + 0.25 * exp(-dist / (rad * 2.0));
     spot *= 1.0 - smoothstep(0.7 * 0.3 * CELL, 0.3 * CELL, dist);
     // Integer k: the envelope's period divides GLINT_PERIOD, so the clock wrap is seamless.
-    float k = 40.0 + floor(hashNS(cell + 3.7) * 50.0);
+    float k = 40.0 + floor(hashNS(ch + 3.7) * 50.0);
     float s = sin(3.14159265 * k * uGlintT / GLINT_PERIOD + h * 6.2831853);
     float env = pow(s * s, 3.0);
     vec2 pq = vec2((uPointer.x * 0.5 + 0.5) * aspect, 0.5 - uPointer.y * 0.5);
@@ -196,6 +219,7 @@ export const HALATION_SPEC: ShaderSpec<void, HalationState> = {
       gl.uniform2f(quad.u('uBurn'), 0, 0)
       gl.uniform4f(quad.u('uHair'), 0, 0, 0, 0)
       gl.uniform1f(quad.u('uGlintT'), STILL_GLINT_T)
+      gl.uniform2f(quad.u('uDust'), 0, 0)
     } else {
       if (!frame.still) {
         if (frame.resumed) {
@@ -231,6 +255,12 @@ export const HALATION_SPEC: ShaderSpec<void, HalationState> = {
         0
       )
       gl.uniform1f(quad.u('uGlintT'), t % GLINT_PERIOD_S)
+      // Computed in float64 and wrapped at the field's period, so the shader only
+      // ever sees small offsets and the wrap lands on an identical field.
+      const span = DUST_TILE * CELL
+      const wrap = (v: number): number => ((v % span) + span) % span
+      const dx = DUST_SLIDE * t + DUST_SWAY * Math.sin((TAU * t) / DUST_SWAY_S)
+      gl.uniform2f(quad.u('uDust'), wrap(dx), wrap(DUST_RISE * t))
     }
 
     gl.uniform1f(quad.u('uArtShown'), frame.artShown)

@@ -178,12 +178,16 @@ The GLSL constants are at the top of `FRAG`:
 
 - `GRAIN` (0.06): grain strength.
 - `LEAK` (0.42) and `BURN` (0.6): peak opacity of the leaks and the burn.
-- `CELL` (0.055 of pane height) and `DUST_DENSITY` (0.09): mote spacing and how many cells hold a mote.
+- `CELL` (0.055 of pane height, defined in TypeScript and passed to the shader) and `DUST_DENSITY` (0.09): mote spacing and how many cells hold a mote.
+- `MEANDER` (0.1 of a cell): how far each mote wanders inside its cell. 0.1 is the ceiling; above it a mote clips at the cell edge.
 
 The TypeScript constants are:
 
 - `WEAVE` and `JOLT`: the gate offsets, as a fraction of pane height. Keep `WEAVE` tiny, because it moves the dust and the light but never the grain.
 - `LEAK_PERIODS_S`: the breathing period of each leak.
+- `DUST_RISE` (0.008) and `DUST_SLIDE` (0.003): the dust field's drift, in pane heights per second. At these values a mote takes about 2 minutes to cross the pane.
+- `DUST_SWAY` (0.025) and `DUST_SWAY_S` (41): the field's lazy sideways sway.
+- `DUST_TILE` (64): the dust field repeats every 64 cells, so the drift can wrap without a jump. Keep it larger than the pane in cells.
 
 Behind the title text, the leaks, glints and half the grain are attenuated, so the title stays legible. The mask is the title's text box, never the full-width title element.
 

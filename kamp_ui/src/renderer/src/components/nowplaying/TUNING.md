@@ -203,3 +203,47 @@ Measure these variants as described above:
 2. Halation with the art visible
 3. Halation with the art hidden
 4. Halation with the cursor resting over the dust
+
+---
+
+# Borealis (KAMP-765)
+
+Three slow aurora curtains in album colours, drawn by a WebGL shader on the shared base (`webgl/README.md`). The timing lives in `src/shared/borealisTiming.ts` and is covered by `npm test`. The shader and its uniforms are in `borealis/borealisSpec.ts`. The Poisson gap and dt clamp are shared with Halation in `src/shared/rareSchedule.ts`.
+
+## Timing — `borealisTiming.ts`
+
+| Knob                                       | Default                        | Effect                                                                                                                                       |
+| ------------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FLOW_PERIODS_S`                           | 97 / 143 s                     | The two noise loops. Keep them coprime so the combined repeat stays in hours. Lower both for a livelier sky.                                 |
+| `SurgeEnvelope.RISE_S` / `DECAY_S`         | 1 / 3 s                        | The track-change surge. `RISE_S` matches the base's 1 s palette crossfade, so the band peaks as the new colours land. Shorter risks a flash. |
+| `SurgeEnvelope.BOOST_UNTIL`                | 0.5                            | Before this point a skip brightens the travelling band; after it, a second band rolls in from zero.                                          |
+| `LeanFollower.ATTACK_S` / `RELEASE_S`      | 0.35 / 0.8 s                   | How quickly the lean builds and eases back.                                                                                                  |
+| `LeanFollower.REST_S`                      | 1.5 s                          | How long the cursor rests before the lean eases back.                                                                                        |
+| `FlickerEvents.GAP_FLOOR_S` / `GAP_MEAN_S` | 75 + exp(120) s, capped at 300 | Spacing of the rare edge flicker. Call `forceNext()` from a breakpoint to see one while tuning.                                              |
+| `FlickerEvents.FLUTTER_HZ` / `SWING`       | 1 Hz / 0.15                    | Soft pulses inside a flicker. A test holds `FLUTTER_HZ` at or below 1.2, well under the three-flashes-a-second limit.                        |
+| `FLICKER_STRIPS`                           | 0.04–0.22, 0.78–0.96           | Where a flicker may land while the art is shown, so it isn't hidden behind the art.                                                          |
+
+## Look — `borealisSpec.ts`
+
+The GLSL constants are at the top of `FRAG`:
+
+- `ALPHA` (0.45): peak curtain opacity. It leaves headroom for the surge, so keep it at or below about 0.5.
+- `SURGE` (0.55) and `FLICKER` (0.6): brightness gains for the two moments.
+- `LEAN` (0.06 pane heights) and `LEAN_R` (0.32): how far the curtains lean from the cursor, and over what radius.
+- `WAVE` (0.075): how much the lower edges undulate. `EDGE_W` and `RAY_H` set the edge glow's thickness and how high the rays reach.
+- `FLOW_R` (1.6): radius of the flow circles in noise space. Larger means more change over one loop.
+
+Curtain heights are in the loop: `0.50 + 0.10 * i` with the art shown, so the curtains sit above the title and the side strips carry them, and `0.24 + 0.15 * i` when they have the pane to themselves.
+
+On a light `--bg`, the curtains use a deeper tone of the palette at 75% opacity. A lightened tone over a light background reads as grey haze. Behind the title text, the composited aurora is pulled 80% back toward `--bg`, so every moment is bounded at once.
+
+## Cost
+
+`resScale` is 0.25 and the frame cap is 30 fps. Each pixel does 15 value-noise lookups (five per curtain). If GPU busy is over target, try `__kampGL.tune({ fps: 20 })` first. The curtains are soft, so `scale` can go lower than Halation's.
+
+Measure these variants as described above:
+
+1. None
+2. Borealis with the art visible
+3. Borealis with the art hidden
+4. Borealis during a surge (skip tracks)

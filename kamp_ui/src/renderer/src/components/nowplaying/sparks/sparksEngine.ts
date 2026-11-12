@@ -19,6 +19,7 @@ import {
   type PaneRect
 } from '../../../../../shared/sparksModel'
 import { PaletteCrossfade } from '../../../../../shared/paletteCrossfade'
+import { titleQuiet } from '../../../../../shared/particleUtil'
 import { accentPalette, hexToRgb, type Palette, type RGB } from '../palette'
 import type { GLDevTarget } from '../webgl/devHooks'
 import type { ContentRect } from '../webgl/shaderEngine'
@@ -53,11 +54,6 @@ export interface SparksEngineOptions {
 
 const rgba = (c: RGB, a: number): string =>
   `rgba(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)},${a})`
-
-const smoothstep = (t: number): number => {
-  const x = Math.max(0, Math.min(1, t))
-  return x * x * (3 - 2 * x)
-}
 
 export class SparksEngine {
   private ctx: CanvasRenderingContext2D | null
@@ -384,13 +380,6 @@ export class SparksEngine {
 
   /** 1 away from the title text, TITLE_QUIET inside it, feathered between. */
   private titleQuiet(nx: number, ny: number): number {
-    const t = this.title
-    if (!t) return 1
-    const aspect = this.cssW / this.cssH
-    // Distance outside the rect, in pane heights.
-    const dx = Math.max(t.x0 - nx, 0, nx - t.x1) * aspect
-    const dy = Math.max(t.y0 - ny, 0, ny - t.y1)
-    const inside = 1 - smoothstep(Math.hypot(dx, dy) / TITLE_FEATHER)
-    return 1 - (1 - TITLE_QUIET) * inside
+    return titleQuiet(this.title, this.cssW / this.cssH, nx, ny, TITLE_QUIET, TITLE_FEATHER)
   }
 }

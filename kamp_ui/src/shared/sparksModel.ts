@@ -14,14 +14,9 @@
 // Storage is a fixed struct-of-arrays pool, so a frame allocates nothing.
 
 import { clampDt, poissonGap, smoothstep } from './rareSchedule.ts'
+import { clampAbs, lerp, pick, seededRng, type PaneRect } from './particleUtil.ts'
 
-/** A rect over the pane, normalised 0..1 (DOM y-down), as ContentRect. */
-export interface PaneRect {
-  x0: number
-  y0: number
-  x1: number
-  y1: number
-}
+export type { PaneRect }
 
 /** One spark of the reduced-motion still frame. */
 export interface StillSpark {
@@ -116,28 +111,6 @@ export const MAX_GENERATIONS = 3
 
 const STILL_COUNT = 48
 const STILL_SEED = 767
-
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
-
-function pick(weights: number[], u: number): number {
-  let acc = 0
-  for (let i = 0; i < weights.length; i++) {
-    acc += weights[i]
-    if (u < acc) return i
-  }
-  return weights.length - 1
-}
-
-/** mulberry32: a deterministic RNG for the still frame. */
-function seededRng(seed: number): () => number {
-  let a = seed
-  return () => {
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
 
 export class SparkField {
   // Struct-of-arrays pool. Read by the engine; written only here.
@@ -536,8 +509,6 @@ export class SparkField {
     this.live--
   }
 }
-
-const clampAbs = (v: number, max: number): number => Math.max(-max, Math.min(max, v))
 
 /**
  * The reduced-motion still frame: a deterministic composition of sparks, denser

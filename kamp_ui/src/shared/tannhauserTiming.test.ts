@@ -12,10 +12,12 @@ import {
   MASK_H,
   MIN_FALLOFF,
   SLIDE_STRIPS,
-  SlideEvents,
+  SliderField,
   StrokeTracker,
   dropPhase,
-  maskWidth
+  maskWidth,
+  type Slider,
+  type Trail
 } from './tannhauserTiming.ts'
 
 function seeded(seed: number): () => number {
@@ -305,97 +307,198 @@ test('cancel drops a breath in flight', () => {
   assert.equal(b.amount, 0)
 })
 
-// --- rare slide -----------------------------------------------------------------------
+// --- sliding drops ----------------------------------------------------------------------
 
-function due(
-  s: SlideEvents,
-  opts: { idle?: number; breathing?: boolean; artShown?: number } = {}
-): void {
-  s.forceNext()
-  s.tick(1 / 30, 1000, opts.idle ?? 60, opts.breathing ?? false, opts.artShown ?? 1)
+const ASPECT = 16 / 10
+
+/** Run a field for `seconds` with a still cursor and the art hidden; collect per-tick snapshots. */
+function runField(
+  f: SliderField,
+  seconds: number,
+  opts: { dt?: number; idle?: number; artShown?: number; t0?: number } = {}
+): { trails: Trail[][]; snaps: Slider[][] } {
+  const dt = opts.dt ?? 1 / 20
+  const trails: Trail[][] = []
+  const snaps: Slider[][] = []
+  let t = opts.t0 ?? 0
+  for (let i = 0; i < seconds / dt; i++) {
+    t += dt
+    trails.push(f.tick(dt, t, opts.idle ?? 0, opts.artShown ?? 0, ASPECT))
+    snaps.push(f.sliders.map((s) => ({ ...s })))
+  }
+  return { trails, snaps }
 }
 
-test('a slide never starts before its gap is due', () => {
-  const s = new SlideEvents(seeded(1))
-  s.tick(1 / 30, 0, 60, false, 1)
-  assert.equal(s.active, null)
-  assert.ok(s.nextAt >= SlideEvents.GAP_FLOOR_S)
+test('the trickle is steady: a few drops are usually on the move, never too many', () => {
+  const f = new SliderField(seeded(11))
+  const { snaps } = runField(f, 120)
+  let total = 0
+  for (const s of snaps) {
+    assert.ok(s.filter((d) => !d.heavy).length <= SliderField.MAX)
+    assert.ok(s.length <= SliderField.SLOTS)
+    total += s.length
+  }
+  const mean = total / snaps.length
+  assert.ok(mean >= 2 && mean <= SliderField.MAX, `mean active ${mean}`)
 })
 
-test('a due slide waits for a still cursor and for any breath to finish', () => {
-  const s = new SlideEvents(seeded(2))
-  due(s, { idle: 1 })
-  assert.equal(s.active, null)
-  due(s, { breathing: true })
-  assert.equal(s.active, null)
-  due(s)
-  assert.ok(s.active)
+test('a new drop forms in place before it breaks loose', () => {
+  const f = new SliderField(seeded(12))
+  const d = f.spawnAt(0.5, 0.3, 0.012)
+  assert.equal(d.alpha, 0)
+  const { snaps } = runField(f, SliderField.FORM_S * 0.9)
+  const last = snaps[snaps.length - 1].find((s) => s.id === d.id)!
+  assert.ok(last.alpha > 0.5)
+  assert.equal(last.y, 0.3)
 })
 
-test('with the art shown, a slide lands in a side strip', () => {
-  for (let seed = 1; seed < 40; seed++) {
-    const s = new SlideEvents(seeded(seed))
-    due(s, { artShown: 1 })
-    const x = s.active!.x
-    assert.ok(
-      SLIDE_STRIPS.some(([lo, hi]) => x >= lo && x <= hi),
-      `x=${x} is behind the art`
-    )
+test('a drop never jumps, and only ever moves down, whatever the frame timing', () => {
+  const f = new SliderField(seeded(13))
+  const rng = seeded(99)
+  const prev = new Map<number, Slider>()
+  let t = 0
+  for (let i = 0; i < 4000; i++) {
+    const dt = [0, 1 / 60, 1 / 20, 0.1, 1][Math.floor(rng() * 5)]
+    t += dt
+    f.tick(dt, t, 0, 0, ASPECT)
+    const step = Math.min(dt, SliderField.MAX_DT)
+    for (const s of f.sliders) {
+      const p = prev.get(s.id)
+      if (p && !s.merging) {
+        assert.ok(s.y >= p.y - 1e-12, 'moved up')
+        assert.ok(s.y - p.y <= SliderField.V_CAP * step + 1e-9, `jumped ${s.y - p.y}`)
+        assert.ok(Math.abs(s.x - p.x) <= SliderField.V_CAP * step + 1e-9)
+        assert.ok(Math.abs(s.alpha - p.alpha) <= SliderField.MAX_ALPHA_STEP + 1e-9)
+      }
+      prev.set(s.id, { ...s })
+    }
   }
 })
 
-test('a slide only ever moves down, and stops', () => {
-  const s = new SlideEvents(seeded(3))
-  due(s)
-  const e = s.active!
-  let y = SlideEvents.pos(e, 0).y
-  for (let age = 0; age <= e.life; age += 0.05) {
-    const p = SlideEvents.pos(e, age)
-    assert.equal(p.x, e.x)
-    assert.ok(p.y >= y - 1e-12)
-    y = p.y
+test('drops move in stick-slip runs, not at a constant speed', () => {
+  const f = new SliderField(seeded(14))
+  const d = f.spawnAt(0.3, 0.05, 0.014)
+  let still = 0
+  let moving = 0
+  let y = d.y
+  for (let i = 0; i < 20 * 20; i++) {
+    f.tick(1 / 20, i / 20, 0, 0, ASPECT)
+    const s = f.sliders.find((x) => x.id === d.id)
+    if (!s || s.merging) break
+    if (i / 20 > SliderField.FORM_S) {
+      if (s.y - y < 1e-6) still++
+      else moving++
+    }
+    y = s.y
   }
-  assert.ok(Math.abs(SlideEvents.pos(e, e.life).y - (e.y + e.dist)) < 1e-9)
+  assert.ok(still > 5, `never stuck (${still})`)
+  assert.ok(moving > 5, `never slid (${moving})`)
 })
 
-test('the trail follows exactly the path the drop head is drawn on', () => {
-  const s = new SlideEvents(seeded(4))
-  due(s)
-  const e = s.active!
-  const segs: { ay: number; by: number }[] = []
-  for (let i = 0; i < 200 && s.active; i++) {
-    const seg = s.tick(1 / 30, 1000, 60, false, 1)
-    if (seg) segs.push(seg)
+test('a running drop gathers the beads in its path and grows, up to a cap', () => {
+  const f = new SliderField(seeded(15))
+  const d = f.spawnAt(0.5, 0.0, 0.01)
+  runField(f, 20)
+  const s = f.sliders.find((x) => x.id === d.id)
+  // It may have left the pane or merged; if still here it has grown.
+  if (s && !s.merging) assert.ok(s.r > 0.01)
+  for (const x of f.sliders) assert.ok(x.r <= SliderField.R_MAX + 1e-9)
+})
+
+test('two drops that meet merge, and the survivor keeps their combined area', () => {
+  const f = new SliderField(seeded(16))
+  f.pauseSpawning()
+  const a = f.spawnAt(0.5, 0.5, 0.012)
+  const b = f.spawnAt(0.5 + 0.008 / ASPECT, 0.5, 0.009)
+  const { snaps } = runField(f, SliderField.FORM_S * 0.9) // still forming, so no growth from travel
+  const end = snaps[snaps.length - 1]
+  assert.equal(end.length, 1, 'both drops survived')
+  const survivor = end[0]
+  assert.equal(survivor.id, a.id, 'the larger drop survives')
+  const expected = Math.hypot(0.012, 0.009)
+  assert.ok(Math.abs(survivor.r - expected) < 0.0015, `r=${survivor.r} want ${expected}`)
+  // The smaller one shrank away; it never vanished at full size.
+  const bs = snaps.map((s) => s.find((x) => x.id === b.id)).filter((x): x is Slider => !!x)
+  const lastB = bs[bs.length - 1]
+  assert.ok(lastB.r * lastB.alpha < 0.002, 'the absorbed drop popped out')
+  for (let i = 1; i < bs.length; i++) assert.ok(bs[i].r <= bs[i - 1].r + 1e-12)
+})
+
+test('the survivor of a merge grows smoothly, not in one step', () => {
+  const f = new SliderField(seeded(17))
+  f.pauseSpawning()
+  const a = f.spawnAt(0.5, 0.5, 0.012)
+  f.spawnAt(0.5, 0.505, 0.01)
+  let r = a.r
+  for (let i = 0; i < 40; i++) {
+    f.tick(1 / 20, i / 20, 0, 0, ASPECT)
+    const s = f.sliders.find((x) => x.id === a.id)!
+    assert.ok(Math.abs(s.r - r) <= SliderField.MAX_R_STEP + 1e-9)
+    r = s.r
   }
-  assert.ok(segs.length > 0, 'no trail')
-  // Contiguous: each segment starts where the last one ended.
-  for (let i = 1; i < segs.length; i++) assert.equal(segs[i].ay, segs[i - 1].by)
-  assert.ok(Math.abs(segs[segs.length - 1].by - (e.y + e.dist)) < 1e-9)
 })
 
-test('a slide head fades in and out with zero value at both ends', () => {
-  const s = new SlideEvents(seeded(5))
-  due(s)
-  const e = s.active!
-  assert.equal(SlideEvents.alpha(e, 0), 0)
-  assert.ok(SlideEvents.alpha(e, e.life) < 1e-9)
-  assert.ok(SlideEvents.alpha(e, e.life * 0.4) > 0.5)
+test('each trail is contiguous with its drop and carries its radius', () => {
+  const f = new SliderField(seeded(18))
+  const { trails, snaps } = runField(f, 60)
+  const lastEnd = new Map<number, number>()
+  let n = 0
+  for (let i = 0; i < trails.length; i++) {
+    for (const tr of trails[i]) {
+      n++
+      assert.ok(tr.by > tr.ay, 'a trail only runs downward')
+      const prevBy = lastEnd.get(tr.id)
+      if (prevBy !== undefined) assert.ok(Math.abs(tr.ay - prevBy) < 1e-9, 'gap in a trail')
+      lastEnd.set(tr.id, tr.by)
+      const s = snaps[i].find((x) => x.id === tr.id)
+      if (s) assert.equal(tr.by, s.y)
+      assert.ok(tr.r > 0)
+    }
+  }
+  assert.ok(n > 0, 'no trails at all')
 })
 
-test('after a slide ends, the next is scheduled a full gap later', () => {
-  const s = new SlideEvents(seeded(6))
-  due(s)
-  for (let i = 0; i < 400 && s.active; i++) s.tick(1 / 30, 1000 + i / 30, 60, false, 1)
-  assert.equal(s.active, null)
-  assert.ok(s.nextAt >= 1000 + SlideEvents.GAP_FLOOR_S)
+test('a drop that runs off the bottom is removed', () => {
+  const f = new SliderField(seeded(19))
+  f.pauseSpawning()
+  const d = f.spawnAt(0.5, 0.995, 0.02)
+  runField(f, 30)
+  assert.equal(
+    f.sliders.find((x) => x.id === d.id),
+    undefined
+  )
 })
 
-test('cancel drops a slide in flight', () => {
-  const s = new SlideEvents(seeded(8))
-  due(s)
-  s.cancel(50)
-  assert.equal(s.active, null)
-  assert.ok(s.nextAt >= 50 + SlideEvents.GAP_FLOOR_S)
+test('with the art shown, drops start in the side strips', () => {
+  for (let seed = 1; seed < 20; seed++) {
+    const f = new SliderField(seeded(seed))
+    runField(f, 20, { artShown: 1, idle: 60 })
+    for (const s of f.sliders) {
+      assert.ok(
+        SLIDE_STRIPS.some(([lo, hi]) => s.x0 >= lo && s.x0 <= hi),
+        `x0=${s.x0} is behind the art`
+      )
+    }
+  }
+})
+
+test('the heavy drop is rare and waits for a still cursor', () => {
+  const f = new SliderField(seeded(20))
+  assert.ok(f.nextHeavyAt >= SliderField.HEAVY_GAP_FLOOR_S)
+  f.forceHeavy()
+  runField(f, 2, { idle: 1 })
+  assert.equal(f.sliders.filter((s) => s.heavy).length, 0)
+  runField(f, 0.2, { idle: 60 })
+  assert.equal(f.sliders.filter((s) => s.heavy).length, 1)
+})
+
+test('the heavy drop has its own slot, so it can start when the trickle is full', () => {
+  const f = new SliderField(seeded(21))
+  f.pauseSpawning()
+  for (let i = 0; i < SliderField.MAX; i++) f.spawnAt(0.1 + i * 0.12, 0.1, 0.01)
+  f.forceHeavy()
+  runField(f, 0.2, { idle: 60 })
+  assert.equal(f.sliders.filter((s) => s.heavy).length, 1)
 })
 
 // --- drop clock -----------------------------------------------------------------------

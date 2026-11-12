@@ -311,132 +311,330 @@ export class BreathEnvelope {
   }
 }
 
-// --- rare sliding drop -----------------------------------------------------------------
+// --- sliding drops ------------------------------------------------------------------------
 
-export interface Slide {
-  age: number
-  life: number
-  /** Normalised pane position (0..1, DOM y-down) where the drop breaks loose. */
+/** Side strips beside the art (normalised x). A drop behind the art would be wasted. */
+export const SLIDE_STRIPS: [number, number][] = [
+  [0.04, 0.2],
+  [0.8, 0.96]
+]
+
+/** One sliding drop, as the shader sees it. Positions are 0..1 of the pane, DOM y-down. */
+export interface Slider {
+  id: number
   x: number
   y: number
-  /** How far it slides, in pane heights. */
-  dist: number
-  /** Head radius, in pane heights. */
+  /** Where it formed. Its x meanders a little from here as it runs. */
+  x0: number
+  /** Radius, pane heights. */
+  r: number
+  alpha: number
+  /** Vertical elongation, 1 at rest; a fast drop stretches a little. */
+  stretch: number
+  heavy: boolean
+  /** Being drawn into a larger drop; it shrinks away into that drop's centre. */
+  merging: boolean
+}
+
+/** A stretch of glass a drop ran over this tick, normalised. `r` is the trail's radius in pane heights. */
+export interface Trail extends Segment {
+  id: number
   r: number
 }
 
-/** Side strips beside the art (normalised x). A slide behind the art would be wasted. */
-export const SLIDE_STRIPS: [number, number][] = [
-  [0.05, 0.2],
-  [0.8, 0.95]
-]
+type SliderPhase = 'form' | 'stuck' | 'slip' | 'fade' | 'merge'
+
+interface SliderState extends Slider {
+  phase: SliderPhase
+  /** Seconds into the current phase, and how long it lasts. */
+  age: number
+  dur: number
+  v: number
+  rTarget: number
+  travel: number
+  maxTravel: number
+  wobble: number
+  into: SliderState | null
+}
 
 /**
- * A heavy drop that swells in place, breaks loose, slides a short way and
- * fades. The caller strokes each returned segment into the fog mask as a clear
- * trail, which then refogs on its own. Head and trail both come from `pos`, so
- * they can't disagree.
+ * The trickle: a few drops always on the move (KAMP-772, after a first cut with
+ * only a rare single slide read as static). Each forms in place, then runs in
+ * stick-slip jerks: stuck for a moment, then slipping down a short way. It
+ * gathers the beads in its path (its radius grows with travel), merges with any
+ * drop it meets (the larger keeps their combined area), and stops and fades
+ * once it has run its course or leaves the bottom of the pane.
+ *
+ * The caller wipes each returned Trail into the fog mask, so a run leaves clear
+ * glass behind it that refogs on its own, and the static beads along it vanish
+ * (the shader beads only on fog) as if the drop had swallowed them.
+ *
+ * Motion is ambient, so it runs whatever the cursor does. The rare moment is the
+ * heavy drop: bigger, longer runs, in its own slot, and only once the cursor has
+ * been still a while.
  */
-export class SlideEvents {
-  static readonly GAP_FLOOR_S = 60
-  static readonly GAP_MEAN_S = 100
-  static readonly GAP_MAX_S = 240
-  /** Seconds the cursor must have been still: rare moments belong to quiet ones. */
-  static readonly IDLE_S = 6
-  static readonly SWELL_S = 0.8
-  static readonly SLIDE_S: [number, number] = [1.6, 2.4]
-  static readonly LINGER_S = 1.2
-  static readonly DIST: [number, number] = [0.12, 0.22]
-  static readonly R: [number, number] = [0.018, 0.026]
+export class SliderField {
+  /** Ordinary drops at once. Plus one slot for the heavy drop. */
+  static readonly MAX = 6
+  static readonly SLOTS = SliderField.MAX + 1
+  static readonly SPAWN_FLOOR_S = 0.8
+  static readonly SPAWN_MEAN_S = 2
+  static readonly SPAWN_MAX_S = 8
+  static readonly FORM_S = 0.6
+  static readonly FADE_S = 1.5
+  static readonly STUCK_S: [number, number] = [0.4, 2.2]
+  static readonly SLIP_S: [number, number] = [0.25, 0.9]
+  static readonly TRAVEL: [number, number] = [0.15, 0.6]
+  static readonly R: [number, number] = [0.007, 0.014]
+  static readonly R_MAX = 0.03
+  /** Radius gained per pane height run: the beads it swallows on the way. */
+  static readonly GROW = 0.008
+  /** Slip speed is V_BASE + V_PER_R * r pane heights a second: heavier drops run faster. */
+  static readonly V_BASE = 0.08
+  static readonly V_PER_R = 4
+  /** No drop ever moves faster than this, so no step can jump. */
+  static readonly V_CAP = 0.3
+  static readonly V_TAU = 0.12
+  static readonly R_TAU = 0.15
+  static readonly MERGE_TAU = 0.08
+  /** Drops merge once their centres are this fraction of their summed radii apart. */
+  static readonly MERGE_K = 0.8
+  static readonly TRAIL_R = 0.7
+  static readonly HEAVY_GAP_FLOOR_S = 60
+  static readonly HEAVY_GAP_MEAN_S = 100
+  static readonly HEAVY_GAP_MAX_S = 240
+  static readonly HEAVY_IDLE_S = 6
+  static readonly HEAVY_R: [number, number] = [0.022, 0.028]
+  static readonly HEAVY_TRAVEL: [number, number] = [0.5, 0.9]
   static readonly MAX_DT = 0.1
+  /** smoothstep's steepest slope is 1.5 / duration; the shortest fade bounds every alpha step. */
+  static readonly MAX_ALPHA_STEP =
+    (1.5 * SliderField.MAX_DT) / Math.min(SliderField.FORM_S, SliderField.FADE_S)
+  static readonly MAX_R_STEP =
+    SliderField.R_MAX * (1 - Math.exp(-SliderField.MAX_DT / SliderField.R_TAU))
 
-  active: Slide | null = null
-  nextAt: number
+  private readonly list: SliderState[] = []
+  private nextId = 1
+  nextSpawnAt: number
+  nextHeavyAt: number
   private readonly rng: () => number
 
   constructor(rng: () => number) {
     this.rng = rng
-    this.nextAt = this.gap()
+    this.nextSpawnAt = this.spawnGap()
+    this.nextHeavyAt = this.heavyGap()
   }
 
-  /** The head's position at `age`: still while it swells, then down, easing in and out. */
-  static pos(e: Slide, age: number): PointerPos {
-    const slideS = e.life - SlideEvents.SWELL_S - SlideEvents.LINGER_S
-    const k = smoothstep((age - SlideEvents.SWELL_S) / slideS)
-    return { x: e.x, y: e.y + e.dist * k }
+  get sliders(): readonly Slider[] {
+    return this.list
   }
 
-  /** The head's visibility: swells in, holds through the slide, then fades. Zero at both ends. */
-  static alpha(e: Slide, age: number): number {
-    if (age <= 0) return 0
-    if (age < SlideEvents.SWELL_S) return smoothstep(age / SlideEvents.SWELL_S)
-    const fadeFrom = e.life - SlideEvents.LINGER_S
-    if (age < fadeFrom) return 1
-    return 1 - smoothstep((age - fadeFrom) / SlideEvents.LINGER_S)
+  /** Stop ordinary spawns (tests, and tuning). */
+  pauseSpawning(): void {
+    this.nextSpawnAt = Infinity
   }
 
-  private gap(): number {
-    return poissonGap(
-      this.rng(),
-      SlideEvents.GAP_FLOOR_S,
-      SlideEvents.GAP_MEAN_S,
-      SlideEvents.GAP_MAX_S
-    )
+  /** Make the heavy drop due now (tuning, and tests). Still waits for idle. */
+  forceHeavy(): void {
+    this.nextHeavyAt = -Infinity
   }
 
-  /** Make the next slide due now (tuning, and tests). Still waits for idle. */
-  forceNext(): void {
-    this.nextAt = -Infinity
+  /** Form an ordinary drop at a given place (tests, and tuning). */
+  spawnAt(x: number, y: number, r: number, heavy = false): Slider {
+    const range = heavy ? SliderField.HEAVY_TRAVEL : SliderField.TRAVEL
+    const s: SliderState = {
+      id: this.nextId++,
+      x,
+      y,
+      x0: x,
+      r,
+      alpha: 0,
+      stretch: 1,
+      heavy,
+      merging: false,
+      phase: 'form',
+      age: 0,
+      dur: heavy ? SliderField.FORM_S * 1.5 : SliderField.FORM_S,
+      v: 0,
+      rTarget: r,
+      travel: 0,
+      maxTravel: this.lerp(range),
+      wobble: this.rng() * Math.PI * 2,
+      into: null
+    }
+    this.list.push(s)
+    return s
   }
 
   /**
    * `elapsed` is the animation clock, `idle` seconds since pointer activity,
-   * `breathing` whether a track-change breath is showing, `artShown` 0..1.
-   * Returns the trail segment the head covered this tick (normalised, DOM
-   * y-down), or null when it didn't move.
+   * `artShown` 0..1, `aspect` the pane's width / height. Returns the trails run
+   * this tick.
    */
-  tick(
-    dt: number,
-    elapsed: number,
-    idle: number,
-    breathing: boolean,
-    artShown: number
-  ): Segment | null {
-    const step = clampDt(dt, SlideEvents.MAX_DT)
-    const e = this.active
-    if (e) {
-      const a = SlideEvents.pos(e, e.age)
-      e.age = Math.min(e.life, e.age + step)
-      const b = SlideEvents.pos(e, e.age)
-      if (e.age >= e.life) {
-        this.active = null
-        this.nextAt = elapsed + this.gap()
-      }
-      return b.y > a.y ? { ax: a.x, ay: a.y, bx: b.x, by: b.y } : null
-    }
-    if (elapsed < this.nextAt || idle < SlideEvents.IDLE_S || breathing) return null
-    const lerp = ([lo, hi]: [number, number]): number => lo + (hi - lo) * this.rng()
-    this.active = {
-      age: 0,
-      life: SlideEvents.SWELL_S + lerp(SlideEvents.SLIDE_S) + SlideEvents.LINGER_S,
-      x: this.pickX(artShown),
-      y: lerp([0.12, 0.45]),
-      dist: lerp(SlideEvents.DIST),
-      r: lerp(SlideEvents.R)
-    }
-    return null
+  tick(dt: number, elapsed: number, idle: number, artShown: number, aspect: number): Trail[] {
+    const step = clampDt(dt, SliderField.MAX_DT)
+    const trails: Trail[] = []
+    for (const s of this.list) this.advance(s, step, aspect, trails)
+    this.mergeTouching(aspect)
+    this.removeFinished()
+    this.spawn(elapsed, idle, artShown)
+    return trails
   }
 
-  /** Drop a slide in flight (resume after a stop) and schedule the next. */
-  cancel(elapsed: number): void {
-    this.active = null
-    this.nextAt = elapsed + this.gap()
+  private advance(s: SliderState, step: number, aspect: number, trails: Trail[]): void {
+    s.age += step
+    if (s.phase === 'merge') {
+      // Drawn into the larger drop: slide to its centre while shrinking away.
+      const into = s.into
+      const k = 1 - Math.exp(-step / SliderField.MERGE_TAU)
+      if (into) {
+        s.x += (into.x - s.x) * k
+        s.y += (into.y - s.y) * k
+      }
+      s.r *= Math.exp(-step / SliderField.MERGE_TAU)
+      return
+    }
+
+    s.r += (s.rTarget - s.r) * (1 - Math.exp(-step / SliderField.R_TAU))
+    switch (s.phase) {
+      case 'form':
+        s.alpha = smoothstep(s.age / s.dur)
+        if (s.age >= s.dur) this.enter(s, 'stuck')
+        break
+      case 'stuck':
+        if (s.age >= s.dur) {
+          if (s.travel >= s.maxTravel) this.enter(s, 'fade')
+          else this.enter(s, 'slip')
+        }
+        break
+      case 'slip':
+        if (s.age >= s.dur) this.enter(s, 'stuck')
+        break
+      case 'fade':
+        s.alpha = 1 - smoothstep(s.age / s.dur)
+        break
+    }
+
+    const target = s.phase === 'slip' ? this.speed(s) : 0
+    s.v += (target - s.v) * (1 - Math.exp(-step / SliderField.V_TAU))
+    // A decaying velocity never reaches zero; snap it, so a stuck drop is still.
+    if (target === 0 && s.v < 0.002) s.v = 0
+    s.v = Math.min(s.v, SliderField.V_CAP)
+    if (s.v <= 0) {
+      s.stretch = 1
+      return
+    }
+    const ax = s.x
+    const ay = s.y
+    const dy = s.v * step
+    s.y += dy
+    s.travel += dy
+    // Runs meander: x is a function of distance run, so it never jumps.
+    s.x = s.x0 + (0.01 * (Math.sin(s.wobble + s.travel * 12) - Math.sin(s.wobble))) / aspect
+    s.rTarget = Math.min(SliderField.R_MAX, s.rTarget + SliderField.GROW * dy)
+    s.stretch = 1 + 0.5 * (s.v / SliderField.V_CAP)
+    trails.push({ id: s.id, ax, ay, bx: s.x, by: s.y, r: s.r * SliderField.TRAIL_R })
+  }
+
+  private enter(s: SliderState, phase: SliderPhase): void {
+    s.phase = phase
+    s.age = 0
+    const heavy = s.heavy
+    switch (phase) {
+      case 'stuck':
+        s.dur = this.lerp(heavy ? [0.2, 0.8] : SliderField.STUCK_S)
+        break
+      case 'slip':
+        s.dur = this.lerp(heavy ? [0.6, 1.4] : SliderField.SLIP_S)
+        break
+      case 'fade':
+        s.dur = SliderField.FADE_S
+        break
+      default:
+        break
+    }
+  }
+
+  private speed(s: SliderState): number {
+    return Math.min(SliderField.V_CAP, SliderField.V_BASE + SliderField.V_PER_R * s.r)
+  }
+
+  private mergeTouching(aspect: number): void {
+    const live = this.list.filter((s) => s.phase !== 'merge')
+    for (let i = 0; i < live.length; i++) {
+      for (let j = i + 1; j < live.length; j++) {
+        const a = live[i]
+        const b = live[j]
+        if (a.phase === 'merge' || b.phase === 'merge') continue
+        const dist = Math.hypot((a.x - b.x) * aspect, a.y - b.y)
+        if (dist >= (a.r + b.r) * SliderField.MERGE_K) continue
+        const [big, small] = a.r >= b.r ? [a, b] : [b, a]
+        // The larger keeps their combined area (capped), eased in by R_TAU.
+        big.rTarget = Math.min(SliderField.R_MAX, Math.hypot(big.rTarget, small.rTarget))
+        small.phase = 'merge'
+        small.merging = true
+        small.into = big
+        small.age = 0
+      }
+    }
+  }
+
+  private removeFinished(): void {
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      const s = this.list[i]
+      const gone =
+        (s.phase === 'merge' && s.r < 0.0004) ||
+        (s.phase === 'fade' && s.age >= s.dur) ||
+        s.y - s.r > 1.02
+      if (gone) this.list.splice(i, 1)
+    }
+    // A drop being drawn into one that has gone just finishes shrinking in place.
+    for (const s of this.list) if (s.into && !this.list.includes(s.into)) s.into = null
+  }
+
+  private spawn(elapsed: number, idle: number, artShown: number): void {
+    const ordinary = this.list.filter((s) => !s.heavy).length
+    if (elapsed >= this.nextSpawnAt && ordinary < SliderField.MAX) {
+      this.spawnAt(this.pickX(artShown), this.lerp([0.02, 0.55]), this.lerp(SliderField.R))
+      this.nextSpawnAt = elapsed + this.spawnGap()
+    }
+    const heavyLive = this.list.some((s) => s.heavy)
+    if (elapsed >= this.nextHeavyAt && idle >= SliderField.HEAVY_IDLE_S && !heavyLive) {
+      this.spawnAt(
+        this.pickX(artShown),
+        this.lerp([0.05, 0.3]),
+        this.lerp(SliderField.HEAVY_R),
+        true
+      )
+      this.nextHeavyAt = elapsed + this.heavyGap()
+    }
   }
 
   private pickX(artShown: number): number {
-    if (artShown < 0.5) return 0.1 + 0.8 * this.rng()
-    const [lo, hi] = SLIDE_STRIPS[this.rng() < 0.5 ? 0 : 1]
+    if (artShown < 0.5) return 0.05 + 0.9 * this.rng()
+    return this.lerp(SLIDE_STRIPS[this.rng() < 0.5 ? 0 : 1])
+  }
+
+  private lerp([lo, hi]: [number, number]): number {
     return lo + (hi - lo) * this.rng()
+  }
+
+  private spawnGap(): number {
+    return poissonGap(
+      this.rng(),
+      SliderField.SPAWN_FLOOR_S,
+      SliderField.SPAWN_MEAN_S,
+      SliderField.SPAWN_MAX_S
+    )
+  }
+
+  private heavyGap(): number {
+    return poissonGap(
+      this.rng(),
+      SliderField.HEAVY_GAP_FLOOR_S,
+      SliderField.HEAVY_GAP_MEAN_S,
+      SliderField.HEAVY_GAP_MAX_S
+    )
   }
 }
 

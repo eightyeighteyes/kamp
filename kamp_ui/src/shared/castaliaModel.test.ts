@@ -389,8 +389,7 @@ test('a moving cursor jostles nearby grains and leaves distant ones alone', () =
   const v0 = Float64Array.from(p.v)
   // Mean displacement in pane heights: what the eye sees, not a speed.
   const moved = (idx: number[]): number =>
-    idx.reduce((s, i) => s + Math.hypot((p.u[i] - u0[i]) * ASPECT, p.v[i] - v0[i]), 0) /
-    idx.length
+    idx.reduce((s, i) => s + Math.hypot((p.u[i] - u0[i]) * ASPECT, p.v[i] - v0[i]), 0) / idx.length
   // A quick back-and-forth rub, about 1 pane height / s, for half a second.
   for (let k = 0; k < 15; k++) {
     p.pointerMove(cx + (k % 2) * 0.03, cy)

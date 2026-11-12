@@ -1,5 +1,5 @@
 // KAMP-768: the shared React lifecycle for the Canvas 2D particle backgrounds
-// (Sparks, Wintermute). Each background supplies only its engine factory; the
+// (Sparks, Wintermute, Castalia). Each background supplies only its engine factory; the
 // wiring below is the registry's engine contract and must not be duplicated per
 // background, or a fix to one (track-change gating, pointer scoping, re-measuring)
 // silently misses the other.
@@ -15,6 +15,7 @@
 //   * the __kampGL dev target, so the measurement variants can be run.
 
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { albumKeyOf, trackKeyOf } from '../../../../shared/trackIdentity'
 import { useStore } from '../../store'
 import { measureContent } from './contentRects'
 import { accentPalette, type Palette } from './palette'
@@ -29,6 +30,12 @@ export interface ParticleEngine {
   setAccent(hex: string): void
   setPalette(next: Palette): void
   trackChanged(): void
+  /**
+   * Optional (KAMP-773): the playing track's album and track keys. Called on
+   * mount and always before trackChanged(), in the same effect, so an engine
+   * can tell a skip within an album from a new album.
+   */
+  setIdentity?(albumKey: string, trackKey: string): void
   setPointer(nx: number, ny: number): void
   pointerLeave(): void
   setContentRects(title: ContentRect | null, art: ContentRect | null): void
@@ -116,6 +123,11 @@ export function useParticleEngine(
     const engine = engineRef.current
     const canvas = canvasRef.current
     if (!engine || !canvas) return
+    // Identity first, in this one effect: a second effect would lose the order.
+    // Read from the store here rather than subscribing, so it can't re-run apart
+    // from the id.
+    const track = useStore.getState().player.current_track
+    if (track && engine.setIdentity) engine.setIdentity(albumKeyOf(track), trackKeyOf(track))
     measureInto(engine, canvas)
     if (prev != null && trackId != null && prev !== trackId) engine.trackChanged()
   }, [trackId])

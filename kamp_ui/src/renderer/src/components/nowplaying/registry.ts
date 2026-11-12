@@ -24,6 +24,7 @@ import type {
 } from '../../../../shared/nowPlayingAnimation'
 import { BokehCanvas } from './BokehCanvas'
 import { BorealisCanvas } from './borealis/BorealisCanvas'
+import { CastaliaCanvas } from './castalia/CastaliaCanvas'
 import { ChapelCanvas } from './ChapelCanvas'
 import { HalationCanvas } from './halation/HalationCanvas'
 import { SparksCanvas } from './sparks/SparksCanvas'
@@ -52,7 +53,8 @@ export const NOW_PLAYING_ANIMATIONS = {
   borealis: { label: 'Borealis', Engine: BorealisCanvas },
   tannhauser: { label: 'Tannhäuser', Engine: TannhauserCanvas },
   sparks: { label: 'Sparks', Engine: SparksCanvas },
-  wintermute: { label: 'Wintermute', Engine: WintermuteCanvas }
+  wintermute: { label: 'Wintermute', Engine: WintermuteCanvas },
+  castalia: { label: 'Castalia', Engine: CastaliaCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>
 
 // KAMP-780: diagnostics-only backgrounds, selected via window.__kampGL and shown

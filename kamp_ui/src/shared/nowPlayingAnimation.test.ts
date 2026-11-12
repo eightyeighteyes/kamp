@@ -62,3 +62,8 @@ test('wintermute is a known id that survives a reload (KAMP-768)', () => {
   assert.equal(resolveNowPlayingAnimation('wintermute', 'false'), 'wintermute')
   assert.equal(legacyGlowValue('wintermute'), 'true')
 })
+
+test('castalia is a known id that survives a reload (KAMP-773)', () => {
+  assert.equal(resolveNowPlayingAnimation('castalia', 'false'), 'castalia')
+  assert.equal(legacyGlowValue('castalia'), 'true')
+})

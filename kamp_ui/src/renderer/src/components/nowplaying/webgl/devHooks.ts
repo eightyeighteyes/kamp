@@ -25,12 +25,16 @@ export interface GLDevTarget {
    * the particle backgrounds the baked sprite blur in CSS px (0 = the no-blur
    * variant; Wintermute reads it as the near layer's blur and scales the others).
    * `layers` (Wintermute) draws only the first N depth layers, far first, so
-   * `layers: 2` is the near-layer-off variant.
+   * `layers: 2` is the near-layer-off variant. `mode` (Castalia) rings the plate
+   * onto that entry of its mode table, to review the figures one by one.
    */
-  tune(opts: { scale?: number; fps?: number; blur?: number; layers?: number }): void
+  tune(opts: { scale?: number; fps?: number; blur?: number; layers?: number; mode?: number }): void
   /** Draw rate since the previous call (verifies the frame cap), and backing size. */
   stats(): { fps: number; backing: string }
-  /** Launch the rare moment now, for tuning: Sparks' high spark, Wintermute's close flake. */
+  /**
+   * Launch the rare moment now, for tuning: Sparks' high spark, Wintermute's close
+   * flake, Castalia's shimmer.
+   */
   forcePop?(): void
 }
 

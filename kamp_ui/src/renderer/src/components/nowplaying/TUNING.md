@@ -506,6 +506,7 @@ Identity comes from `setIdentity(albumKey, trackKey)`, which the lifecycle calls
 - `BLUR_CSS` (2 px): the baked halo. It is part of the animation, not a user setting. Only the halo is blurred. The one-pixel core is drawn crisp over it, or the grain vanishes.
 - `CORE_CSS` (0.75 px radius, a 1.5 px grain), `GRAIN_ALPHA` (0.6–0.9), `LIGHT_MIX` (0.5) and `HALO_ALPHA` (0.8): grain size, opacity, how far each swatch is pulled toward white, and the halo strength. The ticket's 0.3–0.5 alpha with a one-pixel grain and 0.3 lightening was nearly invisible on the dark plate, so all four were raised together.
 - `TITLE_QUIET` (0.3): grain alpha behind the title text.
+- The plate (`src/shared/castaliaBackdrop.ts`): a radial gradient from the top-left corner with up to three bands of album colour (`MAX_BANDS`, at `BAND_OFFSETS` 0 / 0.3 / 0.6, each fainter by `BAND_FALLOFF`), fading to --bg at the far corner. It breathes between `STRENGTH_MIN` and `STRENGTH_MAX` (0.12–0.22 of the colour over --bg) on a `PULSE_PERIOD_S` (10 s) raised cosine. Reduced motion holds the middle. Every stop is pre-blended with --bg, so it is still one opaque fill per frame, in place of the flat --bg, not a second pass. The bands crossfade over 1.5 s on a palette change.
 - `RES_SCALE` (0.75): fine grains looked bad at the half resolution Sparks and Wintermute use. Three quarters reads fine.
 - `DEFAULT_FPS` (20): the motion is slow settling, so 20 fps reads fine.
 

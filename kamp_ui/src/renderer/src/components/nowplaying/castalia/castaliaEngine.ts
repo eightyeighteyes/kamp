@@ -5,11 +5,15 @@
 // draws what the model hands it. Its public surface mirrors WintermuteEngine,
 // plus setIdentity, which the shared lifecycle calls before every trackChanged.
 //
-// Draw order: 1. the --bg fill (the dark plate); 2. the grains, each a drawImage
+// Draw order: 1. the plate, one opaque radial gradient from the top-left corner
+// carrying up to three bands of album colour into --bg, breathing slowly
+// (shared/castaliaBackdrop.ts); 2. the grains, each a drawImage
 // of a pre-baked sprite. No CSS filter anywhere: the ~2px blur is baked into the
 // sprite (KAMP-776/777).
 
+import { backdropStops, bandColors, pulseStrength } from '../../../../../shared/castaliaBackdrop'
 import { CastaliaPlate, GRAINS, MODES } from '../../../../../shared/castaliaModel'
+import { PaletteCrossfade } from '../../../../../shared/paletteCrossfade'
 import { titleQuiet } from '../../../../../shared/particleUtil'
 import { accentPalette, hexToRgb, type Palette, type RGB } from '../palette'
 import type { GLDevTarget } from '../webgl/devHooks'
@@ -36,6 +40,12 @@ const TITLE_QUIET = 0.3 // grain alpha behind the title text
 const TITLE_FEATHER = 0.03 // of pane height
 const MIN_ALPHA = 0.01
 const DEFAULT_BG: RGB = { r: 0x14, g: 0x14, b: 0x14 }
+const BAND_CROSSFADE_MS = 1500 // the plate's bands recolor as the grains dip
+
+export interface CastaliaEngineOptions {
+  /** prefers-reduced-motion: the plate holds still instead of breathing. */
+  reducedMotion: boolean
+}
 
 const rgba = (c: RGB, a: number): string =>
   `rgba(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)},${a})`
@@ -43,6 +53,8 @@ const rgba = (c: RGB, a: number): string =>
 export class CastaliaEngine {
   private ctx: CanvasRenderingContext2D | null
   private readonly plate = new CastaliaPlate(Math.random)
+  private readonly reducedMotion: boolean
+  private readonly bands: PaletteCrossfade
   private cssW = 0
   private cssH = 0
   private scale = 1
@@ -69,11 +81,14 @@ export class CastaliaEngine {
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    initial: Palette
+    initial: Palette,
+    opts: CastaliaEngineOptions
   ) {
     this.ctx = canvas.getContext('2d')
+    this.reducedMotion = opts.reducedMotion
     this.fallback = initial.colors.length > 0 ? initial.colors : accentPalette('#7c86e1').colors
     this.colorsByGen.set(this.plate.setPalette(false), this.fallback)
+    this.bands = new PaletteCrossfade(bandColors(this.fallback, DEFAULT_BG), BAND_CROSSFADE_MS)
   }
 
   private get running(): boolean {
@@ -100,6 +115,8 @@ export class CastaliaEngine {
     this.colorsByGen.set(gen, colors)
     this.pruneGenerations()
     this.bake(gen)
+    // KAMP-779: while stopped nothing advances the fade, so land on the new bands.
+    this.bands.set(bandColors(colors, this.bg), this.running)
     if (!this.running) this.renderStatic()
   }
 
@@ -225,6 +242,7 @@ export class CastaliaEngine {
     this.lastTs = ts
     if (document.hidden) return
     this.plate.tick(dt) // clamps dt itself
+    if (!this.bands.settled) this.bands.tick(Math.min(dt, 0.1) * 1000)
     if (ts - this.lastDraw < this.frameMs - FRAME_SLACK_MS) return
     this.lastDraw = ts
     this.draw()
@@ -263,8 +281,7 @@ export class CastaliaEngine {
     const h = this.cssH
     ctx.globalCompositeOperation = 'source-over'
     ctx.globalAlpha = 1
-    ctx.fillStyle = rgba(this.bg, 1)
-    ctx.fillRect(0, 0, w, h)
+    this.drawPlate(ctx, w, h)
     const p = this.plate
     const fallbackSheet = this.sheets.get(p.generation)
     const a = this.art
@@ -289,6 +306,22 @@ export class CastaliaEngine {
     }
     ctx.globalAlpha = 1
     this.draws++
+  }
+
+  /**
+   * The breathing corner gradient, as ONE opaque fill in place of the flat --bg:
+   * its stops are pre-blended with --bg, so it adds no second full-pane pass.
+   * The breath runs on the plate's clock, which freezes while stopped, so a resume
+   * picks up exactly where the last frame left off. Reduced motion holds still.
+   */
+  private drawPlate(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const strength = pulseStrength(this.reducedMotion ? null : this.plate.elapsed)
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.hypot(w, h))
+    for (const s of backdropStops(this.bg, this.bands.current(), strength)) {
+      g.addColorStop(s.offset, rgba(s.color, 1))
+    }
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, w, h)
   }
 
   /** 1 away from the title text, TITLE_QUIET inside it, feathered between. */

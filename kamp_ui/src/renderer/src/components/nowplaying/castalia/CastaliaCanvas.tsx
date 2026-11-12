@@ -6,9 +6,8 @@ import type { NowPlayingEngineProps } from '../registry'
 import { useParticleEngine, type ParticleEngineFactory } from '../useParticleEngine'
 import { CastaliaEngine } from './castaliaEngine'
 
-// No reduced-motion option: under reduced motion the loop never starts, the model
-// never ticks, and the prewarmed grains already are the settled still frame.
-const create: ParticleEngineFactory = (canvas, initial) => new CastaliaEngine(canvas, initial)
+const create: ParticleEngineFactory = (canvas, initial, opts) =>
+  new CastaliaEngine(canvas, initial, opts)
 
 export function CastaliaCanvas(props: NowPlayingEngineProps): React.JSX.Element {
   const canvasRef = useParticleEngine(create, props)

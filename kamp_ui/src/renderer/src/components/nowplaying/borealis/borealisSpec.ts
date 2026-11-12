@@ -25,6 +25,7 @@ import {
 } from '../../../../../shared/borealisTiming'
 import { GLSL_DITHER, GLSL_HEADER, GLSL_NOISE } from '../webgl/glsl'
 import type { ShaderSpec } from '../webgl/shaderEngine'
+import { GLSL_TITLE_MASK, setTitleUniform } from '../webgl/titleMask'
 
 // --- tunables (see TUNING.md) ----------------------------------------------------
 const STILL_PHASE: [number, number] = [1.9, 4.4] // the reduced-motion still's curtains
@@ -38,7 +39,7 @@ uniform vec3 uSurgeA;   // position 0..1, value 0..1, dir (0 L->R, 1 R->L)
 uniform vec3 uSurgeB;
 uniform vec4 uFlicker;  // value 0..1, curtain index, x 0..1, unused
 uniform float uArtShown;
-uniform vec4 uTitle;    // title text box in uv (y up); x1 <= x0 means none
+${GLSL_TITLE_MASK}
 
 const int CURTAINS = ${CURTAINS};
 const float ALPHA = 0.45;      // peak curtain opacity; leaves headroom for the surge
@@ -52,15 +53,6 @@ const float WAVE = 0.075;      // lower-edge wave amplitude
 const float FLOW_R = 1.6;      // flow circle radius, noise units
 
 float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
-
-// 1 behind the title text (soft-edged), 0 elsewhere.
-float titleMask(vec2 uv) {
-  if (uTitle.z <= uTitle.x) return 0.0;
-  float m = 0.03;
-  vec2 a = smoothstep(uTitle.xy - m, uTitle.xy, uv)
-         * (1.0 - smoothstep(uTitle.zw, uTitle.zw + m, uv));
-  return a.x * a.y;
-}
 
 float surgeBand(vec3 s, float x) {
   if (s.y <= 0.0) return 0.0;
@@ -215,12 +207,6 @@ export const BOREALIS_SPEC: ShaderSpec<void, BorealisState> = {
     }
 
     gl.uniform1f(quad.u('uArtShown'), frame.artShown)
-    const c = frame.titleRect
-    if (c && frame.artShown > 0) {
-      // DOM y-down to GL y-up.
-      gl.uniform4f(quad.u('uTitle'), c.x0, 1 - c.y1, c.x1, 1 - c.y0)
-    } else {
-      gl.uniform4f(quad.u('uTitle'), 0, 0, 0, 0)
-    }
+    setTitleUniform(gl, quad, frame)
   }
 }

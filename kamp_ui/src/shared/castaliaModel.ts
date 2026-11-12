@@ -111,7 +111,8 @@ export function harmonicSet(base: number): number[] {
 }
 
 // --- tunables ------------------------------------------------------------------------
-export const GRAINS = 500
+// The top of the ticket's 400-600 range: at 500 the simpler figures read thin.
+export const GRAINS = 600
 const DT_MAX = 0.1 // s; a longer frame is clamped so nothing jumps
 // Settling. The pull is -FORCE * d(f²)/dx, with the gradient normalised by the
 // mode's wavenumber so every figure drifts at about the same pace. DAMP makes the

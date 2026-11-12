@@ -265,14 +265,14 @@ To re-measure, run these variants as described above:
 
 Condensation on a rainy-night window, drawn by a WebGL shader on the shared base (`webgl/README.md`). The model lives in `src/shared/tannhauserTiming.ts` and is covered by `npm test`. The shader and its uniforms are in `tannhauser/tannhauserSpec.ts`.
 
-The fog density is a byte mask (`FogMask`, 96 texels high, width by aspect), uploaded as a texture whenever it changes. The cursor wipes it, and it refills linearly. A fully fogged mask with the cursor still uploads nothing.
+The fog density is a byte mask (`FogMask`, 256 texels high, width by aspect), uploaded as a texture whenever it changes. The cursor wipes it, and it refills linearly. A fully fogged mask with the cursor still uploads nothing.
 
 ## Timing — `tannhauserTiming.ts`
 
 | Knob                                         | Default                              | Effect                                                                                                                  |
 | -------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
 | `FogMask.REFILL_S`                           | 10 s                                 | How long a wiped patch takes to mist over again. The refill is linear, so a doodle fades evenly.                        |
-| `MASK_H` / `MIN_FALLOFF`                     | 96 / 3 texels                        | Mask resolution and the narrowest soft edge. Below 3 texels, bilinear filtering shows diamonds.                         |
+| `MASK_H` / `MIN_FALLOFF`                     | 256 / 2 texels                       | Mask resolution and the narrowest soft edge. Any narrower trail is clamped up, so lower MASK_H and trails stop scaling. |
 | `BreathEnvelope.GROW_S` / `FADE_S`           | 1.8 / 2.5 s                          | The track-change fog: the front's spread from the centre, then how fast the fresh veil thins and older wipes re-emerge. |
 | `BreathEnvelope.RISE_S`                      | 0.6 s                                | A skip while the breath fades raises it back from where it is over this long. A skip while it grows changes nothing.    |
 | `SliderField.MAX`                            | 6                                    | Running drops at once, plus one slot for the heavy drop. Raise it for a busier window; it nears Wintermute above ~10.   |
@@ -293,7 +293,7 @@ The TypeScript constants are:
 - `WIPE_R` (0.075 pane heights): the cursor's wipe radius.
 - `DRIFT_PERIODS_S` (131 / 197 s): how slowly the lights behind the glass drift.
 
-The trail width is `SliderField.TRAIL_R` (0.7 of the drop's radius) in the model.
+The trail width is `SliderField.TRAIL_R` in the model: the trail stamp's radius is 1.4 times the drop's. The stamp is a soft cone, so that clears about 70% of the drop's width and fades out at the edges.
 
 The GLSL constants are at the top of `FRAG`:
 

@@ -24,15 +24,19 @@ import { clampDt, poissonGap, smoothstep } from './rareSchedule.ts'
 export const FOG_FULL = 255
 /**
  * Mask height in texels. Fixed, so a brush radius in pane heights is the same
- * number of texels at any pane size or DPR; the width follows the aspect. The
- * fog is soft, so about 1/8 of the pane survives LINEAR upscaling.
+ * number of texels at any pane size or DPR; the width follows the aspect.
+ *
+ * Sized for the narrowest trail, not for the soft cursor wipe: at 96 a running
+ * drop's trail was 0.5-2 texels, every one was floored to MIN_FALLOFF, and drops
+ * of every size cleared the same fixed width. At 256 the smallest trail is
+ * above the floor, so trails follow their drops. The mask is ~100 KB at 16:10.
  */
-export const MASK_H = 96
+export const MASK_H = 256
 /** A stamp's soft edge is never narrower than this, or bilinear filtering shows diamonds. */
-export const MIN_FALLOFF = 3
+export const MIN_FALLOFF = 2
 
 const MIN_W = 16
-const MAX_W = 512
+const MAX_W = 1024
 
 /** Mask width for a pane of this aspect (width / height). */
 export function maskWidth(aspect: number): number {
@@ -412,8 +416,12 @@ export class SliderField {
   static readonly MERGE_TAU = 0.08
   /** Drops merge once their centres are this fraction of their summed radii apart. */
   static readonly MERGE_K = 0.8
-  /** A trail's full width, as a fraction of its drop's radius. */
-  static readonly TRAIL_R = 0.7
+  /**
+   * A trail stamp's radius, as a multiple of its drop's radius. The stamp is a
+   * soft cone, so it is clearly clear only out to about half its radius: 1.4
+   * clears about 70% of the drop's width and fades out at its edges.
+   */
+  static readonly TRAIL_R = 1.4
   /** Width at the very start of a run, as a fraction of the full trail width. */
   static readonly TRAIL_START = 0.3
   /** Pane heights a drop runs before its trail reaches full width. */

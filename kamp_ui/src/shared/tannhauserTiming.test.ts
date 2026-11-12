@@ -46,7 +46,7 @@ test('the mask is a fixed height, with the width following the aspect', () => {
 
 test('the mask width stays bounded at extreme aspects', () => {
   assert.ok(maskWidth(0.01) >= 16)
-  assert.ok(maskWidth(100) <= 512)
+  assert.ok(maskWidth(100) <= 1024)
   assert.ok(maskWidth(Number.NaN) >= 16)
 })
 
@@ -525,6 +525,47 @@ test('a trail starts narrow where the drop broke loose and widens behind it', ()
   const later = mine[mine.length - 1].t
   assert.ok(first.r < later.r * 0.6, `no taper: ${first.r} vs ${later.r}`)
   for (const { t, s } of mine) if (s) assert.ok(t.r <= s.r * SliderField.TRAIL_R + 1e-12)
+})
+
+/**
+ * Width, in pane heights, of the clearly cleared band (at least half the
+ * possible clearing) that a full-width trail of a drop of radius r leaves in
+ * the mask the shader actually samples.
+ */
+function trailClearWidth(r: number): number {
+  const m = new FogMask(maskWidth(1), MASK_H)
+  const cx = m.w / 2
+  const tr = r * SliderField.TRAIL_R * MASK_H
+  m.stroke(cx, MASK_H * 0.2, cx, MASK_H * 0.8, tr, {
+    floor: SliderField.TRAIL_FLOOR,
+    soft: true
+  })
+  const half = (FOG_FULL + SliderField.TRAIL_FLOOR) / 2
+  const y = Math.round(MASK_H / 2)
+  let n = 0
+  for (let x = 0; x < m.w; x++) if (at(m, x, y) <= half) n++
+  return n / MASK_H
+}
+
+test('a trail clears a band in proportion to its drop, not a fixed width', () => {
+  const small = trailClearWidth(SliderField.R[0])
+  const large = trailClearWidth(SliderField.R_MAX)
+  const ratio = SliderField.R_MAX / SliderField.R[0]
+  assert.ok(
+    large / small > ratio * 0.6,
+    `small ${small.toFixed(4)} vs large ${large.toFixed(4)}, want about ${ratio.toFixed(1)}x`
+  )
+})
+
+test('a trail clears about the drop own width', () => {
+  for (const r of [SliderField.R[1], 0.02, SliderField.R_MAX]) {
+    const w = trailClearWidth(r)
+    // A drop is 2r across; its trail clears most of that, never much more.
+    assert.ok(
+      w >= 1.0 * r && w <= 2.2 * r,
+      `r=${r}: cleared ${w.toFixed(4)} (${(w / r).toFixed(2)}r)`
+    )
+  }
 })
 
 test('with the art shown, drops start in the side strips', () => {

@@ -63,6 +63,9 @@ export class CastaliaEngine {
   private resScale = RES_SCALE
   private frameMs = 1000 / DEFAULT_FPS
   private blurCss = BLUR_CSS
+  // Dev-only measurement variant for the plate (see devTarget); 'live' ships.
+  private plateMode: 'solid' | 'static' | 'live' = 'live'
+  private platePainted = false
   private bg: RGB = DEFAULT_BG
   private fallback: RGB[]
 
@@ -213,7 +216,11 @@ export class CastaliaEngine {
   /** The __kampGL handle (KAMP-780), used to measure the blur variants and review modes. */
   devTarget(): GLDevTarget {
     return {
-      tune: ({ scale, fps, blur, mode }) => {
+      tune: ({ scale, fps, blur, mode, plate }) => {
+        if (plate != null) {
+          this.plateMode = plate
+          this.platePainted = false
+        }
         if (scale != null && scale > 0) this.resScale = scale
         if (fps != null && fps > 0) this.frameMs = 1000 / fps
         if (blur != null && blur >= 0) this.blurCss = blur
@@ -328,14 +335,25 @@ export class CastaliaEngine {
    * picks up exactly where the last frame left off. Reduced motion holds still.
    */
   private drawPlate(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    if (this.plateMode === 'solid') {
+      ctx.fillStyle = rgba(this.bg, 1)
+      ctx.fillRect(0, 0, w, h)
+      return
+    }
     const pw = PLATE_W
     const ph = Math.max(1, Math.round((PLATE_W * h) / w))
     if (!this.plateCanvas || this.plateCanvas.height !== ph) {
       this.plateCanvas = new OffscreenCanvas(pw, ph)
       this.plateCtx = this.plateCanvas.getContext('2d')
+      this.platePainted = false
     }
     const pc = this.plateCtx
     if (!pc) return
+    if (this.plateMode === 'static' && this.platePainted) {
+      ctx.drawImage(this.plateCanvas, 0, 0, w, h)
+      return
+    }
+    this.platePainted = true
     const strength = pulseStrength(this.reducedMotion ? null : this.plate.elapsed)
     const g = pc.createRadialGradient(0, 0, 0, 0, 0, Math.hypot(pw, ph))
     for (const s of backdropStops(this.bg, this.bands.current(), strength)) {

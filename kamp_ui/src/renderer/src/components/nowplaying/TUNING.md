@@ -308,9 +308,30 @@ With the art shown, the five lights gather in the side strips and new drops form
 
 ## Cost
 
-`resScale` is 0.4 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus two bead cells, seven running-drop shapes and one texture fetch. Running drops keep the mask dirty, so expect a texture upload on most frames. If GPU busy is over target, try `__kampGL.tune({ fps: 15 })` first, then `scale: 0.33`.
+`resScale` is 0.33 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus two bead cells, the running drops near it and one texture fetch. Pixels behind the art are skipped (`GLSL_ART_SKIP`). Running drops keep the mask dirty, so expect a texture upload on most frames.
 
-To measure, run these variants as described above:
+Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing):
+
+| Variant                        | GPU busy      |
+| ------------------------------ | ------------- |
+| None                           | 3.01% ± 0.74  |
+| First build, 0.4, art shown    | 34.87% ± 1.08 |
+| 0.4, art shown (art skipped)   | 23.36% ± 0.90 |
+| 0.4, art hidden                | 33.28% ± 0.95 |
+| 0.4, art hidden, 15 fps        | 24.37% ± 0.64 |
+| **0.33, art hidden** (shipped) | 23.58% ± 0.59 |
+| 0.1, art hidden (diagnostic)   | 6.28% ± 1.13  |
+
+At 0.33 with the art shown, projected from the above, it is about 17%. Art hidden is a few points over the ~20% target and was accepted: 15 fps looked visibly less smooth, and 0.3 (about 20%) softens the smallest beads.
+
+What the numbers say:
+
+- **The cost is per pixel.** It fell in proportion to pixel count from 0.4 to 0.33 to 0.1. The 0.1 run is only about 3 points over None, so the fog upload (about 100 KB a frame at 16:10) and the rest of the per-frame work cost at most a couple of points.
+- **Skipping the art saved about 11 points**, roughly its share of the pane.
+- **Sine-free hashes and CPU-placed lights saved nothing measurable.** Cut pixels or frames, not arithmetic.
+- **Cursor wiping costs nothing extra**: wiping continuously measured the same as the trickle alone.
+
+To measure, run these variants as described above. `tune()` is lost on a reload, so set it after the page loads and don't refresh before measuring:
 
 1. None
 2. Tannhäuser, art shown, cursor outside the pane (the trickle alone)

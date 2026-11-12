@@ -323,8 +323,9 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
   name: 'tannhauser',
   frag: FRAG,
   // Drops need crisper edges than Borealis's curtains, so above the ¼-res default.
-  // Tune with __kampGL.tune and re-measure.
-  resScale: 0.4,
+  // 0.4 measured 33% GPU busy with the art hidden; 0.33 keeps the beads and trails
+  // crisp enough at ~24% (art shown ~17%). See TUNING.md before raising it.
+  resScale: 0.33,
   fps: 20,
   onContext(gl) {
     const tex = gl.createTexture()

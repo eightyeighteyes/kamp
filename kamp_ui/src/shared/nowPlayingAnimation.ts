@@ -8,7 +8,8 @@ export const NOW_PLAYING_ANIMATION_IDS = [
   'bokeh',
   'chapel',
   'halation',
-  'borealis'
+  'borealis',
+  'tannhauser'
 ] as const
 export type NowPlayingAnimationId = (typeof NOW_PLAYING_ANIMATION_IDS)[number]
 

@@ -58,11 +58,28 @@ export interface FrameInfo {
    */
   pointerAt: { x: number; y: number }
   /**
+   * KAMP-772: bumped each time the cursor enters the pane (the first move after
+   * a leave or a start()). Two pointerAt samples belong to one continuous stroke
+   * only if their epochs match. It is bumped on entry, not on leave, because
+   * pointerAt stays frozen at the exit point: a leave-bump would let a tracker
+   * file that stale exit point under the new epoch and join it to the entry.
+   * A boolean "present" flag can't do this either: a leave and a re-entry can
+   * both land between two drawn frames.
+   */
+  pointerEpoch: number
+  /**
    * The title's text box in the canvas, normalised 0..1 with y down (DOM), or
    * null when hidden. For keeping busy detail out from behind the title. It is
    * the text extent, not the full-width title element.
    */
   titleRect: ContentRect | null
+  /**
+   * KAMP-772: the opaque album art's box, normalised with y down, already inset
+   * past its rounded corners, or null when the art is hidden. Nothing drawn
+   * inside it is ever seen, so a shader can skip that work (artMask.ts). It is
+   * present or absent with the art element itself, not eased like artShown.
+   */
+  artRect: ContentRect | null
 }
 
 export interface ContentRect {
@@ -164,11 +181,13 @@ export class ShaderEngine<R = void, S = void> {
   // KAMP-765: the last real cursor position, never recentred (see FrameInfo.pointerAt).
   private pointerAtX = 0
   private pointerAtY = 0
+  private pointerEpoch = 0
 
   private trackSeq = 0
   private artVisible = true
   private artShown = 1
   private titleRect: ContentRect | null = null
+  private artRect: ContentRect | null = null
   private resumed = false
 
   private readonly level = new LevelFollower()
@@ -301,6 +320,9 @@ export class ShaderEngine<R = void, S = void> {
   }
 
   setPointer(nx: number, ny: number): void {
+    // An entry: the first move after a leave, or after start() (which resets
+    // presence to away). See FrameInfo.pointerEpoch.
+    if (this.pointerTargetActive === 0) this.pointerEpoch++
     this.pointerTargetX = Math.max(-1, Math.min(1, nx))
     this.pointerTargetY = Math.max(-1, Math.min(1, ny))
     this.pointerAtX = this.pointerTargetX
@@ -333,9 +355,13 @@ export class ShaderEngine<R = void, S = void> {
     }
   }
 
-  /** The title's text box (normalised, DOM y-down), or null when hidden. */
-  setTitleRect(rect: ContentRect | null): void {
-    this.titleRect = rect
+  /**
+   * The title's text box and the art's opaque box (normalised, DOM y-down), each
+   * null when hidden. Set together so a paused pane repaints once, not twice.
+   */
+  setContentRects(title: ContentRect | null, art: ContentRect | null): void {
+    this.titleRect = title
+    this.artRect = art
     if (!this.running) this.renderStatic()
   }
 
@@ -502,7 +528,9 @@ export class ShaderEngine<R = void, S = void> {
       pointerActive,
       pointerIdle: this.elapsed - this.lastPointerAt,
       pointerAt: { x: this.pointerAtX, y: this.pointerAtY },
-      titleRect: this.titleRect
+      pointerEpoch: this.pointerEpoch,
+      titleRect: this.titleRect,
+      artRect: this.artRect
     }
     if (!still) {
       this.lastDrawElapsed = time

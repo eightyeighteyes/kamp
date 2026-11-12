@@ -258,3 +258,89 @@ To re-measure, run these variants as described above:
 1. None
 2. Borealis with the art visible
 3. Borealis with the art hidden
+
+---
+
+# Tannhäuser (KAMP-772)
+
+Condensation on a rainy-night window, drawn by a WebGL shader on the shared base (`webgl/README.md`). The model lives in `src/shared/tannhauserTiming.ts` and is covered by `npm test`. The shader and its uniforms are in `tannhauser/tannhauserSpec.ts`.
+
+The fog density is a byte mask (`FogMask`, 256 texels high, width by aspect), uploaded as a texture whenever it changes. The cursor wipes it, and it refills linearly. A fully fogged mask with the cursor still uploads nothing.
+
+## Timing — `tannhauserTiming.ts`
+
+| Knob                                         | Default                              | Effect                                                                                                                  |
+| -------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `FogMask.REFILL_S`                           | 10 s                                 | How long a wiped patch takes to mist over again. The refill is linear, so a doodle fades evenly.                        |
+| `MASK_H` / `MIN_FALLOFF`                     | 256 / 2 texels                       | Mask resolution and the narrowest soft edge. Any narrower trail is clamped up, so lower MASK_H and trails stop scaling. |
+| `BreathEnvelope.GROW_S` / `FADE_S`           | 1.8 / 2.5 s                          | The track-change fog: the front's spread from the centre, then how fast the fresh veil thins and older wipes re-emerge. |
+| `BreathEnvelope.RISE_S`                      | 0.6 s                                | A skip while the breath fades raises it back from where it is over this long. A skip while it grows changes nothing.    |
+| `SliderField.MAX`                            | 6                                    | Running drops at once, plus one slot for the heavy drop. Raise it for a busier window; it nears Wintermute above ~10.   |
+| `SliderField.SPAWN_FLOOR_S` / `SPAWN_MEAN_S` | 0.8 + exp(2) s                       | How often a new drop forms. With the run lengths below, this keeps about 3–5 on the move.                               |
+| `SliderField.STUCK_S` / `SLIP_S`             | 0.4–2.2 s / 0.25–0.9 s               | The stick-slip rhythm: how long a drop clings, then how long it runs. Longer slips read as streaming, not condensation. |
+| `SliderField.V_BASE` / `V_PER_R`             | 0.08 + 4·r pane heights/s            | Slip speed. Heavier drops run faster. `V_CAP` (0.3) bounds every step.                                                  |
+| `SliderField.GROW`                           | 0.008                                | Radius gained per pane height run, from the beads it swallows. A running drop never fades; it leaves off the bottom.    |
+| `SliderField.TRAIL_START` / `TAPER_LEN`      | 0.3 / 0.1                            | A trail starts at this fraction of its full width and widens over this many pane heights, so it never reads as a tube.  |
+| `SliderField.TRAIL_FLOOR`                    | 60 / 255                             | Fog left in the middle of a trail. Higher reads as a damp streak; 0 wipes it dry and the trail looks cut out.           |
+| `SliderField.MERGE_K` / `MERGE_TAU`          | 0.8 / 0.08 s                         | How close two drops get before merging, and how fast the smaller is drawn into the larger. The larger keeps their area. |
+| `SliderField.HEAVY_GAP_*` / `HEAVY_IDLE_S`   | 60 + exp(100) s, capped at 240 / 6 s | The rare heavy drop: bigger, longer runs, only once the cursor has been still. Call `forceHeavy()` to see one.          |
+| `SliderField.REST_MAX` / `REST_R`            | 10 / 0.005–0.011                     | Resting drops on the glass, and their size when they form. They are what a run visibly collides with.                   |
+| `SliderField.REST_GROW` / `R_BREAK`          | 0.00015/s / 0.016                    | How fast a resting drop swells, and the size at which it breaks loose and runs (about a minute from forming).           |
+| `SliderField.CAPTURE_K` / `CAPTURE_AHEAD`    | 2.5 / 0.2                            | How far to the side (in summed radii) and how far below a run is drawn toward a drop. Higher means more merges.         |
+| `SliderField.LEAN`                           | 0.5                                  | Sideways lean per pane height run. Higher swerves harder into a neighbour; it is also what keeps x from jumping.        |
+| `DROP_PERIODS_S`                             | 29 s                                 | Life cycle of the fine beads. The second period (47 s) belonged to the removed hashed coarse beads and is unused.       |
+
+## Look — `tannhauserSpec.ts`
+
+The TypeScript constants are:
+
+- `WIPE_R` (0.075 pane heights): the cursor's wipe radius.
+- `DRIFT_PERIODS_S` (131 / 197 s): how slowly the lights behind the glass drift.
+
+The trail width is `SliderField.TRAIL_R` in the model: the trail stamp's radius is 1.4 times the drop's. The stamp is a soft cone, so that clears about 70% of the drop's width and fades out at the edges.
+
+The GLSL constants are at the top of `FRAG`:
+
+- `FINE_CELL` / `COARSE_CELL` (0.03 / 0.075 pane heights), `*_DENSITY` and `*_R`: bead spacing, how many cells hold a bead, and the largest bead as a fraction of its cell. Each row of cells is shifted by its own hash, and a bead's jitter scales with its size, so small beads roam the whole cell and the field never reads as a grid. A bead never crosses its cell, so `*_R` must stay below about 0.35.
+- `dropShape()`: the sag. The `0.15` offset sets how low the bulk sits, `0.32` how much the crown tapers, and `1.12` / `0.92` how flat the base and how tall the crown are. Running drops share it, stretched with their speed.
+- `REFRACT` (2.2 radii): how far a drop's lens shifts the lights it shows. `LENS` (0.9) is how strongly the lens shows over the glass; it is brightest in the drop's base.
+- `MIST` (0.2), `GLOW_FOG` (0.55) and `GLOW_CLEAR` (0.75): the veil's strength, and how much light shows through fogged and through clear glass. The gap between the two `GLOW_` values is what makes a wipe read as clear glass.
+- `BREATH_W` (0.18) and `FRESH` (0.12): the soft width of the breath's front, and how much thicker fresh fog looks.
+- `TITLE_QUIET` (0.75): how far the scene is pulled back to `--bg` behind the title text.
+
+With the art shown, the five lights gather in the side strips and new drops form there. The shader draws only the fine beads, which are the mist's texture and only form on fog, so a wiped patch or a run's trail is clear glass until it mists over. Every larger drop, resting or running, is in `SliderField`: a drop drawn by the shader alone can't collide with anything, because the model can't see it. A cursor wipe takes the drops under it.
+
+## Cost
+
+`resScale` is 0.33 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus one bead cell, the drops near it (17 slots, each rejected by a bounding box) and one texture fetch. The resting drops swapped a hashed bead field for ten more slots, which cost about a point. Pixels behind the art are skipped (`GLSL_ART_SKIP`). Running drops keep the mask dirty, so expect a texture upload on most frames.
+
+Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing):
+
+| Variant                                       | GPU busy      | Avg cores   |
+| --------------------------------------------- | ------------- | ----------- |
+| None                                          | 3.01% ± 0.74  | 1.28 ± 0.29 |
+| First build, 0.4, art shown                   | 34.87% ± 1.08 | 1.43 ± 0.30 |
+| First build, 0.4, wiping continuously         | 33.53% ± 1.59 | 1.80 ± 0.41 |
+| 0.4, art shown (art skipped)                  | 23.36% ± 0.90 | 1.50 ± 0.35 |
+| 0.4, art hidden                               | 33.28% ± 0.95 | 1.39 ± 0.35 |
+| 0.4, art hidden, 15 fps                       | 24.37% ± 0.64 | 1.80 ± 0.51 |
+| 0.33, art hidden                              | 23.58% ± 0.59 | 1.70 ± 0.52 |
+| **0.33, art hidden, resting drops** (shipped) | 24.53% ± 0.51 | 1.79 ± 0.63 |
+| 0.1, art hidden (diagnostic)                  | 6.28% ± 1.13  | 1.49 ± 0.37 |
+
+At 0.33 with the art shown, projected from the above, it is about 18%. Art hidden is a few points over the ~20% target and was accepted: 15 fps looked visibly less smooth, and 0.3 (about 20%) softens the smallest beads.
+
+What the numbers say:
+
+- **The cost is per pixel.** It fell in proportion to pixel count from 0.4 to 0.33 to 0.1. The 0.1 run is only about 3 points over None, so the fog upload (about 100 KB a frame at 16:10) and the rest of the per-frame work cost at most a couple of points.
+- **Skipping the art saved about 11 points**, roughly its share of the pane.
+- **Sine-free hashes and CPU-placed lights saved nothing measurable.** Cut pixels or frames, not arithmetic.
+- **Cursor wiping costs nothing extra**: wiping continuously measured the same as the trickle alone.
+- **The CPU cost is lost in noise.** Every Tannhäuser run sits 0.1 to 0.5 cores above None, with spreads of ±0.3 to ±0.6, and resolution (which adds no CPU work) moves it as much as anything else. The drop simulation, merge checks included, does not show up.
+
+To measure, run these variants as described above. `tune()` is lost on a reload, so set it after the page loads and don't refresh before measuring:
+
+1. None
+2. Tannhäuser, art shown, cursor outside the pane (the trickle alone)
+3. Tannhäuser, art hidden
+4. Tannhäuser, wiping continuously

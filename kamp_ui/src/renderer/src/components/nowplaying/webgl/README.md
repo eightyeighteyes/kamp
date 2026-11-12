@@ -52,7 +52,9 @@ The standard uniforms are set every frame:
 - `artShown`: eased 0..1 art visibility (KAMP-769). It lands directly while stopped.
 - `pointerActive` and `pointerIdle` (seconds), for cursor effects and idle-gated rare moments.
 - `pointerAt`: the last real cursor position (KAMP-765). Unlike `uPointer` it is not eased and never recentres on leave. Anchor a cursor effect that fades out here, or it slides toward the centre as it fades.
+- `pointerEpoch` (KAMP-772): bumped each time the cursor enters the pane. Connect two `pointerAt` samples into one stroke only when their epochs match, or a quick leave and re-entry draws a line across the pane.
 - `titleRect`: the title's text box, normalised and DOM y-down, or null. Keep busy detail out from behind the title. It is the text extent: the title element itself is full-width, so its box would cover the whole pane.
+- `artRect` (KAMP-772): the opaque art's box, normalised and DOM y-down, inset past its rounded corners, or null while the art is hidden. Unlike `artShown` it is not eased: it appears and disappears with the art element.
 
 **Per-mount state goes in `createState()`, not in `R` or the module.** It is created once per engine, survives a context restore (so a moment in flight carries on), and is passed to `setUniforms` as its last argument.
 
@@ -60,7 +62,24 @@ The standard uniforms are set every frame:
 
 **Always `dither()` last.** Dark, slow gradients band visibly without it.
 
+**Title legibility:** append `GLSL_TITLE_MASK` (`titleMask.ts`) to the shader and call `setTitleUniform(gl, quad, frame)` from `setUniforms`. Then `titleMask(uv)` is 1 behind the title text; pull detail toward `uBg` by it, scaled by `uArtShown`.
+
+**Skip the pixels behind the art:** append `GLSL_ART_SKIP` (`artMask.ts`), call `setArtUniform(gl, quad, frame)` from `setUniforms`, and start `main()` with `if (behindArt(uv)) { gl_FragColor = vec4(uBg, 1.0); return; }`. The art is opaque, so those pixels are never seen, and with the art shown they are a large share of the pane. It keeps a margin of a backing pixel or so drawn, because the canvas is upscaled with bilinear filtering. Still frames always draw whole. As of KAMP-772 only Tannhäuser uses it.
+
+**Uniform-only maths belongs on the CPU.** Anything that is the same for every pixel (a light's position from a drift angle, say) costs one evaluation per pixel in the shader and one per frame in `setUniforms`. Pass the result as a uniform array.
+
 **The spec must be a module-level constant.** The engine is built once per mount.
+
+## Textures (KAMP-772)
+
+Tannhäuser is the first background that owns a texture (its fog mask). The rules it follows:
+
+- **Create it in `onContext` and delete it in `dispose`.** Track the uploaded size in `R` starting at 0, so the first frame after a restore does a full `texImage2D`. Keep the source bytes in `createState`, so they survive the restore.
+- **Upload on still frames too.** The first frame after a restore can be a still frame (`onRestored` repaints through `renderStatic`). A texture that was never uploaded samples black.
+- **Bind it in every `setUniforms`:** `activeTexture`, `bindTexture` and the sampler uniform. The program is rebuilt on restore, so a sampler set once goes stale.
+- **Set `pixelStorei` explicitly before each upload.** An odd width needs `UNPACK_ALIGNMENT = 1`, or the rows skew diagonally.
+- **WebGL1 NPOT textures** need `CLAMP_TO_EDGE`, a non-mipmap filter and no `generateMipmap`.
+- **Upload from a typed array, not a canvas.** A canvas upload can force a GPU-to-CPU readback. Upload only when the data changed.
 
 ## Budget
 

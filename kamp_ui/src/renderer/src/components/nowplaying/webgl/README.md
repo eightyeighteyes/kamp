@@ -61,7 +61,20 @@ The standard uniforms are set every frame:
 
 **Always `dither()` last.** Dark, slow gradients band visibly without it.
 
+**Title legibility:** append `GLSL_TITLE_MASK` (`titleMask.ts`) to the shader and call `setTitleUniform(gl, quad, frame)` from `setUniforms`. Then `titleMask(uv)` is 1 behind the title text; pull detail toward `uBg` by it, scaled by `uArtShown`.
+
 **The spec must be a module-level constant.** The engine is built once per mount.
+
+## Textures (KAMP-772)
+
+Tannhäuser is the first background that owns a texture (its fog mask). The rules it follows:
+
+- **Create it in `onContext` and delete it in `dispose`.** Track the uploaded size in `R` starting at 0, so the first frame after a restore does a full `texImage2D`. Keep the source bytes in `createState`, so they survive the restore.
+- **Upload on still frames too.** The first frame after a restore can be a still frame (`onRestored` repaints through `renderStatic`). A texture that was never uploaded samples black.
+- **Bind it in every `setUniforms`:** `activeTexture`, `bindTexture` and the sampler uniform. The program is rebuilt on restore, so a sampler set once goes stale.
+- **Set `pixelStorei` explicitly before each upload.** An odd width needs `UNPACK_ALIGNMENT = 1`, or the rows skew diagonally.
+- **WebGL1 NPOT textures** need `CLAMP_TO_EDGE`, a non-mipmap filter and no `generateMipmap`.
+- **Upload from a typed array, not a canvas.** A canvas upload can force a GPU-to-CPU readback. Upload only when the data changed.
 
 ## Budget
 

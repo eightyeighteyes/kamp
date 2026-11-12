@@ -43,6 +43,18 @@ The standard uniforms are set every frame:
 - `uPointer`: -1..1, DOM y-down
 - `uLevel`: 0..1, delayed about 300 ms to match the speakers
 
+`uPointerActive` (0..1, eased) says whether the cursor is over the pane at all. `uPointer` recentres on leave, so anything that glows near the cursor should scale by it.
+
+`setUniforms` also receives a `FrameInfo` (KAMP-774). Besides `dt`, `elapsed`, `level` and `still`, it has:
+- `atRest`: the reduced-motion still. Draw the designed rest frame here. `still` alone is also true for a paused palette or theme repaint.
+- `resumed`: the first loop frame after `start()`. Drop any moment in flight from before the stop.
+- `trackSeq`: increments once per real track change while running. It never increments on mount, on a null transition or while stopped. Compare it with the last value you saw.
+- `artShown`: eased 0..1 art visibility (KAMP-769). It lands directly while stopped.
+- `pointerActive` and `pointerIdle` (seconds), for cursor effects and idle-gated rare moments.
+- `titleRect`: the title's text box, normalised and DOM y-down, or null. Keep busy detail out from behind the title. It is the text extent: the title element itself is full-width, so its box would cover the whole pane.
+
+**Per-mount state goes in `createState()`, not in `R` or the module.** It is created once per engine, survives a context restore (so a moment in flight carries on), and is passed to `setUniforms` as its last argument.
+
 **GL resources die with the context.** Create them in `onContext`, which runs again after every restore. Keep the CPU-side source data, such as a decoded bitmap, on the spec side so it can be uploaded again.
 
 **Always `dither()` last.** Dark, slow gradients band visibly without it.

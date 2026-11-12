@@ -24,6 +24,7 @@ import type {
 } from '../../../../shared/nowPlayingAnimation'
 import { BokehCanvas } from './BokehCanvas'
 import { ChapelCanvas } from './ChapelCanvas'
+import { HalationCanvas } from './halation/HalationCanvas'
 import { FlatReference } from './webgl/reference/FlatReference'
 
 export interface NowPlayingEngineProps {
@@ -42,7 +43,8 @@ interface NowPlayingAnimation {
 export const NOW_PLAYING_ANIMATIONS = {
   none: { label: 'None', Engine: null },
   bokeh: { label: 'Bokeh', Engine: BokehCanvas },
-  chapel: { label: 'Chapel', Engine: ChapelCanvas }
+  chapel: { label: 'Chapel', Engine: ChapelCanvas },
+  halation: { label: 'Halation', Engine: HalationCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>
 
 // KAMP-780: diagnostics-only backgrounds, selected via window.__kampGL and shown

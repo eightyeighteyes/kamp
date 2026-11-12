@@ -155,3 +155,51 @@ pinned at 60 Hz, music playing. Run these variants:
 3. **Chapel, cursor resting on a seam**: the glow is drawn every frame.
 
 The target is GPU busy at or below about 20% on the Intel Mac.
+
+---
+
+# Halation (KAMP-774)
+
+Film grain, projector dust and warm light leaks, drawn by a WebGL shader on the shared base (`webgl/README.md`). The timing lives in `src/shared/halationTiming.ts` and is covered by `npm test`. The shader and its uniforms are in `halation/halationSpec.ts`.
+
+## Timing — `halationTiming.ts`
+
+| Knob                                    | Default                       | Effect                                                                                                      |
+| --------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `SEED_PERIOD_S` / `SEED_FADE_S`         | 3–4 s / 0.5 s                 | How often the grain re-seeds, and the crossfade between seeds. Keep it well above per-frame, or it strobes. |
+| `BurnEnvelope.RISE_S` / `DECAY_S`       | 2 / 3.5 s                     | The track-change burn's spread-in and fade. A shorter rise means a steeper slope, and that risks a flash.   |
+| `RareEvents.GAP_FLOOR_S` / `GAP_MEAN_S` | 60 + exp(90) s, capped at 240 | Spacing of the rare hair or jolt. Call `forceNext()` from a breakpoint to see one while tuning.             |
+| `RareEvents.HAIR_CHANCE`                | 0.6                           | Share of rare events that are a hair rather than a gate jolt.                                               |
+| `RareEvents.IDLE_S`                     | 6 s                           | How long the cursor has to be still before a rare event can start.                                          |
+
+## Look — `halationSpec.ts`
+
+The GLSL constants are at the top of `FRAG`:
+
+- `GRAIN` (0.06): grain strength.
+- `LEAK` (0.42) and `BURN` (0.6): peak opacity of the leaks and the burn.
+- `CELL` (0.055 of pane height, defined in TypeScript and passed to the shader) and `DUST_DENSITY` (0.09): mote spacing and how many cells hold a mote.
+- `MEANDER` (0.1 of a cell): how far each mote wanders inside its cell. 0.1 is the ceiling; above it a mote clips at the cell edge.
+
+The TypeScript constants are:
+
+- `WEAVE` and `JOLT`: the gate offsets, as a fraction of pane height. Keep `WEAVE` tiny, because it moves the dust and the light but never the grain.
+- `LEAK_PERIODS_S`: the breathing period of each leak.
+- `DUST_RISE` (0.008) and `DUST_SLIDE` (0.003): the dust field's drift, in pane heights per second. At these values a mote takes about 2 minutes to cross the pane.
+- `DUST_SWAY` (0.025) and `DUST_SWAY_S` (41): the field's lazy sideways sway.
+- `DUST_TILE` (64): the dust field repeats every 64 cells, so the drift can wrap without a jump. Keep it larger than the pane in cells.
+
+Behind the title text, the leaks, glints and half the grain are attenuated, so the title stays legible. The mask is the title's text box, never the full-width title element.
+
+## Cost
+
+`resScale` is 0.5 and the frame cap is 20 fps. At 0.25 the grain upscales into blocks. If GPU busy is over the target, try `__kampGL.tune({ fps: 15 })` first, then `scale: 0.4`.
+
+Measured on the Intel Mac on 2026-11-11, with dust drift: about 22% GPU busy (24% GPU active). That is just over the ~20% target and was accepted as is. Re-measure if a change adds per-pixel work.
+
+Measure these variants as described above:
+
+1. None
+2. Halation with the art visible
+3. Halation with the art hidden
+4. Halation with the cursor resting over the dust

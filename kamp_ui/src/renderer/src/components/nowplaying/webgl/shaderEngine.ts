@@ -30,6 +30,39 @@ export interface FrameInfo {
   level: number
   /** A one-off static frame (stopped, or reduced-motion), not a loop tick. */
   still: boolean
+  /**
+   * KAMP-774: the reduced-motion still, the background's designed rest frame.
+   * Narrower than `still`, which is also true for a palette or theme repaint
+   * while the pane is merely paused (those should show the paused state).
+   */
+  atRest: boolean
+  /** First loop frame after start(): drop anything in flight from before the stop. */
+  resumed: boolean
+  /**
+   * Increments once per real track change while the loop runs. Never on mount,
+   * a null transition, or while stopped, so a delight moment keyed to it can't
+   * fire on opening the pane or replay late on resume.
+   */
+  trackSeq: number
+  /** The art (and title) are shown (KAMP-769), eased 0..1 over ~0.6 s. */
+  artShown: number
+  /** The cursor is over the pane, eased 0..1. uPointer alone can't say: it recentres on leave. */
+  pointerActive: number
+  /** Seconds since the last pointer movement or leave, for idle-gated moments. */
+  pointerIdle: number
+  /**
+   * The title's text box in the canvas, normalised 0..1 with y down (DOM), or
+   * null when hidden. For keeping busy detail out from behind the title. It is
+   * the text extent, not the full-width title element.
+   */
+  titleRect: ContentRect | null
+}
+
+export interface ContentRect {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
 }
 
 /**
@@ -42,7 +75,7 @@ export interface FrameInfo {
  * again. Returning null from `onContext` is fatal, same as a shader that fails to
  * compile: the wrapper swaps to the static fallback.
  */
-export interface ShaderSpec<R = void> {
+export interface ShaderSpec<R = void, S = void> {
   /** Used in log lines. */
   name: string
   /** Full fragment source; start from glsl.ts (GLSL_HEADER + ...). */
@@ -55,9 +88,15 @@ export interface ShaderSpec<R = void> {
   onContext?(gl: WebGLRenderingContext, quad: GlQuad): R | null
   /** Free what onContext made. Not called on context loss (those objects are already dead). */
   dispose?(gl: WebGLRenderingContext, res: R): void
+  /**
+   * KAMP-774: per-engine CPU state (envelopes, schedulers). Created once per
+   * mount, so it survives a context restore (a burn in flight carries on), and is
+   * never shared between mounts even though the spec itself is a module constant.
+   */
+  createState?(): S
   /** Upload background-specific uniforms; the program is already bound. Put
    * delight-moment logic here, driven by `frame`. */
-  setUniforms?(gl: WebGLRenderingContext, quad: GlQuad, res: R, frame: FrameInfo): void
+  setUniforms?(gl: WebGLRenderingContext, quad: GlQuad, res: R, frame: FrameInfo, state: S): void
 }
 
 export interface ShaderEngineOptions {
@@ -77,6 +116,7 @@ const MAX_DPR = 2
 const FRAME_SLACK_MS = 1.5
 const CROSSFADE_MS = 1000
 const PARALLAX_TAU = 0.25 // seconds
+const PRESENCE_TAU = 0.6 // seconds; pointer presence and art visibility ease this slowly
 const STILL_TIME = 37.0 // clock for the reduced-motion still frame
 const RESTORE_TIMEOUT_MS = 2000
 
@@ -94,8 +134,9 @@ const CONTEXT_ATTRS: WebGLContextAttributes = {
 
 const DEFAULT_BG: [number, number, number] = [0x14 / 255, 0x14 / 255, 0x14 / 255]
 
-export class ShaderEngine<R = void> {
+export class ShaderEngine<R = void, S = void> {
   private quad: GlQuad | null = null
+  private readonly state: S
   // Boxed so an R of `undefined` (no onContext) still reads as "built".
   private res: { value: R } | null = null
   private loseExt: WEBGL_lose_context | null = null
@@ -110,6 +151,15 @@ export class ShaderEngine<R = void> {
   private pointerTargetY = 0
   private pointerX = 0
   private pointerY = 0
+  private pointerTargetActive = 0
+  private pointerActive = 0
+  private lastPointerAt = 0 // elapsed at the last pointer event
+
+  private trackSeq = 0
+  private artVisible = true
+  private artShown = 1
+  private titleRect: ContentRect | null = null
+  private resumed = false
 
   private readonly level = new LevelFollower()
 
@@ -131,12 +181,12 @@ export class ShaderEngine<R = void> {
    * Returns null when WebGL is unavailable or the background can't be built,
    * after reporting the reason through `opts.onFatal`.
    */
-  static create<R>(
+  static create<R, S>(
     canvas: HTMLCanvasElement,
-    spec: ShaderSpec<R>,
+    spec: ShaderSpec<R, S>,
     initial: Palette,
     opts: ShaderEngineOptions
-  ): ShaderEngine<R> | null {
+  ): ShaderEngine<R, S> | null {
     const gl = canvas.getContext('webgl', CONTEXT_ATTRS)
     if (!gl) {
       opts.onFatal('getContext(webgl) returned null (blocklist, HW accel off, or software-only)')
@@ -154,10 +204,11 @@ export class ShaderEngine<R = void> {
   private constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly gl: WebGLRenderingContext,
-    private readonly spec: ShaderSpec<R>,
+    private readonly spec: ShaderSpec<R, S>,
     initial: Palette,
     private readonly opts: ShaderEngineOptions
   ) {
+    this.state = spec.createState ? spec.createState() : (undefined as S)
     this.crossfade = new PaletteCrossfade(initial.colors, CROSSFADE_MS)
     this.fallback = initial.colors
     this.resScale = spec.resScale ?? DEFAULT_RES_SCALE
@@ -242,6 +293,38 @@ export class ShaderEngine<R = void> {
   setPointer(nx: number, ny: number): void {
     this.pointerTargetX = Math.max(-1, Math.min(1, nx))
     this.pointerTargetY = Math.max(-1, Math.min(1, ny))
+    this.pointerTargetActive = 1
+    this.lastPointerAt = this.elapsed
+  }
+
+  /** The cursor left the pane: recentre the parallax and let presence fade out. */
+  pointerLeave(): void {
+    this.pointerTargetX = this.pointerTargetY = 0
+    this.pointerTargetActive = 0
+    this.lastPointerAt = this.elapsed
+  }
+
+  /**
+   * The current track changed (id to a different id). Counted only while the
+   * loop runs: a change seen while stopped must not replay as a late moment.
+   */
+  trackChanged(): void {
+    if (this.running) this.trackSeq++
+  }
+
+  /** KAMP-769 art toggle. Eased while running; lands directly while stopped. */
+  setArtVisible(visible: boolean): void {
+    this.artVisible = visible
+    if (!this.running) {
+      this.artShown = visible ? 1 : 0
+      this.renderStatic()
+    }
+  }
+
+  /** The title's text box (normalised, DOM y-down), or null when hidden. */
+  setTitleRect(rect: ContentRect | null): void {
+    this.titleRect = rect
+    if (!this.running) this.renderStatic()
   }
 
   /** Feed one audio.level sample, stamped at arrival (not draw) time. */
@@ -273,6 +356,11 @@ export class ShaderEngine<R = void> {
     this.wantRunning = true
     if (this.running || !this.quad) return // lost: onRestored resumes
     this.pointerTargetX = this.pointerTargetY = this.pointerX = this.pointerY = 0
+    // Presence restarts from "away": the cursor is only over the pane once it moves.
+    this.pointerTargetActive = this.pointerActive = 0
+    this.lastPointerAt = this.elapsed
+    this.artShown = this.artVisible ? 1 : 0
+    this.resumed = true
     this.scheduleLoop()
   }
 
@@ -361,6 +449,9 @@ export class ShaderEngine<R = void> {
     const k = 1 - Math.exp(-dt / PARALLAX_TAU)
     this.pointerX += (this.pointerTargetX - this.pointerX) * k
     this.pointerY += (this.pointerTargetY - this.pointerY) * k
+    const kp = 1 - Math.exp(-dt / PRESENCE_TAU)
+    this.pointerActive += (this.pointerTargetActive - this.pointerActive) * kp
+    this.artShown += ((this.artVisible ? 1 : 0) - this.artShown) * kp
     if (ts - this.lastDraw < this.frameMs - FRAME_SLACK_MS) return
     this.lastDraw = ts
     this.drawFrame(this.elapsed, this.levelNow(), false)
@@ -382,6 +473,8 @@ export class ShaderEngine<R = void> {
     )
     gl.uniform3f(q.u('uBg'), this.bg[0], this.bg[1], this.bg[2])
     gl.uniform2f(q.u('uPointer'), centred ? 0 : this.pointerX, centred ? 0 : this.pointerY)
+    const pointerActive = centred ? 0 : this.pointerActive
+    gl.uniform1f(q.u('uPointerActive'), pointerActive)
     gl.uniform1f(q.u('uLevel'), level)
     // A still frame is not a step of the animation (its clock may even be the
     // fixed STILL_TIME), so it reports no elapsed time to delight-moment logic.
@@ -389,10 +482,20 @@ export class ShaderEngine<R = void> {
       dt: still ? 0 : time - this.lastDrawElapsed,
       elapsed: time,
       level,
-      still
+      still,
+      atRest: centred,
+      resumed: !still && this.resumed,
+      trackSeq: this.trackSeq,
+      artShown: this.artShown,
+      pointerActive,
+      pointerIdle: this.elapsed - this.lastPointerAt,
+      titleRect: this.titleRect
     }
-    if (!still) this.lastDrawElapsed = time
-    this.spec.setUniforms?.(gl, q, res.value, frame)
+    if (!still) {
+      this.lastDrawElapsed = time
+      this.resumed = false
+    }
+    this.spec.setUniforms?.(gl, q, res.value, frame, this.state)
     q.draw()
     if (!still) this.draws++
   }

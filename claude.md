@@ -96,6 +96,15 @@ A Now Playing background's cost lives mostly in the **GPU and compositor**, not 
 - **A fragment shader's cost is linear in pixels × frames, with no measurable fixed overhead.** So a shader background's cost can be budgeted through resolution scale, frame cap and shader complexity.
 - **Gate a spike option on something that works in the build you measure, not on `import.meta.env.DEV`.** `npm start` is `electron-vite preview`, a production build. A localStorage gate also hid the option from the user, so a branch that never merges should simply list it.
 
+## Shader backgrounds that must not strobe — KAMP-774
+- **Never lerp two independent noise fields.** A linear crossfade between grain seeds halves the variance at the midpoint, so the grain visibly softens on every re-seed. Normalise the deviation by `sqrt((1-m)²+m²)` (`grainMix` in `shared/halationTiming.ts`, mirrored in GLSL).
+- **Keep weave and parallax off per-pixel noise.** A sub-pixel offset of hash-noise coordinates re-samples every pixel each frame, which is exactly the strobe the re-seed schedule avoids. Move the light and the dust, never the grain.
+- **A delight moment keyed to "track changed" must ignore mount.** A naive `useEffect([trackId])` fires on pane open, on StrictMode's second mount, and on the app's null→id restore. `ShaderCanvas` counts only id→different-id changes, and the engine ignores changes while stopped (`FrameInfo.trackSeq`).
+- **`still` is not "reduced motion".** It is also true for a paused palette or theme repaint. Use `FrameInfo.atRest` for the designed still frame.
+- **Shader-side clocks lose float32 precision over hours.** Compute slow motion on the CPU in float64. Wrap any shader clock at a period P where every frequency is an integer multiple of 1/P, so the wrap is seamless.
+- **GLSL `pow(x, y)` is undefined for `x < 0`.** Square by hand.
+- **Don't run `prettier --write` on a whole directory.** It reflowed the unrelated tables in `webgl/README.md`. Name the files you changed.
+
 ## Memory optimization
 When the goal is a runtime property (memory released, latency reduced), write a test that measures that property *before* implementing the mechanism. Mechanism tests (e.g. "modules removed from sys.modules") can pass while the property test fails — this is exactly what happened with the `sys.modules` eviction approach, which passed all tests but left pymalloc-held pages resident. A property test (measuring process RSS before and after) would have caught this immediately and driven the correct approach (subprocess isolation) from the start.
 

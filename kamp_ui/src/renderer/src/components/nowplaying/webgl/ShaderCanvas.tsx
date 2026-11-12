@@ -13,29 +13,54 @@ import { useStore } from '../../../store'
 import { accentPalette } from '../palette'
 import type { NowPlayingEngineProps } from '../registry'
 import { registerGLTarget } from './devHooks'
-import { ShaderEngine, type ShaderSpec } from './shaderEngine'
+import { ShaderEngine, type ContentRect, type ShaderSpec } from './shaderEngine'
 import { StillBackdrop } from './StillBackdrop'
 import { accentHex, bgHex, useAlbumPalette } from './themeColors'
 
-interface ShaderCanvasProps<R> extends NowPlayingEngineProps {
+interface ShaderCanvasProps<R, S> extends NowPlayingEngineProps {
   /** Must be a module-level constant: the engine is built once per mount. */
-  spec: ShaderSpec<R>
+  spec: ShaderSpec<R, S>
 }
 
-export function ShaderCanvas<R>(props: ShaderCanvasProps<R>): React.JSX.Element {
+/**
+ * The title's TEXT box relative to the canvas, normalised (DOM y-down), or null
+ * when the title is hidden (it hides with the art, KAMP-769).
+ *
+ * The text, not the element: `.now-playing-title` and `.now-playing-meta` are
+ * full-width, so their boxes span the whole pane and anything muted "behind the
+ * title" would be muted everywhere. The art is opaque, so it needs no rect at all.
+ */
+function measureTitle(canvas: HTMLCanvasElement): ContentRect | null {
+  const title = canvas.closest('.now-playing')?.querySelector('.now-playing-title')
+  if (!title) return null
+  const c = canvas.getBoundingClientRect()
+  if (c.width === 0 || c.height === 0) return null
+  const range = document.createRange()
+  range.selectNodeContents(title)
+  const t = range.getBoundingClientRect()
+  if (t.width === 0 || t.height === 0) return null
+  return {
+    x0: (t.left - c.left) / c.width,
+    x1: (t.right - c.left) / c.width,
+    y0: (t.top - c.top) / c.height,
+    y1: (t.bottom - c.top) / c.height
+  }
+}
+
+export function ShaderCanvas<R, S>(props: ShaderCanvasProps<R, S>): React.JSX.Element {
   const [failed, setFailed] = useState(false)
   if (failed) return <StillBackdrop artUrl={props.artUrl} />
   return <ShaderGL {...props} onFatal={() => setFailed(true)} />
 }
 
-function ShaderGL<R>({
+function ShaderGL<R, S>({
   spec,
   active,
   artUrl,
   onFatal
-}: ShaderCanvasProps<R> & { onFatal: () => void }): React.JSX.Element {
+}: ShaderCanvasProps<R, S> & { onFatal: () => void }): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const engineRef = useRef<ShaderEngine<R> | null>(null)
+  const engineRef = useRef<ShaderEngine<R, S> | null>(null)
   const onFatalRef = useRef(onFatal)
   useEffect(() => {
     onFatalRef.current = onFatal
@@ -68,8 +93,13 @@ function ShaderGL<R>({
     if (!engine) return
     engineRef.current = engine
     engine.setBg(bgHex())
+    engine.setArtVisible(useStore.getState().nowPlayingArtVisible)
+    engine.setTitleRect(measureTitle(canvas))
     engine.resize()
-    const ro = new ResizeObserver(() => engine.resize())
+    const ro = new ResizeObserver(() => {
+      engine.setTitleRect(measureTitle(canvas))
+      engine.resize()
+    })
     ro.observe(canvas)
     const unregister = registerGLTarget(engine.devTarget())
     // Subscribe (not poll from the tick) so each ~20Hz sample is stamped at
@@ -105,6 +135,34 @@ function ShaderGL<R>({
 
   useAlbumPalette(artUrl, (pal) => engineRef.current?.setPalette(pal))
 
+  // KAMP-774: only an id-to-different-id change is a track change. The first
+  // value (mount, StrictMode's second mount) and null transitions (the app's
+  // restore, "Nothing playing") are not, so a delight moment never fires on
+  // opening the pane. The engine further ignores changes while stopped.
+  const trackId = useStore((s) => s.player.current_track?.id ?? null)
+  const prevTrackId = useRef<number | null>(null)
+  useEffect(() => {
+    const prev = prevTrackId.current
+    prevTrackId.current = trackId
+    const engine = engineRef.current
+    const canvas = canvasRef.current
+    if (!engine || !canvas) return
+    // A new title has a new text width.
+    engine.setTitleRect(measureTitle(canvas))
+    if (prev != null && trackId != null && prev !== trackId) engine.trackChanged()
+  }, [trackId])
+
+  // The canvas ResizeObserver doesn't fire on an art toggle, so re-measure here.
+  // Effects run after commit, so the title is already in (or out of) the DOM.
+  const artVisible = useStore((s) => s.nowPlayingArtVisible)
+  useEffect(() => {
+    const engine = engineRef.current
+    const canvas = canvasRef.current
+    if (!engine || !canvas) return
+    engine.setArtVisible(artVisible)
+    engine.setTitleRect(measureTitle(canvas))
+  }, [artVisible])
+
   const shouldAnimate = active && !reducedMotion && !hidden
   useEffect(() => {
     const engine = engineRef.current
@@ -123,7 +181,7 @@ function ShaderGL<R>({
           ((e.clientY - rect.top) / rect.height) * 2 - 1
         )
       }
-      const onLeave = (): void => engine.setPointer(0, 0)
+      const onLeave = (): void => engine.pointerLeave()
       pane.addEventListener('pointermove', onMove, { passive: true })
       pane.addEventListener('pointerleave', onLeave, { passive: true })
       return () => {

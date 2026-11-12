@@ -16,6 +16,7 @@
 
 import { clampDt, poissonGap, smoothstep } from './rareSchedule.ts'
 import { clampAbs, lerp, pick, seededRng, type PaneRect } from './particleUtil.ts'
+import { RecolorDips } from './recolorDips.ts'
 
 export type { PaneRect }
 
@@ -140,9 +141,6 @@ export class SnowField {
   readonly swayPhase = new Float64Array(POOL_SIZE)
   readonly baseAlpha = new Float64Array(POOL_SIZE)
   readonly slot = new Uint8Array(POOL_SIZE)
-  readonly gen = new Uint32Array(POOL_SIZE)
-  readonly swapAt = new Float64Array(POOL_SIZE).fill(-1)
-  readonly swapGen = new Uint32Array(POOL_SIZE)
   readonly swirl = new Float64Array(POOL_SIZE)
   readonly swirlSense = new Int8Array(POOL_SIZE)
   readonly swirlCX = new Float64Array(POOL_SIZE)
@@ -155,8 +153,6 @@ export class SnowField {
 
   /** Seconds the loop has run. Every schedule is on this clock, so a stop freezes it. */
   elapsed = 0
-  /** The palette generation new flakes are born into. */
-  generation = 0
   /** `elapsed` at which the close flake is next due. */
   nextCloseAt: number
   /** Pool index of the close flake, or -1. */
@@ -165,13 +161,14 @@ export class SnowField {
   readonly inflow = { top: 0, left: 0, right: 0 }
 
   private readonly rng: () => number
+  private readonly recolor: RecolorDips
+  private readonly isLive = (i: number): boolean => this.kind[i] !== KIND_DEAD
   private readonly density: number
   private aspect = 1
   private art: PaneRect | null = null
   private flakes = 0
   private nearLive = 0
   private fillAcc = 0
-  private floorGen = 0
   private freeHint = 0
   private ticks = 0
 
@@ -192,8 +189,24 @@ export class SnowField {
 
   constructor(rng: () => number, opts: SnowFieldOptions = {}) {
     this.rng = rng
+    this.recolor = new RecolorDips(POOL_SIZE, rng, {
+      maxGenerations: MAX_GENERATIONS,
+      spreadS: SWAP_SPREAD_S,
+      dipS: SWAP_DIP_S,
+      swapAtDip: SWAP_AT_DIP
+    })
     this.density = opts.density ?? DENSITY
     this.nextCloseAt = this.closeGap()
+  }
+
+  /** Each flake's palette generation. Read by the engine to pick a sprite sheet. */
+  get gen(): Uint32Array {
+    return this.recolor.gen
+  }
+
+  /** The palette generation new flakes are born into. */
+  get generation(): number {
+    return this.recolor.generation
   }
 
   // --- inputs ------------------------------------------------------------------------
@@ -253,26 +266,9 @@ export class SnowField {
    * dip out and back in the new colors.
    */
   setPalette(running: boolean): number {
-    this.generation++
-    if (!running) {
-      this.floorGen = this.generation
-      for (let i = 0; i < POOL_SIZE; i++) {
-        if (this.kind[i] === KIND_DEAD) continue
-        this.gen[i] = this.generation
-        this.swapAt[i] = -1
-      }
-    } else {
-      this.floorGen = Math.max(this.floorGen, this.generation - MAX_GENERATIONS + 1)
-      for (let i = 0; i < POOL_SIZE; i++) {
-        if (this.kind[i] === KIND_DEAD) continue
-        const swapping = this.swapAt[i] >= 0
-        if (this.gen[i] >= this.floorGen && !swapping) continue
-        this.swapGen[i] = this.generation
-        if (!swapping) this.swapAt[i] = this.elapsed + this.rng() * SWAP_SPREAD_S
-      }
-    }
+    const gen = this.recolor.setPalette(running, this.elapsed, this.isLive)
     if (this.gustPending) this.releaseGust()
-    return this.generation
+    return gen
   }
 
   /** Called on start(): drop everything that would otherwise replay late. */
@@ -309,11 +305,7 @@ export class SnowField {
 
   /** The lowest palette generation any live flake still shows. Older sheets can go. */
   oldestGenerationInUse(): number {
-    let min = this.generation
-    for (let i = 0; i < POOL_SIZE; i++) {
-      if (this.kind[i] !== KIND_DEAD && this.gen[i] < min) min = this.gen[i]
-    }
-    return min
+    return this.recolor.oldestInUse(this.isLive)
   }
 
   /** True if flake i was reborn on the boundary during the latest tick. */
@@ -323,11 +315,7 @@ export class SnowField {
 
   /** 1, or the recolor dip: 1 -> 0 -> 1 with zero slope at both ends. */
   dip(i: number): number {
-    const at = this.swapAt[i]
-    if (at < 0) return 1
-    const u = (this.elapsed - at) / SWAP_DIP_S
-    if (u <= 0 || u >= 1) return 1
-    return (Math.cos(2 * Math.PI * u) + 1) / 2
+    return this.recolor.dip(i, this.elapsed)
   }
 
   alpha(i: number): number {
@@ -436,7 +424,7 @@ export class SnowField {
       const kind = this.kind[i]
       if (kind === KIND_DEAD) continue
       const age = (this.age[i] += dt)
-      this.stepSwap(i)
+      this.recolor.step(i, this.elapsed)
       if (kind === KIND_CLOSE) {
         this.stepClose(i, age)
         continue
@@ -494,19 +482,6 @@ export class SnowField {
     this.dragY[i] = clampAbs(this.dragY[i] + this.cursorVy * DRAG_GAIN * w * dt, DRAG_MAX)
   }
 
-  /** Advance a recolor dip; the color changes only near the bottom of it. */
-  private stepSwap(i: number): void {
-    const at = this.swapAt[i]
-    if (at < 0 || this.elapsed < at) return
-    if (this.gen[i] !== this.swapGen[i] && this.dip(i) <= SWAP_AT_DIP) {
-      this.gen[i] = this.swapGen[i]
-    }
-    if (this.elapsed - at >= SWAP_DIP_S) {
-      // A later skip retargeted it after the bottom: dip again rather than snap.
-      this.swapAt[i] = this.gen[i] !== this.swapGen[i] ? this.elapsed : -1
-    }
-  }
-
   // --- births ------------------------------------------------------------------------
 
   private pickLayer(): number {
@@ -541,8 +516,7 @@ export class SnowField {
     this.swayPhase[i] = r() * 2 * Math.PI
     this.baseAlpha[i] = lerp(ALPHA_SPREAD[0], ALPHA_SPREAD[1], r())
     this.slot[i] = pick(SLOT_WEIGHTS, r())
-    this.gen[i] = this.generation
-    this.swapAt[i] = -1
+    this.recolor.assign(i)
     this.swirl[i] = this.dragX[i] = this.dragY[i] = 0
     this.swirlSense[i] = 0
   }
@@ -662,8 +636,7 @@ export class SnowField {
     this.age[i] = 0
     this.swayPhase[i] = phase
     this.slot[i] = 0
-    this.gen[i] = this.generation
-    this.swapAt[i] = -1
+    this.recolor.assign(i)
     this.spawnX[i] = peakX - this.closeSway(phase, tPeak)
     this.spawnY[i] = peakY - CLOSE_FALL * tPeak
     this.x[i] = this.spawnX[i]

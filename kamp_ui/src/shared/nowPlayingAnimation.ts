@@ -11,7 +11,8 @@ export const NOW_PLAYING_ANIMATION_IDS = [
   'borealis',
   'tannhauser',
   'sparks',
-  'wintermute'
+  'wintermute',
+  'castalia'
 ] as const
 export type NowPlayingAnimationId = (typeof NOW_PLAYING_ANIMATION_IDS)[number]
 

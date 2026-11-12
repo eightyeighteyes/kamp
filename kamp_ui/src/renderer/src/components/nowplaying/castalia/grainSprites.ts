@@ -21,9 +21,10 @@ export interface GrainSheet {
 }
 
 // Pulled toward white so a dark swatch still reads as sand on a dark plate.
-const LIGHT_MIX = 0.3
+// 0.3 left dark album colors muddy against the plate in review.
+const LIGHT_MIX = 0.5
 // The halo sits under the core at this strength; the core is full strength.
-const HALO_ALPHA = 0.55
+const HALO_ALPHA = 0.8
 
 function lighten(c: RGB): RGB {
   return {

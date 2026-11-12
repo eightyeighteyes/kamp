@@ -504,7 +504,7 @@ Identity comes from `setIdentity(albumKey, trackKey)`, which the lifecycle calls
 ## Look and cost — `castaliaEngine.ts` and `grainSprites.ts`
 
 - `BLUR_CSS` (2 px): the baked halo. It is part of the animation, not a user setting. Only the halo is blurred. The one-pixel core is drawn crisp over it, or the grain vanishes.
-- `LIGHT_MIX` (0.3) and `HALO_ALPHA` (0.55): how far each swatch is pulled toward white, and the halo strength.
+- `CORE_CSS` (0.75 px radius, a 1.5 px grain), `GRAIN_ALPHA` (0.6–0.9), `LIGHT_MIX` (0.5) and `HALO_ALPHA` (0.8): grain size, opacity, how far each swatch is pulled toward white, and the halo strength. The ticket's 0.3–0.5 alpha with a one-pixel grain and 0.3 lightening was nearly invisible on the dark plate, so all four were raised together.
 - `TITLE_QUIET` (0.3): grain alpha behind the title text.
 - `RES_SCALE` (1): grains are one CSS pixel, so they need the full resolution that Sparks and Wintermute halve. `DEFAULT_FPS` is 30.
 

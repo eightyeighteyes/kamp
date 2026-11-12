@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   CastaliaPlate,
+  GRAIN_ALPHA,
   GRAINS,
   MODES,
   NEIGHBOURS,
@@ -505,7 +506,8 @@ test('while running, every grain reaches the new palette, only at the bottom of 
   assert.equal(p.oldestGenerationInUse(), gen)
 })
 
-test('grain alpha stays dim, within the requirement', () => {
+test('grain alpha stays within its range, so no grain is lost on the plate', () => {
   const p = plate()
-  for (let i = 0; i < GRAINS; i++) assert.ok(p.alpha(i) >= 0.3 && p.alpha(i) <= 0.5)
+  const [lo, hi] = GRAIN_ALPHA
+  for (let i = 0; i < GRAINS; i++) assert.ok(p.alpha(i) >= lo && p.alpha(i) <= hi)
 })

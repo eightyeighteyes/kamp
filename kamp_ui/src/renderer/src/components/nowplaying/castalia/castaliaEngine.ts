@@ -26,7 +26,9 @@ const DEFAULT_FPS = 30
 const FRAME_SLACK_MS = 1.5
 // The grain's baked halo, CSS px. Part of the animation's definition, not a user setting.
 const BLUR_CSS = 2
-const CORE_CSS = 0.5 // the grain's radius: a one-pixel grain
+// The grain's radius. 0.5 (a one-pixel grain) nearly vanished on the dark plate
+// in review; 0.75 is a 1.5 px grain, still fine sand.
+const CORE_CSS = 0.75
 const TITLE_QUIET = 0.3 // grain alpha behind the title text
 const TITLE_FEATHER = 0.03 // of pane height
 const MIN_ALPHA = 0.01

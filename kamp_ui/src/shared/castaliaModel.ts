@@ -131,7 +131,9 @@ const WALL_RESTITUTION = 0.5
 // smooth falloff onto the line, never a hard |f| < eps edge (KAMP-774).
 const SETTLED_W = 0.04
 const SETTLE_TRIES = 80
-const GRAIN_ALPHA: [number, number] = [0.3, 0.5]
+// The ticket asked for 0.3–0.5. On a near-black plate, a one-pixel grain at that
+// alpha was close to invisible in review, so this was raised.
+export const GRAIN_ALPHA: [number, number] = [0.6, 0.9]
 // Palette slot weights: the dominant swatches carry the figure.
 const SLOT_WEIGHTS = [0.32, 0.24, 0.18, 0.14, 0.12]
 

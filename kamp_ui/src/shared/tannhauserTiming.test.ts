@@ -9,12 +9,16 @@ import {
   DROP_PERIODS_S,
   FOG_FULL,
   FogMask,
+  LIGHTS,
+  LIGHT_DIFFUSE,
+  LIGHT_DRIFT,
   MASK_H,
   MIN_FALLOFF,
   SLIDE_STRIPS,
   SliderField,
   StrokeTracker,
   dropPhase,
+  lightField,
   maskWidth,
   type Slider,
   type Trail
@@ -575,4 +579,50 @@ test('drop phases advance smoothly even ten hours in', () => {
   const step = (x: number, y: number): number => Math.min(Math.abs(y - x), 1 - Math.abs(y - x))
   assert.ok(step(a0, a1) < 0.01)
   assert.ok(step(b0, b1) < 0.01)
+})
+
+// --- lights ---------------------------------------------------------------------------
+
+const xs = (buf: Float32Array): number[] =>
+  Array.from({ length: LIGHTS }, (_, i) => buf[i * 4] / ASPECT)
+
+test('lightField: with the art shown, every light sits in a side strip', () => {
+  const buf = lightField([1.1, 2.3], 1, ASPECT, new Float32Array(LIGHTS * 4))
+  const slack = LIGHT_DRIFT / ASPECT
+  for (const x of xs(buf)) {
+    const inStrip = SLIDE_STRIPS.some(([a, b]) => x >= a - slack && x <= b + slack)
+    assert.ok(inStrip, `light at x=${x} is behind the art`)
+  }
+})
+
+test('lightField: with the art hidden, the lights spread across the pane', () => {
+  const buf = lightField([1.1, 2.3], 0, ASPECT, new Float32Array(LIGHTS * 4))
+  assert.ok(
+    xs(buf).some((x) => x > 0.3 && x < 0.7),
+    'some light should cross the middle'
+  )
+})
+
+test('lightField: stays on the pane vertically', () => {
+  for (const d of [0, 1.7, 3.9, 6.2]) {
+    const buf = lightField([d, d * 1.3], 0.5, ASPECT, new Float32Array(LIGHTS * 4))
+    for (let i = 0; i < LIGHTS; i++) {
+      assert.ok(buf[i * 4 + 1] >= 0.1 - LIGHT_DRIFT && buf[i * 4 + 1] <= 0.9 + LIGHT_DRIFT)
+    }
+  }
+})
+
+test('lightField: the diffuse falloff is a wider copy of the sharp one', () => {
+  const buf = lightField([0, 0], 0, ASPECT, new Float32Array(LIGHTS * 4))
+  for (let i = 0; i < LIGHTS; i++) {
+    const invS = buf[i * 4 + 2]
+    const invD = buf[i * 4 + 3]
+    assert.ok(invS > 0 && invD > 0)
+    assert.ok(Math.abs(invS / invD - LIGHT_DIFFUSE * LIGHT_DIFFUSE) < 1e-3)
+  }
+})
+
+test('lightField: fills the buffer it is given, so the render loop allocates nothing', () => {
+  const buf = new Float32Array(LIGHTS * 4)
+  assert.equal(lightField([0, 0], 0, ASPECT, buf), buf)
 })

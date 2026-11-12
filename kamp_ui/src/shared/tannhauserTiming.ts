@@ -664,3 +664,48 @@ export function dropPhase(t: number): [number, number] {
   const phase = (p: number): number => (((t % p) + p) % p) / p
   return [phase(DROP_PERIODS_S[0]), phase(DROP_PERIODS_S[1])]
 }
+
+// --- lights behind the glass ----------------------------------------------------------
+
+/** How many soft lights sit behind the glass: one per palette colour. */
+export const LIGHTS = 5
+/** How far each light drifts from its home, pane heights. */
+export const LIGHT_DRIFT = 0.07
+/** The diffuse (through-fog) falloff's radius, as a multiple of the sharp one. */
+export const LIGHT_DIFFUSE = 2.6
+
+const frac = (x: number): number => x - Math.floor(x)
+
+/**
+ * Where the lights are this frame, as LIGHTS × (x, y, 1/rs², 1/rd²): centre in
+ * pane-height units (y up, as the shader's q), then the inverse squared radii of
+ * the sharp and diffuse falloffs, so the shader multiplies instead of dividing.
+ *
+ * Every pixel used to work this out for itself, with two trig calls per light,
+ * though it is the same for the whole frame. `drift` is the pair of drift angles
+ * (0..2π), `shown` the eased art visibility: with the art shown, the lights
+ * gather in the side strips beside it. Fills and returns `out`.
+ */
+export function lightField(
+  drift: [number, number],
+  shown: number,
+  aspect: number,
+  out: Float32Array
+): Float32Array {
+  const [left, right] = SLIDE_STRIPS
+  for (let i = 0; i < LIGHTS; i++) {
+    const bx = frac(0.17 + i * 0.381966) // golden-ratio spread across the width
+    const by = frac(0.62 + i * 0.618034)
+    const strip =
+      bx < 0.5
+        ? left[0] + (left[1] - left[0]) * bx * 2
+        : right[0] + (right[1] - right[0]) * (bx * 2 - 1)
+    const rs = 0.07 + 0.035 * frac(i * 0.7548)
+    const rd = rs * LIGHT_DIFFUSE
+    out[i * 4] = (bx + (strip - bx) * shown) * aspect + LIGHT_DRIFT * Math.sin(drift[0] + i * 1.9)
+    out[i * 4 + 1] = by * 0.8 + 0.1 + LIGHT_DRIFT * Math.cos(drift[1] + i * 2.7)
+    out[i * 4 + 2] = 1 / (rs * rs)
+    out[i * 4 + 3] = 1 / (rd * rd)
+  }
+  return out
+}

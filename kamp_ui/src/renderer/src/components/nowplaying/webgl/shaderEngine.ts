@@ -73,6 +73,13 @@ export interface FrameInfo {
    * the text extent, not the full-width title element.
    */
   titleRect: ContentRect | null
+  /**
+   * KAMP-772: the opaque album art's box, normalised with y down, already inset
+   * past its rounded corners, or null when the art is hidden. Nothing drawn
+   * inside it is ever seen, so a shader can skip that work (artMask.ts). It is
+   * present or absent with the art element itself, not eased like artShown.
+   */
+  artRect: ContentRect | null
 }
 
 export interface ContentRect {
@@ -180,6 +187,7 @@ export class ShaderEngine<R = void, S = void> {
   private artVisible = true
   private artShown = 1
   private titleRect: ContentRect | null = null
+  private artRect: ContentRect | null = null
   private resumed = false
 
   private readonly level = new LevelFollower()
@@ -347,9 +355,13 @@ export class ShaderEngine<R = void, S = void> {
     }
   }
 
-  /** The title's text box (normalised, DOM y-down), or null when hidden. */
-  setTitleRect(rect: ContentRect | null): void {
-    this.titleRect = rect
+  /**
+   * The title's text box and the art's opaque box (normalised, DOM y-down), each
+   * null when hidden. Set together so a paused pane repaints once, not twice.
+   */
+  setContentRects(title: ContentRect | null, art: ContentRect | null): void {
+    this.titleRect = title
+    this.artRect = art
     if (!this.running) this.renderStatic()
   }
 
@@ -517,7 +529,8 @@ export class ShaderEngine<R = void, S = void> {
       pointerIdle: this.elapsed - this.lastPointerAt,
       pointerAt: { x: this.pointerAtX, y: this.pointerAtY },
       pointerEpoch: this.pointerEpoch,
-      titleRect: this.titleRect
+      titleRect: this.titleRect,
+      artRect: this.artRect
     }
     if (!still) {
       this.lastDrawElapsed = time

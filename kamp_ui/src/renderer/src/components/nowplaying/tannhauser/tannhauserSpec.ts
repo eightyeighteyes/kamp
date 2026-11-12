@@ -26,12 +26,15 @@
 import {
   BreathEnvelope,
   FogMask,
+  LIGHTS,
   MASK_H,
   SliderField,
   StrokeTracker,
   dropPhase,
+  lightField,
   maskWidth
 } from '../../../../../shared/tannhauserTiming'
+import { GLSL_ART_SKIP, setArtUniform } from '../webgl/artMask'
 import type { GlQuad } from '../webgl/glQuad'
 import { GLSL_DITHER, GLSL_HEADER, GLSL_NOISE } from '../webgl/glsl'
 import type { ShaderSpec } from '../webgl/shaderEngine'
@@ -46,15 +49,38 @@ const SLOTS = SliderField.SLOTS
 const TRAIL_STAMP = { floor: SliderField.TRAIL_FLOOR, soft: true }
 const TAU = Math.PI * 2
 
-const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}${GLSL_TITLE_MASK}
+const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}${GLSL_TITLE_MASK}${GLSL_ART_SKIP}
 uniform sampler2D uFog;  // fog mask, row 0 = top of the pane; 1 = fogged
 uniform float uFogOn;    // 1 = use the mask; 0 = the designed still (all fogged)
 uniform vec2 uBreath;    // front progress 0..1, strength 0..1
 uniform vec2 uDrops;     // fine and coarse bead phases, 0..1
 uniform vec4 uSliders[${SLOTS}]; // x, y (0..1, DOM y-down), radius (pane heights), alpha
 uniform float uStretch[${SLOTS}]; // vertical elongation, 1 at rest
-uniform vec2 uDrift;     // light drift angles, 0..2pi
+uniform vec4 uLights[${LIGHTS}];  // centre (pane heights, y up), 1/rs², 1/rd² (lightField)
 uniform float uArtShown;
+
+// Sine-free hashes (Dave Hoskins' hash12/hash22). The sin() hashes in GLSL_NOISE
+// cost a transcendental each, and the beads and frost take about 16 per pixel.
+float hashNS(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 hashNS2(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+float frostNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hashNS(i);
+  float b = hashNS(i + vec2(1.0, 0.0));
+  float c = hashNS(i + vec2(0.0, 1.0));
+  float d = hashNS(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
 
 const int SLOTS = ${SLOTS};
 const float FINE_CELL = 0.03;      // pane heights
@@ -93,17 +119,17 @@ vec3 dropShape(vec2 d, float r, float stretch) {
 vec4 dropIn(vec2 q, float cell, float density, float maxR, float phase, float seed) {
   // Shift each row by its own amount, so the cells never line up in columns.
   float row = floor(q.y / cell);
-  vec2 sq = vec2(q.x + hash1(vec2(row, seed)) * cell, q.y);
+  vec2 sq = vec2(q.x + hashNS(vec2(row, seed)) * cell, q.y);
   vec2 id = floor(sq / cell);
-  vec2 h = hash2(id + seed);
-  float exists = step(hash1(id + seed * 1.37), density);
+  vec2 h = hashNS2(id + seed);
+  float exists = step(hashNS(id + seed * 1.37), density);
   float life = fract(phase + h.x * 0.73 + h.y * 0.29);
   // Forms and swells over most of its life, then is drawn away. Zero at both
   // ends, so the life wrap never shows.
   float grow = smoothstep(0.0, 0.6, life) * (1.0 - smoothstep(0.88, 1.0, life));
   float size = 0.25 + 0.75 * h.y * h.y;        // mostly small, a few large
   float r = cell * maxR * size * grow;
-  vec2 j = hash2(id + seed + 17.0) - 0.5;
+  vec2 j = hashNS2(id + seed + 17.0) - 0.5;
   // 1.3: the sagging shape reaches about 1.1 radii from its anchor.
   vec2 c = (id + 0.5 + j * (1.0 - 2.6 * maxR * size)) * cell;
   vec3 s = dropShape(sq - c, max(r, 1e-4), 1.0);
@@ -113,6 +139,8 @@ vec4 dropIn(vec2 q, float cell, float density, float maxR, float phase, float se
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uRes;
+  // The art is opaque: nothing drawn behind it is ever seen.
+  if (behindArt(uv)) { gl_FragColor = vec4(uBg, 1.0); return; }
   float aspect = uRes.x / uRes.y;
   vec2 q = vec2(uv.x * aspect, uv.y);   // pane-height units
   float shown = uArtShown;
@@ -142,7 +170,11 @@ void main() {
   for (int i = 0; i < SLOTS; i++) {
     vec4 s = uSliders[i];
     if (s.w <= 0.0) continue;
-    vec3 sh = dropShape(q - vec2(s.x * aspect, 1.0 - s.y), max(s.z, 1e-4), uStretch[i]);
+    // dropShape covers at most 1 radius across and about 1.05 stretched radii
+    // down and up from the anchor, so a box test skips nearly every pixel.
+    vec2 rel = q - vec2(s.x * aspect, 1.0 - s.y);
+    if (abs(rel.x) > 1.1 * s.z || abs(rel.y) > 1.15 * s.z * uStretch[i]) continue;
+    vec3 sh = dropShape(rel, max(s.z, 1e-4), uStretch[i]);
     float c = sh.z * s.w;
     if (c > drop.w) drop = vec4(sh.xy, s.z, c);
   }
@@ -158,20 +190,14 @@ void main() {
   vec3 sumD = vec3(0.0);
   float wS = 0.0;
   float wD = 0.0;
-  for (int i = 0; i < 5; i++) {
-    float fi = float(i);
-    float bx = fract(0.17 + fi * 0.381966);   // golden-ratio spread across the width
-    float by = fract(0.62 + fi * 0.618034);
-    // With the art shown, the lights gather in the side strips beside it.
-    float strip = bx < 0.5 ? mix(0.04, 0.2, bx * 2.0) : mix(0.8, 0.96, bx * 2.0 - 1.0);
-    vec2 c = vec2(mix(bx, strip, shown) * aspect, by * 0.8 + 0.1)
-           + 0.07 * vec2(sin(uDrift.x + fi * 1.9), cos(uDrift.y + fi * 2.7));
-    float rs = 0.07 + 0.035 * fract(fi * 0.7548);
-    float rd = rs * 2.6;
-    vec2 d = lq - c;
+  for (int i = 0; i < ${LIGHTS}; i++) {
+    // Placed on the CPU once per frame (lightField): with the art shown they
+    // gather in the side strips beside it.
+    vec4 L = uLights[i];
+    vec2 d = lq - L.xy;
     float dd = dot(d, d);
-    float ws = exp(-dd / (rs * rs));
-    float wd = exp(-dd / (rd * rd));
+    float ws = exp(-dd * L.z);
+    float wd = exp(-dd * L.w);
     sumS += uPalette[i] * ws;
     sumD += uPalette[i] * wd;
     wS += ws;
@@ -193,7 +219,7 @@ void main() {
   vec3 fogged = mix(mist, colD, aD * GLOW_FOG * glowK);
   fogged = mix(fogged, veil, FRESH * cover);
   // Frost: a faint static grain in the fog only.
-  fogged += (valueNoise(q * 90.0) - 0.5) * 0.024 * (1.0 - 0.5 * light);
+  fogged += (frostNoise(q * 90.0) - 0.5) * 0.024 * (1.0 - 0.5 * light);
   vec3 clear = mix(uBg, colS, aS * GLOW_CLEAR * glowK);
   vec3 col = mix(clear, fogged, dens);
 
@@ -238,6 +264,9 @@ export interface TannhauserState {
   // Reused every frame, so the render loop allocates nothing for the sliders.
   sliderBuf: Float32Array
   stretchBuf: Float32Array
+  lightBuf: Float32Array
+  // The lights' drift angles, reused every frame.
+  drift: [number, number]
 }
 
 /**
@@ -318,10 +347,12 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
     sliders: new SliderField(Math.random),
     lastTrackSeq: 0,
     sliderBuf: new Float32Array(SLOTS * 4),
-    stretchBuf: new Float32Array(SLOTS)
+    stretchBuf: new Float32Array(SLOTS),
+    lightBuf: new Float32Array(LIGHTS * 4),
+    drift: [0, 0]
   }),
   setUniforms(gl, quad, res, frame, state) {
-    const { mask, stroke, breath, sliders, sliderBuf, stretchBuf } = state
+    const { mask, stroke, breath, sliders, sliderBuf, stretchBuf, drift } = state
     const t = frame.elapsed
     const aspect = gl.drawingBufferWidth / gl.drawingBufferHeight
     // Follow the pane's aspect. A resample, not a reset, so wipes stay put.
@@ -374,7 +405,8 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
       gl.uniform1f(quad.u('uFogOn'), 0)
       gl.uniform2f(quad.u('uBreath'), 0, 0)
       gl.uniform2f(quad.u('uDrops'), STILL_DROPS[0], STILL_DROPS[1])
-      gl.uniform2f(quad.u('uDrift'), STILL_DRIFT[0], STILL_DRIFT[1])
+      drift[0] = STILL_DRIFT[0]
+      drift[1] = STILL_DRIFT[1]
     } else {
       gl.uniform1f(quad.u('uFogOn'), 1)
       gl.uniform2f(quad.u('uBreath'), breath.progress, breath.amount)
@@ -389,14 +421,17 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
         sliderBuf[i * 4 + 3] = s.alpha
         stretchBuf[i] = s.stretch
       }
-      // Wrapped in float64, so the shader's sin() only ever sees 0..2π.
+      // Wrapped in float64, so sin() only ever sees 0..2π.
       const angle = (p: number): number => (TAU * (((t % p) + p) % p)) / p
-      gl.uniform2f(quad.u('uDrift'), angle(DRIFT_PERIODS_S[0]), angle(DRIFT_PERIODS_S[1]))
+      drift[0] = angle(DRIFT_PERIODS_S[0])
+      drift[1] = angle(DRIFT_PERIODS_S[1])
     }
     gl.uniform4fv(quad.u('uSliders[0]'), sliderBuf)
     gl.uniform1fv(quad.u('uStretch[0]'), stretchBuf)
+    gl.uniform4fv(quad.u('uLights[0]'), lightField(drift, frame.artShown, aspect, state.lightBuf))
 
     gl.uniform1f(quad.u('uArtShown'), frame.artShown)
     setTitleUniform(gl, quad, frame)
+    setArtUniform(gl, quad, frame)
   }
 }

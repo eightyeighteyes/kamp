@@ -305,6 +305,29 @@ test('rapid skips never push a grain off the plate or past the speed cap, and no
   assert.ok(worst <= VMAX * DT + 1e-9, `a grain jumped ${worst}`)
 })
 
+test('a grain driven into an edge rebounds instead of sticking to it', () => {
+  const p = plate(1, { jitter: 0, force: 0 })
+  const edges: Array<[number, number, number, number]> = [
+    [0.5, 0.001, 0, -VMAX], // top
+    [0.5, 0.999, 0, VMAX], // bottom
+    [0.001, 0.5, -VMAX, 0], // left
+    [0.999, 0.5, VMAX, 0] // right
+  ]
+  for (const [u, v, vx, vy] of edges) {
+    p.u[0] = u
+    p.v[0] = v
+    p.vx[0] = vx
+    p.vy[0] = vy
+    p.tick(DT)
+    assert.ok(
+      p.u[0] > 0 && p.u[0] < 1 && p.v[0] > 0 && p.v[0] < 1,
+      `stuck on the edge at ${u},${v}`
+    )
+    // The velocity now points back into the plate.
+    assert.ok(p.vx[0] * vx <= 0 && p.vy[0] * vy <= 0, `still heading out at ${u},${v}`)
+  }
+})
+
 test('a ring during a ring lifts the envelope; it never drops it', () => {
   const p = plate()
   p.setIdentity('album:1', '11', true)
@@ -354,19 +377,56 @@ test('the shimmer rises and relaxes smoothly, never past its peak, and lands exa
   assert.ok(onLines(p) > 0.6, 'the figure did not relax back')
 })
 
-test('a due shimmer waits for a still cursor and a quiet plate', () => {
+test('a due shimmer waits for a still cursor', () => {
   const p = plate()
   p.nextShimmerAt = 0
   p.pointerMove(0.2, 0.5)
   run(p, 1)
   assert.equal(p.shimmer, 0, 'shimmered under a moving cursor')
   p.pointerLeave()
-  p.setIdentity('album:1', '11', true)
-  p.trackChanged(true)
-  run(p, 1)
-  assert.equal(p.shimmer, 0, 'shimmered during a ring')
   run(p, 8)
   assert.ok(p.shimmer > 0 || p.nextShimmerAt > p.elapsed, 'the shimmer never came')
+})
+
+test('a due shimmer waits for the plate to stop ringing', () => {
+  const p = plate()
+  // The cursor has been idle for ages, so only the ring can hold the shimmer back.
+  run(p, 10)
+  p.setIdentity('album:1', '11', true)
+  p.trackChanged(true)
+  p.nextShimmerAt = p.elapsed
+  run(p, 1)
+  assert.equal(p.shimmer, 0, 'shimmered during a ring')
+  run(p, 4)
+  assert.ok(p.shimmer > 0, 'positive control: the shimmer never came once the plate was quiet')
+})
+
+test('grains bounce in proportion to how much the plate moves under them', () => {
+  // No pull, so the bounce is all that moves them.
+  const p = plate(1, { force: 0 })
+  scatter(p)
+  let hiS = 0
+  let hiN = 0
+  let loS = 0
+  let loN = 0
+  const before = { u: Float64Array.from(p.u), v: Float64Array.from(p.v) }
+  run(p, 0.5)
+  for (let i = 0; i < GRAINS; i++) {
+    const f = Math.abs(p.field(before.u[i], before.v[i]))
+    const d = Math.hypot((p.u[i] - before.u[i]) * ASPECT, p.v[i] - before.v[i])
+    if (f > 0.5) {
+      hiS += d
+      hiN++
+    } else if (f < 0.1) {
+      loS += d
+      loN++
+    }
+  }
+  assert.ok(hiN > 10 && loN > 10, 'positive control: too few grains to compare')
+  assert.ok(
+    hiS / hiN > (loS / loN) * 3,
+    `antinode grains moved ${hiS / hiN}, node grains ${loS / loN}`
+  )
 })
 
 // --- the cursor --------------------------------------------------------------------

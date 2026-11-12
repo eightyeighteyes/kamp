@@ -26,6 +26,7 @@ import { BokehCanvas } from './BokehCanvas'
 import { BorealisCanvas } from './borealis/BorealisCanvas'
 import { ChapelCanvas } from './ChapelCanvas'
 import { HalationCanvas } from './halation/HalationCanvas'
+import { TannhauserCanvas } from './tannhauser/TannhauserCanvas'
 import { FlatReference } from './webgl/reference/FlatReference'
 
 export interface NowPlayingEngineProps {
@@ -46,7 +47,8 @@ export const NOW_PLAYING_ANIMATIONS = {
   bokeh: { label: 'Bokeh', Engine: BokehCanvas },
   chapel: { label: 'Chapel', Engine: ChapelCanvas },
   halation: { label: 'Halation', Engine: HalationCanvas },
-  borealis: { label: 'Borealis', Engine: BorealisCanvas }
+  borealis: { label: 'Borealis', Engine: BorealisCanvas },
+  tannhauser: { label: 'Tannhäuser', Engine: TannhauserCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>
 
 // KAMP-780: diagnostics-only backgrounds, selected via window.__kampGL and shown

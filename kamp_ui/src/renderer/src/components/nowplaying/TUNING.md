@@ -241,9 +241,20 @@ On a light `--bg`, the curtains use a deeper tone of the palette at 75% opacity.
 
 `resScale` is 0.25 and the frame cap is 30 fps. Each pixel does 15 value-noise lookups (five per curtain). If GPU busy is over target, try `__kampGL.tune({ fps: 20 })` first. The curtains are soft, so `scale` can go lower than Halation's.
 
-Measure these variants as described above:
+Measured on the Intel Mac on 2026-11-11 (n = 60 each, 60 Hz, music playing):
+
+| Variant              | GPU busy      | GPU active    |
+| -------------------- | ------------- | ------------- |
+| None                 | 3.43% ± 2.16  | 4.13% ± 2.23  |
+| Borealis, art hidden | 23.55% ± 0.66 | 25.83% ± 0.73 |
+| Borealis, art shown  | 24.78% ± 1.35 | 26.98% ± 1.84 |
+
+That is about 20 points over None, just over the ~20% target, and was accepted as is. Art shown and hidden cost the same, as expected, because the shader draws every pixel either way. The art-shown run's package power (24.9 W against 8.6 W) came from unrelated system activity. Read GPU busy, not package power (KAMP-776).
+
+No surge variant was measured. A surge lasts about 4 s, too short for a 60 s run, and adds only a couple of exp() calls per pixel while a band is showing.
+
+To re-measure, run these variants as described above:
 
 1. None
 2. Borealis with the art visible
 3. Borealis with the art hidden
-4. Borealis during a surge (skip tracks)

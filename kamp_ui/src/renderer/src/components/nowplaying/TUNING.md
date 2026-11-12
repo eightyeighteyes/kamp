@@ -392,4 +392,21 @@ Measure as described in `webgl/README.md`: `powermetrics` for 60 s per variant, 
 5. Sparks, cursor sweeping continuously
 6. Sparks during bursts (skip tracks every ~5 s)
 
-Not measured yet. The target is GPU busy at or below about 20% on the Intel Mac.
+Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing):
+
+| Variant                             | GPU busy      | GPU active    | Avg cores   |
+| ----------------------------------- | ------------- | ------------- | ----------- |
+| None                                | 3.18% ± 0.70  | 3.94% ± 0.73  | 1.84 ± 0.37 |
+| Sparks, art shown                   | 20.36% ± 1.90 | 22.57% ± 2.11 | 1.70 ± 0.61 |
+| Sparks, art hidden                  | 20.55% ± 0.91 | 22.71% ± 0.91 | 1.52 ± 0.39 |
+| Sparks, art hidden, no blur         | 19.33% ± 1.10 | 21.31% ± 1.18 | 2.07 ± 0.43 |
+| Sparks, art hidden, cursor sweeping | 20.57% ± 1.18 | 22.67% ± 1.14 | 1.87 ± 0.45 |
+| Sparks, art hidden, skipping tracks | 22.29% ± 3.51 | 24.55% ± 3.69 | 2.13 ± 1.03 |
+
+That is about 17 points over None, at the ~20% target. Accepted as is.
+
+What the numbers say:
+
+- **The baked blur is nearly free.** No blur saves about 1.2 points, roughly one standard deviation. Bokeh's CSS `blur(28px)` was about 50 of its 65 points (KAMP-777). Baking the blur into sprites was the whole saving.
+- **The cost is per frame, not per spark.** Art shown holds about 40% fewer sparks than art hidden and measured the same. Cursor sweeping, which adds no sparks, also measured the same. Bursts add about 2 points at most, with a wide spread, because they come and go within a run. So most of the cost is filling and compositing a full-pane canvas 30 times a second. Cutting sparks or sprite sizes will not move it. Frame rate and `RES_SCALE` will.
+- **Package power is noise here, again.** None drew the most package power (21.4 W), and every Sparks run drew less. Read GPU busy, not package power (KAMP-776).

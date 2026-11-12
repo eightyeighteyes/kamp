@@ -13,16 +13,28 @@
 import { useEffect } from 'react'
 import { useStore } from '../../../store'
 
+// KAMP-767: Canvas 2D backgrounds register here too, so the hooks that only make
+// sense for one kind are optional. `lose`/`restore` exist only for WebGL; `blur`
+// and `forcePop` only for Sparks. A missing hook warns instead of throwing.
 export interface GLDevTarget {
-  lose(): void
-  restore(): void
-  /** Measurement knobs: backing-store scale (fraction of DPR) and frame cap. */
-  tune(opts: { scale?: number; fps?: number }): void
+  lose?(): void
+  restore?(): void
+  /**
+   * Measurement knobs: backing-store scale (fraction of DPR), frame cap, and for
+   * Sparks the baked sprite blur in CSS px (0 = the no-blur variant).
+   */
+  tune(opts: { scale?: number; fps?: number; blur?: number }): void
   /** Draw rate since the previous call (verifies the frame cap), and backing size. */
   stats(): { fps: number; backing: string }
+  /** Sparks: launch the rare high spark now, for tuning. */
+  forcePop?(): void
 }
 
-interface KampGLHooks extends Omit<GLDevTarget, 'stats'> {
+interface KampGLHooks {
+  lose(): void
+  restore(): void
+  tune: GLDevTarget['tune']
+  forcePop(): void
   stats(): ReturnType<GLDevTarget['stats']> | undefined
   /** Lose, then restore after `ms` — inside the 2 s fallback timeout by default. */
   cycle(ms?: number): void
@@ -54,19 +66,28 @@ export function registerGLTarget(target: GLDevTarget): () => void {
 
 function withTarget<T>(fn: (t: GLDevTarget) => T): T | undefined {
   if (current) return fn(current)
-  console.warn('[KAMP-780] __kampGL: no WebGL background is mounted')
+  console.warn('[KAMP-780] __kampGL: no tunable background is mounted')
   return undefined
+}
+
+/** Call an optional hook, or say the mounted background doesn't have it. */
+function optional(t: GLDevTarget, name: 'lose' | 'restore' | 'forcePop'): void {
+  const fn = t[name]
+  if (fn) fn.call(t)
+  else console.warn(`[KAMP-767] __kampGL.${name}: not supported by this background`)
 }
 
 function install(): () => void {
   const hooks: KampGLHooks = {
-    lose: () => withTarget((t) => t.lose()),
-    restore: () => withTarget((t) => t.restore()),
+    lose: () => withTarget((t) => optional(t, 'lose')),
+    restore: () => withTarget((t) => optional(t, 'restore')),
     cycle: (ms = 500) =>
       withTarget((t) => {
+        if (!t.lose || !t.restore) return optional(t, 'lose')
         t.lose()
-        window.setTimeout(() => t.restore(), ms)
+        window.setTimeout(() => optional(t, 'restore'), ms)
       }),
+    forcePop: () => withTarget((t) => optional(t, 'forcePop')),
     tune: (opts) => withTarget((t) => t.tune(opts)),
     stats: () => withTarget((t) => t.stats()),
     reference: () => useStore.getState().setNowPlayingOverride('webgl-reference'),

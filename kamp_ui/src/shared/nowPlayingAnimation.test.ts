@@ -52,3 +52,8 @@ test('tannhauser is a known id that survives a reload (KAMP-772)', () => {
   assert.equal(resolveNowPlayingAnimation('tannhauser', 'false'), 'tannhauser')
   assert.equal(legacyGlowValue('tannhauser'), 'true')
 })
+
+test('sparks is a known id that survives a reload (KAMP-767)', () => {
+  assert.equal(resolveNowPlayingAnimation('sparks', 'false'), 'sparks')
+  assert.equal(legacyGlowValue('sparks'), 'true')
+})

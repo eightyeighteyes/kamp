@@ -52,7 +52,7 @@ The standard uniforms are set every frame:
 - `artShown`: eased 0..1 art visibility (KAMP-769). It lands directly while stopped.
 - `pointerActive` and `pointerIdle` (seconds), for cursor effects and idle-gated rare moments.
 - `pointerAt`: the last real cursor position (KAMP-765). Unlike `uPointer` it is not eased and never recentres on leave. Anchor a cursor effect that fades out here, or it slides toward the centre as it fades.
-- `pointerEpoch` (KAMP-772): bumped by every pointer leave and every `start()`. Connect two `pointerAt` samples into one stroke only when their epochs match, or a quick leave and re-entry draws a line across the pane.
+- `pointerEpoch` (KAMP-772): bumped each time the cursor enters the pane. Connect two `pointerAt` samples into one stroke only when their epochs match, or a quick leave and re-entry draws a line across the pane.
 - `titleRect`: the title's text box, normalised and DOM y-down, or null. Keep busy detail out from behind the title. It is the text extent: the title element itself is full-width, so its box would cover the whole pane.
 
 **Per-mount state goes in `createState()`, not in `R` or the module.** It is created once per engine, survives a context restore (so a moment in flight carries on), and is passed to `setUniforms` as its last argument.

@@ -58,10 +58,13 @@ export interface FrameInfo {
    */
   pointerAt: { x: number; y: number }
   /**
-   * KAMP-772: bumped by every pointer leave and every start(). Two pointerAt
-   * samples belong to one continuous stroke only if their epochs match. A
-   * boolean "present" flag can't say this: a leave and a re-entry can both land
-   * between two drawn frames, and the flag would read true on both.
+   * KAMP-772: bumped each time the cursor enters the pane (the first move after
+   * a leave or a start()). Two pointerAt samples belong to one continuous stroke
+   * only if their epochs match. It is bumped on entry, not on leave, because
+   * pointerAt stays frozen at the exit point: a leave-bump would let a tracker
+   * file that stale exit point under the new epoch and join it to the entry.
+   * A boolean "present" flag can't do this either: a leave and a re-entry can
+   * both land between two drawn frames.
    */
   pointerEpoch: number
   /**
@@ -309,6 +312,9 @@ export class ShaderEngine<R = void, S = void> {
   }
 
   setPointer(nx: number, ny: number): void {
+    // An entry: the first move after a leave, or after start() (which resets
+    // presence to away). See FrameInfo.pointerEpoch.
+    if (this.pointerTargetActive === 0) this.pointerEpoch++
     this.pointerTargetX = Math.max(-1, Math.min(1, nx))
     this.pointerTargetY = Math.max(-1, Math.min(1, ny))
     this.pointerAtX = this.pointerTargetX
@@ -322,7 +328,6 @@ export class ShaderEngine<R = void, S = void> {
     this.pointerTargetX = this.pointerTargetY = 0
     this.pointerTargetActive = 0
     this.lastPointerAt = this.elapsed
-    this.pointerEpoch++
   }
 
   /**
@@ -380,7 +385,6 @@ export class ShaderEngine<R = void, S = void> {
     // Presence restarts from "away": the cursor is only over the pane once it moves.
     this.pointerTargetActive = this.pointerActive = 0
     this.lastPointerAt = this.elapsed
-    this.pointerEpoch++
     this.artShown = this.artVisible ? 1 : 0
     this.resumed = true
     this.scheduleLoop()

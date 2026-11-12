@@ -57,3 +57,8 @@ test('sparks is a known id that survives a reload (KAMP-767)', () => {
   assert.equal(resolveNowPlayingAnimation('sparks', 'false'), 'sparks')
   assert.equal(legacyGlowValue('sparks'), 'true')
 })
+
+test('wintermute is a known id that survives a reload (KAMP-768)', () => {
+  assert.equal(resolveNowPlayingAnimation('wintermute', 'false'), 'wintermute')
+  assert.equal(legacyGlowValue('wintermute'), 'true')
+})

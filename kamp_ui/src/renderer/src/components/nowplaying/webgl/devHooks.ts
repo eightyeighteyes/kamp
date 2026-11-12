@@ -15,18 +15,22 @@ import { useStore } from '../../../store'
 
 // KAMP-767: Canvas 2D backgrounds register here too, so the hooks that only make
 // sense for one kind are optional. `lose`/`restore` exist only for WebGL; `blur`
-// and `forcePop` only for Sparks. A missing hook warns instead of throwing.
+// and `forcePop` only for the particle backgrounds (Sparks, Wintermute). A
+// missing hook warns instead of throwing.
 export interface GLDevTarget {
   lose?(): void
   restore?(): void
   /**
    * Measurement knobs: backing-store scale (fraction of DPR), frame cap, and for
-   * Sparks the baked sprite blur in CSS px (0 = the no-blur variant).
+   * the particle backgrounds the baked sprite blur in CSS px (0 = the no-blur
+   * variant; Wintermute reads it as the near layer's blur and scales the others).
+   * `layers` (Wintermute) draws only the first N depth layers, far first, so
+   * `layers: 2` is the near-layer-off variant.
    */
-  tune(opts: { scale?: number; fps?: number; blur?: number }): void
+  tune(opts: { scale?: number; fps?: number; blur?: number; layers?: number }): void
   /** Draw rate since the previous call (verifies the frame cap), and backing size. */
   stats(): { fps: number; backing: string }
-  /** Sparks: launch the rare high spark now, for tuning. */
+  /** Launch the rare moment now, for tuning: Sparks' high spark, Wintermute's close flake. */
   forcePop?(): void
 }
 

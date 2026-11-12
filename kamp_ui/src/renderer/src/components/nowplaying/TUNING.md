@@ -410,3 +410,70 @@ What the numbers say:
 - **The baked blur is nearly free.** No blur saves about 1.2 points, roughly one standard deviation. Bokeh's CSS `blur(28px)` was about 50 of its 65 points (KAMP-777). Baking the blur into sprites was the whole saving.
 - **The cost is per frame, not per spark.** Art shown holds about 40% fewer sparks than art hidden and measured the same. Cursor sweeping, which adds no sparks, also measured the same. Bursts add about 2 points at most, with a wide spread, because they come and go within a run. So most of the cost is filling and compositing a full-pane canvas 30 times a second. Cutting sparks or sprite sizes will not move it. Frame rate and `RES_SCALE` will.
 - **Package power is noise here, again.** None drew the most package power (21.4 W), and every Sparks run drew less. Read GPU busy, not package power (KAMP-776).
+
+# Wintermute (KAMP-768)
+
+A subdued snowfall in album colours, in three depth layers. It is Canvas 2D, built on the Sparks pattern. The model lives in `src/shared/wintermuteModel.ts` and is covered by `npm test`. The engine (`wintermute/wintermuteEngine.ts`) only draws.
+
+Flakes have no life timer. A flake falls until it leaves the pane, then is reborn on the inflow boundary: the top, plus the upwind side while a gust blows. That keeps the pane full, including the upwind strip.
+
+Each flake is a `drawImage` of a sprite from `wintermute/flakeSprites.ts`, baked once per palette and layer with that layer's depth-of-field blur. The close flake is a crystal baked once as a white mask in sharp and soft focus, then tinted per palette.
+
+## Model — `wintermuteModel.ts`
+
+| Knob                                                     | Default                               | Effect                                                                                                                  |
+| -------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `DENSITY` / `MIN_TARGET`                                 | 95 per square pane height / 24        | How many flakes the field holds, scaled to the area the art leaves visible.                                             |
+| `LAYER_WEIGHTS` / `NEAR_MAX`                             | 0.55 / 0.33 / 0.12, near capped at 18 | The far, mid and near mix. The near layer costs the most fill, so it is capped.                                         |
+| `LAYER_RADIUS`                                           | 0.0032 / 0.0062 / 0.012 pane heights  | Flake size per layer.                                                                                                   |
+| `LAYER_FALL` / `FALL_SPREAD`                             | 0.035 / 0.06 / 0.1 heights/s, ±20%    | Fall speed per layer. The per-flake spread stops flakes reborn together from travelling as a clump.                     |
+| `LAYER_SWAY` / `SWAY_HZ` / `DRIFT`                       | 0.006–0.018 / 0.06–0.16 Hz / ±0.004   | The side-to-side drift as flakes fall.                                                                                  |
+| `LAYER_ALPHA`                                            | 0.4 / 0.55 / 0.45                     | How strongly each layer shows. Lower it to make the snow more subdued.                                                  |
+| `BEHIND_ART_WEIGHT`                                      | 0.5                                   | The share of top births above the art. They fall behind it and come out below.                                          |
+| `GUST_PEAK` / `GUST_ATTACK_S` / `_HOLD_S` / `_RELEASE_S` | 0.25 heights/s / 0.8 / 0.8 / 2 s      | The track-change gust. It waits for the new palette, or `GUST_FALLBACK_S` (0.7 s) when the album is unchanged.          |
+| `LAYER_WIND`                                             | 0.6 / 0.8 / 1                         | Parallax: how much each layer feels the gust.                                                                           |
+| `SWIRL_R` / `SWIRL_MIN_SPEED` / `SWIRL_MAX`              | 0.14 heights / 0.3 heights/s / 0.1    | The cursor's wake: its reach, the speed below which it stirs nothing, and the fastest a flake circles.                  |
+| `SWIRL_TAU` / `DRAG_GAIN`                                | 1.2 s / 0.4                           | How fast a swirl settles back into falling, and how much the flake is pulled along the cursor's path.                   |
+| `SWAP_SPREAD_S` / `SWAP_DIP_S`                           | 1.5 / 0.8 s                           | Recolouring when rapid skips pass `MAX_GENERATIONS` (3). Each old flake dips out and back in the new colour, staggered. |
+| `CLOSE_GAP_*` / `CLOSE_IDLE_S`                           | 60 + exp(120) s, capped at 300 / 6 s  | Spacing of the close flake. Call `__kampGL.forcePop()` to see one.                                                      |
+| `CLOSE_RADIUS` / `FOCUS_IN_S` / `_HOLD_S` / `_OUT_S`     | 0.05 heights / 2.5 / 1.2 / 2.5 s      | Its size at its closest, and the focus envelope. It peaks in a side strip, or above or below the art, never behind it.  |
+
+## Look and cost — `wintermuteEngine.ts` and `flakeSprites.ts`
+
+- `LAYER_BLUR_CSS` (1 / 2.5 / 6 px): the baked depth-of-field blur, far to near. It is part of the animation, not a user setting.
+- `WHITE_MIX` (0.45): how far each swatch is pulled toward white, so it reads as snow, not confetti.
+- `HAZE_H` (0.35) and `HAZE_ALPHA` (0.07): the faint haze from the top.
+- `TITLE_QUIET` (0.25): flake alpha behind the title text.
+- `CRYSTAL_SIDE` (256) and `ARM_W`: the crystal mask. Its arms stay at least 2 backing px wide once drawn down, so it reads as sharp at `RES_SCALE` 0.5.
+- `RES_SCALE` (0.5) and `DEFAULT_FPS` (30), as Sparks.
+
+## Measuring
+
+The method is the same as Sparks. For the extra variants:
+
+- near layer off: `__kampGL.tune({ layers: 2 })`
+- no blur: `__kampGL.tune({ blur: 0 })`, where `blur` sets the near layer's blur and scales the others
+- reduced frame rate: `__kampGL.tune({ fps: 24 })`
+
+Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing):
+
+| Variant                          | GPU busy      | GPU active    | Avg cores   |
+| -------------------------------- | ------------- | ------------- | ----------- |
+| None                             | 3.04% ± 0.80  | 3.74% ± 0.85  | 1.41 ± 0.30 |
+| Wintermute, art shown            | 19.51% ± 0.52 | 21.65% ± 0.52 | 1.38 ± 0.35 |
+| Wintermute, art hidden           | 19.79% ± 1.06 | 21.84% ± 1.19 | 1.41 ± 0.40 |
+| Art hidden, no blur              | 16.85% ± 0.52 | 19.01% ± 0.51 | 1.42 ± 0.34 |
+| Art hidden, near layer off       | 16.05% ± 0.42 | 18.10% ± 0.41 | 1.53 ± 0.33 |
+| Art hidden, `fps: 24` (20 drawn) | 12.06% ± 0.69 | 13.74% ± 0.68 | 1.46 ± 0.45 |
+| Cursor sweeping continuously     | 16.50% ± 0.85 | 18.41% ± 0.88 | 1.70 ± 0.35 |
+| Skipping tracks every ~5 s       | 19.07% ± 3.44 | 21.21% ± 3.55 | 2.15 ± 0.82 |
+
+That is about 16.6 points over None, inside the ~20% target and slightly under Sparks. Accepted at 30 fps.
+
+What the numbers say:
+
+- **Frame rate is still the main lever.** The `fps: 24` cap actually draws every third vsync at 60 Hz, which is 20 fps. That is two thirds of the frames, and it cut the cost over None from about 16.8 to about 9 points. It is the fallback if the budget ever tightens, but falling flakes step visibly further per frame at 20 fps.
+- **The blur costs more here than in Sparks.** No blur saved about 2.9 points, against Sparks' 1.2. Near flakes carry a 6 px blur, and each sprite is padded by 3σ, so the blur grows the area every frame fills. Turning the near layer off saved about 3.7 points.
+- **Art shown and art hidden cost the same**, as with Sparks. The cost is per frame, not per flake.
+- **Skipping tracks costs CPU, not GPU.** GPU busy stayed flat. Average cores rose to 2.15, from palette extraction and the sprite re-bakes per palette.
+- **Unexplained: sweeping the cursor measured about 3 points lower than leaving it still.** Sweeping adds no flakes and draws the same frames. The cause is not known. Treat the idle runs as the baseline.

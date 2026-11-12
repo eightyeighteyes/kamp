@@ -11,6 +11,7 @@
 // backing scale or the pane height changes.
 
 import type { RGB } from '../palette'
+import { makeCanvas } from '../sprites'
 
 export interface GlowSheet {
   /** [palette slot][size bucket] */
@@ -25,19 +26,6 @@ const CORE_STOP = 0.3
 // The halo's reach (before blur) as a multiple of the core radius, and its opacity.
 const HALO_SCALE = 2.5
 const HALO_ALPHA = 0.35
-
-function makeCanvas(side: number): {
-  canvas: CanvasImageSource
-  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null
-} {
-  if (typeof OffscreenCanvas !== 'undefined') {
-    const c = new OffscreenCanvas(side, side)
-    return { canvas: c, ctx: c.getContext('2d') }
-  }
-  const c = document.createElement('canvas')
-  c.width = c.height = side
-  return { canvas: c, ctx: c.getContext('2d') }
-}
 
 /**
  * Bake one sheet.

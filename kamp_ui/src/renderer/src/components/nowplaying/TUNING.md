@@ -520,16 +520,17 @@ The method is the same as Sparks. For the extra variants:
 
 Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing). The first rows are at full resolution and 30 fps, the original defaults:
 
-| Variant                          | GPU busy      | GPU active    | Avg cores   |
-| -------------------------------- | ------------- | ------------- | ----------- |
-| None                             | 2.98% ± 0.82  | 3.66% ± 0.89  | 1.49 ± 0.29 |
-| Castalia, art shown (30 fps)     | 47.69% ± 0.83 | 49.20% ± 0.95 | 2.04 ± 0.76 |
-| Castalia, art hidden (30 fps)    | 47.24% ± 0.75 | 48.79% ± 0.76 | 1.70 ± 0.44 |
-| No blur                          | 38.65% ± 0.98 | 40.40% ± 0.97 | 1.87 ± 0.46 |
-| `scale: 0.5`                     | 15.86% ± 1.89 | 18.05% ± 2.11 | 1.95 ± 0.87 |
-| `fps: 24` (20 drawn)             | 28.66% ± 1.59 | 30.14% ± 1.63 | 1.68 ± 0.40 |
-| `fps: 20`                        | 28.41% ± 2.61 | 30.08% ± 3.65 | 1.89 ± 0.64 |
-| `scale: 0.75, fps: 20` (shipped) | 19.90% ± 0.82 | 21.67% ± 0.88 | 1.78 ± 0.48 |
+| Variant                                | GPU busy      | GPU active    | Avg cores   |
+| -------------------------------------- | ------------- | ------------- | ----------- |
+| None                                   | 2.98% ± 0.82  | 3.66% ± 0.89  | 1.49 ± 0.29 |
+| Castalia, art shown (30 fps)           | 47.69% ± 0.83 | 49.20% ± 0.95 | 2.04 ± 0.76 |
+| Castalia, art hidden (30 fps)          | 47.24% ± 0.75 | 48.79% ± 0.76 | 1.70 ± 0.44 |
+| No blur                                | 38.65% ± 0.98 | 40.40% ± 0.97 | 1.87 ± 0.46 |
+| `scale: 0.5`                           | 15.86% ± 1.89 | 18.05% ± 2.11 | 1.95 ± 0.87 |
+| `fps: 24` (20 drawn)                   | 28.66% ± 1.59 | 30.14% ± 1.63 | 1.68 ± 0.40 |
+| `fps: 20`                              | 28.41% ± 2.61 | 30.08% ± 3.65 | 1.89 ± 0.64 |
+| `scale: 0.75, fps: 20` (shipped)       | 19.90% ± 0.82 | 21.67% ± 0.88 | 1.78 ± 0.48 |
+| + corner gradient, full-pane per frame | 26.02% ± 1.05 | 27.52% ± 1.12 | 2.42 ± 0.84 |
 
 What the numbers say:
 
@@ -538,3 +539,4 @@ What the numbers say:
 - **The baked halo costs about 9 points** at full resolution: each sprite is padded by 3σ of a 4-backing-px blur.
 - **Art shown and art hidden cost the same.** The cost is per frame, not per grain.
 - **Shipped at `scale: 0.75`, 20 fps: 19.9% GPU busy**, about 17 points over None and inside the ~20% target, close to Sparks and Wintermute. 20 fps alone was still about 8 points over. Three-quarter resolution (0.56× the pixels) was predicted to land at about 14 points over None and measured about 17. The linear model is a good guide, not exact.
+- **A full-pane gradient rebuilt every frame is expensive.** The breathing plate first drew a new full-pane `createRadialGradient` each frame. It cost about 6 GPU points, CPU cores active rose from 76% to 99%, and package power rose about 10 W. It is now painted on a 64 px-wide canvas and stretched over the pane with `drawImage`. Not re-measured yet.

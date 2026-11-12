@@ -41,6 +41,8 @@ const TITLE_FEATHER = 0.03 // of pane height
 const MIN_ALPHA = 0.01
 const DEFAULT_BG: RGB = { r: 0x14, g: 0x14, b: 0x14 }
 const BAND_CROSSFADE_MS = 1500 // the plate's bands recolor as the grains dip
+// Width of the small canvas the plate's gradient is painted on, then stretched.
+const PLATE_W = 64
 
 export interface CastaliaEngineOptions {
   /** prefers-reduced-motion: the plate holds still instead of breathing. */
@@ -68,6 +70,8 @@ export class CastaliaEngine {
   private readonly colorsByGen = new Map<number, RGB[]>()
   private readonly sheets = new Map<number, GrainSheet>()
   private bakedScale = 0 // backing scale the sheets were baked at
+  private plateCanvas: OffscreenCanvas | null = null
+  private plateCtx: OffscreenCanvasRenderingContext2D | null = null
 
   private title: ContentRect | null = null
   private art: ContentRect | null = null
@@ -194,6 +198,8 @@ export class CastaliaEngine {
     this.stop()
     this.sheets.clear()
     this.ctx = null
+    this.plateCanvas = null
+    this.plateCtx = null
   }
 
   /**
@@ -309,19 +315,36 @@ export class CastaliaEngine {
   }
 
   /**
-   * The breathing corner gradient, as ONE opaque fill in place of the flat --bg:
-   * its stops are pre-blended with --bg, so it adds no second full-pane pass.
+   * The breathing corner gradient, in place of the flat --bg. Its stops are
+   * pre-blended with --bg, so it is opaque and needs no fill under it.
+   *
+   * It is painted onto a tiny canvas (PLATE_W px wide) and stretched over the pane.
+   * A full-pane gradient rebuilt every frame for the breath cost ~6 GPU points and
+   * pinned a CPU core (measured), as Chromium re-rasterizes a new gradient shader
+   * each time. A smooth gradient upscaled looks the same, and the pane-sized draw
+   * becomes one plain textured fill, like the old solid one.
+   *
    * The breath runs on the plate's clock, which freezes while stopped, so a resume
    * picks up exactly where the last frame left off. Reduced motion holds still.
    */
   private drawPlate(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const pw = PLATE_W
+    const ph = Math.max(1, Math.round((PLATE_W * h) / w))
+    if (!this.plateCanvas || this.plateCanvas.height !== ph) {
+      this.plateCanvas = new OffscreenCanvas(pw, ph)
+      this.plateCtx = this.plateCanvas.getContext('2d')
+    }
+    const pc = this.plateCtx
+    if (!pc) return
     const strength = pulseStrength(this.reducedMotion ? null : this.plate.elapsed)
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.hypot(w, h))
+    const g = pc.createRadialGradient(0, 0, 0, 0, 0, Math.hypot(pw, ph))
     for (const s of backdropStops(this.bg, this.bands.current(), strength)) {
       g.addColorStop(s.offset, rgba(s.color, 1))
     }
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, w, h)
+    pc.fillStyle = g
+    pc.fillRect(0, 0, pw, ph)
+    ctx.imageSmoothingEnabled = true
+    ctx.drawImage(this.plateCanvas, 0, 0, w, h)
   }
 
   /** 1 away from the title text, TITLE_QUIET inside it, feathered between. */

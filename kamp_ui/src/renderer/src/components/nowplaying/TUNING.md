@@ -344,3 +344,52 @@ To measure, run these variants as described above. `tune()` is lost on a reload,
 2. Tannhäuser, art shown, cursor outside the pane (the trickle alone)
 3. Tannhäuser, art hidden
 4. Tannhäuser, wiping continuously
+
+---
+
+# Sparks (KAMP-767)
+
+Campfire sparks in album colours, rising from the bottom of the pane. It is Canvas 2D, not WebGL. The model lives in `src/shared/sparksModel.ts` and is covered by `npm test`. The engine (`sparks/sparksEngine.ts`) only draws.
+
+Each spark is a `drawImage` of a sprite from `sparks/glowSprites.ts`. A sprite is baked once per palette, size bucket and backing scale. It is a blurred halo under a crisp core, so small sparks survive a blur that erased them under Bokeh. There is no CSS filter.
+
+## Model — `sparksModel.ts`
+
+| Knob                                  | Default                             | Effect                                                                                                                                |
+| ------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `DENSITY` / `MIN_TARGET`              | 80 per square pane height / 16      | How many ambient sparks the field holds, scaled to the area the art leaves visible. The floor applies when the art fills the pane.    |
+| `LIFE` / `RISE`                       | 3.5–6.5 s / 0.06–0.12 heights/s     | Together these set how far a spark climbs before it winks out (typically about 0.4 pane heights).                                     |
+| `SPAWN_Y`                             | 0.7–1.03                            | Where sparks are born. Denser near the bottom.                                                                                        |
+| `CURL_HZ` / `CURL_AMP` / `DRIFT`      | 0.08–0.2 Hz / 0.01–0.035 / ±0.01    | The lazy sideways meander.                                                                                                            |
+| `SHIMMER_HZ` / `SHIMMER_DEPTH`        | 0.25–0.8 Hz / 0.3                   | The flicker. A test holds it at 0.8 Hz or slower, so it never strobes.                                                                |
+| `BEHIND_ART_WEIGHT`                   | 0.08                                | The share of births behind the art. Those sparks are hidden until they rise above it.                                                 |
+| `GUST_R` / `GUST_GAIN` / `GUST_TAU`   | 0.18 heights / 3 / 0.7 s            | The cursor's breath: its reach, how much of the cursor's speed a spark takes, and how fast it curls back upward.                      |
+| `CURSOR_V_MAX` / `GUST_MAX`           | 3 / 0.5 heights/s                   | Clamps, so one fast flick is not a gale.                                                                                              |
+| `BURST_COUNT` / `BURST_SPREAD_S`      | 36 / 0.6 s                          | The track-change burst. It waits for the new palette, or `BURST_FALLBACK_S` (0.7 s) when the album, and so the palette, is unchanged. |
+| `POP_GAP_*` / `POP_IDLE_S`            | 45 + exp(90) s, capped at 240 / 6 s | Spacing of the rare pop. Call `__kampGL.forcePop()` to see one.                                                                       |
+| `POP_TRAVEL` / `POP_TAU` / `POP_LIFE` | 0.75 heights / 1 s / 9–12 s         | How high the pop launches, how quickly it slows, and how long it lingers.                                                             |
+| `SIZE_RADIUS`                         | 0.0035–0.013 pane heights           | Core radius of the four size buckets.                                                                                                 |
+| `POOL_SIZE` / `RESERVED_SLOTS`        | 260 / 24                            | The fixed pool, and the slots held back so a full field can't swallow the burst or the pop.                                           |
+
+## Look and cost — `sparksEngine.ts` and `glowSprites.ts`
+
+- `SPARK_BLUR_CSS` (6 px): the baked halo blur. It is part of the animation, not a user setting. Bake it at backing resolution, or `drawImage` shrinks it.
+- `HALO_SCALE` (2.5) and `HALO_ALPHA` (0.35): the halo's reach and strength around the core.
+- `EMBER_H` (0.22) and `EMBER_ALPHA` (0.16): the glow along the bottom edge.
+- `TITLE_QUIET` (0.25): spark alpha behind the title text, feathered over `TITLE_FEATHER`.
+- `RES_SCALE` (0.5) and `DEFAULT_FPS` (30). Sparks move in whole pixels per frame, so 15 fps judders. If GPU busy is over target, try `__kampGL.tune({ scale: 0.4 })` first.
+
+Sprite sizes at a 900 px pane on a 2x display (backing scale 1): cores are 3–12 px, and sprites are about 26–60 px square once the halo and the 3σ blur padding are added.
+
+## Measuring
+
+Measure as described in `webgl/README.md`: `powermetrics` for 60 s per variant, display pinned at 60 Hz, music playing. `tune()` is lost on a reload, so set it after the page loads.
+
+1. None
+2. Sparks, art shown, cursor outside the pane
+3. Sparks, art hidden
+4. Sparks, art hidden, no blur: `__kampGL.tune({ blur: 0 })`
+5. Sparks, cursor sweeping continuously
+6. Sparks during bursts (skip tracks every ~5 s)
+
+Not measured yet. The target is GPU busy at or below about 20% on the Intel Mac.

@@ -176,7 +176,10 @@ export class RareEvents {
 
   private gap(): number {
     const u = Math.max(1e-6, this.rng())
-    return Math.min(RareEvents.GAP_MAX_S, RareEvents.GAP_FLOOR_S - RareEvents.GAP_MEAN_S * Math.log(u))
+    return Math.min(
+      RareEvents.GAP_MAX_S,
+      RareEvents.GAP_FLOOR_S - RareEvents.GAP_MEAN_S * Math.log(u)
+    )
   }
 
   /** Make the next event due now (tuning, and tests). Still waits for idle. */

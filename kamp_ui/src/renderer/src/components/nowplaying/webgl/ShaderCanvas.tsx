@@ -13,29 +13,53 @@ import { useStore } from '../../../store'
 import { accentPalette } from '../palette'
 import type { NowPlayingEngineProps } from '../registry'
 import { registerGLTarget } from './devHooks'
-import { ShaderEngine, type ShaderSpec } from './shaderEngine'
+import { ShaderEngine, type ContentRect, type ShaderSpec } from './shaderEngine'
 import { StillBackdrop } from './StillBackdrop'
 import { accentHex, bgHex, useAlbumPalette } from './themeColors'
 
-interface ShaderCanvasProps<R> extends NowPlayingEngineProps {
+interface ShaderCanvasProps<R, S> extends NowPlayingEngineProps {
   /** Must be a module-level constant: the engine is built once per mount. */
-  spec: ShaderSpec<R>
+  spec: ShaderSpec<R, S>
 }
 
-export function ShaderCanvas<R>(props: ShaderCanvasProps<R>): React.JSX.Element {
+/**
+ * The art + title box relative to the canvas, normalised (DOM y-down), or null
+ * when the art is hidden. Measured from the DOM, as Chapel's measureTitle does.
+ */
+function measureContent(canvas: HTMLCanvasElement): ContentRect | null {
+  const pane = canvas.closest('.now-playing')
+  const art = pane?.querySelector('.now-playing-art')
+  if (!art) return null
+  const c = canvas.getBoundingClientRect()
+  if (c.width === 0 || c.height === 0) return null
+  const a = art.getBoundingClientRect()
+  const m = pane?.querySelector('.now-playing-meta')?.getBoundingClientRect()
+  const left = Math.min(a.left, m?.left ?? a.left)
+  const right = Math.max(a.right, m?.right ?? a.right)
+  const top = a.top
+  const bottom = Math.max(a.bottom, m?.bottom ?? a.bottom)
+  return {
+    x0: (left - c.left) / c.width,
+    x1: (right - c.left) / c.width,
+    y0: (top - c.top) / c.height,
+    y1: (bottom - c.top) / c.height
+  }
+}
+
+export function ShaderCanvas<R, S>(props: ShaderCanvasProps<R, S>): React.JSX.Element {
   const [failed, setFailed] = useState(false)
   if (failed) return <StillBackdrop artUrl={props.artUrl} />
   return <ShaderGL {...props} onFatal={() => setFailed(true)} />
 }
 
-function ShaderGL<R>({
+function ShaderGL<R, S>({
   spec,
   active,
   artUrl,
   onFatal
-}: ShaderCanvasProps<R> & { onFatal: () => void }): React.JSX.Element {
+}: ShaderCanvasProps<R, S> & { onFatal: () => void }): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const engineRef = useRef<ShaderEngine<R> | null>(null)
+  const engineRef = useRef<ShaderEngine<R, S> | null>(null)
   const onFatalRef = useRef(onFatal)
   useEffect(() => {
     onFatalRef.current = onFatal
@@ -68,8 +92,13 @@ function ShaderGL<R>({
     if (!engine) return
     engineRef.current = engine
     engine.setBg(bgHex())
+    engine.setArtVisible(useStore.getState().nowPlayingArtVisible)
+    engine.setContentRect(measureContent(canvas))
     engine.resize()
-    const ro = new ResizeObserver(() => engine.resize())
+    const ro = new ResizeObserver(() => {
+      engine.setContentRect(measureContent(canvas))
+      engine.resize()
+    })
     ro.observe(canvas)
     const unregister = registerGLTarget(engine.devTarget())
     // Subscribe (not poll from the tick) so each ~20Hz sample is stamped at
@@ -105,6 +134,29 @@ function ShaderGL<R>({
 
   useAlbumPalette(artUrl, (pal) => engineRef.current?.setPalette(pal))
 
+  // KAMP-774: only an id-to-different-id change is a track change. The first
+  // value (mount, StrictMode's second mount) and null transitions (the app's
+  // restore, "Nothing playing") are not, so a delight moment never fires on
+  // opening the pane. The engine further ignores changes while stopped.
+  const trackId = useStore((s) => s.player.current_track?.id ?? null)
+  const prevTrackId = useRef<number | null>(null)
+  useEffect(() => {
+    const prev = prevTrackId.current
+    prevTrackId.current = trackId
+    if (prev != null && trackId != null && prev !== trackId) engineRef.current?.trackChanged()
+  }, [trackId])
+
+  // The canvas ResizeObserver doesn't fire on an art toggle, so re-measure here.
+  // Effects run after commit, so the art and title are already in (or out of) the DOM.
+  const artVisible = useStore((s) => s.nowPlayingArtVisible)
+  useEffect(() => {
+    const engine = engineRef.current
+    const canvas = canvasRef.current
+    if (!engine || !canvas) return
+    engine.setArtVisible(artVisible)
+    engine.setContentRect(measureContent(canvas))
+  }, [artVisible])
+
   const shouldAnimate = active && !reducedMotion && !hidden
   useEffect(() => {
     const engine = engineRef.current
@@ -123,7 +175,7 @@ function ShaderGL<R>({
           ((e.clientY - rect.top) / rect.height) * 2 - 1
         )
       }
-      const onLeave = (): void => engine.setPointer(0, 0)
+      const onLeave = (): void => engine.pointerLeave()
       pane.addEventListener('pointermove', onMove, { passive: true })
       pane.addEventListener('pointerleave', onLeave, { passive: true })
       return () => {

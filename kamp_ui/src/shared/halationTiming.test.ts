@@ -42,7 +42,7 @@ test('grain re-seeds every 3-4 s, never per frame', () => {
 test('the re-seed is a 0.5 s crossfade with no jump in the grain', () => {
   // Sample the grain value a single pixel would show (fixed hashes per seed) and
   // check it never steps by more than the crossfade's slope allows.
-  const pixel = (seed: number): number => ((Math.sin(seed * 12.9898) * 43758.5453) % 1 + 1) % 1
+  const pixel = (seed: number): number => (((Math.sin(seed * 12.9898) * 43758.5453) % 1) + 1) % 1
   const dt = 1 / 60
   let prev: number | null = null
   for (let t = 0; t < 60; t += dt) {

@@ -18,6 +18,7 @@ uniform float uTime;      // seconds of animation (frozen while stopped)
 uniform vec3 uPalette[5]; // album palette, 0..1, crossfaded on the CPU
 uniform vec3 uBg;         // themed --bg, 0..1: the canvas is opaque, so paint it
 uniform vec2 uPointer;    // eased cursor over the pane, -1..1 (DOM y-down)
+uniform float uPointerActive; // eased 0..1: the cursor is over the pane (uPointer recentres on leave)
 uniform float uLevel;     // delayed, smoothed audio level, 0..1
 `
 

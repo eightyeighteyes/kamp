@@ -37,3 +37,8 @@ test('chapel is a known id that survives a reload (KAMP-775)', () => {
 test('an older build sees chapel as glow on, not None', () => {
   assert.equal(legacyGlowValue('chapel'), 'true')
 })
+
+test('halation is a known id that survives a reload (KAMP-774)', () => {
+  assert.equal(resolveNowPlayingAnimation('halation', 'false'), 'halation')
+  assert.equal(legacyGlowValue('halation'), 'true')
+})

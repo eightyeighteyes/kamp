@@ -1,0 +1,244 @@
+// KAMP-774: "Halation", a Now Playing background of film grain, projector dust
+// and warm light leaks, built on the shared WebGL base (KAMP-780).
+//
+// Motion type is "twinkle in place". Nothing here may strobe, so:
+//   * grain is per-pixel hash noise locked to the backing-store grid (gate weave
+//     never moves it, or sub-pixel weave would shimmer it every frame). Its seed
+//     changes every 3-4 s with a 0.5 s variance-normalised crossfade
+//     (shared/halationTiming.ts, mirrored in grain() below);
+//   * dust glints live in a sparse hashed-cell field (one cell per pixel, no
+//     loops) on slow sin^6 envelopes, and glow brighter near the cursor;
+//   * light leaks, the track-change burn and the hair are smooth gradients whose
+//     intensities come from CPU envelopes with bounded slopes.
+// Every colour layer is a mix() toward a target, not an add, so a light theme
+// doesn't clip.
+//
+// Time: float32 uTime loses precision over hours. Leaks, weave and every
+// envelope are computed on the CPU in float64; the only shader-side clock,
+// uGlintT, wraps at GLINT_PERIOD and every glint frequency is an integer
+// multiple of 1/GLINT_PERIOD, so the wrap is seamless.
+
+import { BURN_EDGES, BurnEnvelope, RareEvents, seedAt } from '../../../../../shared/halationTiming'
+import { GLSL_DITHER, GLSL_HEADER, GLSL_NOISE } from '../webgl/glsl'
+import type { ShaderSpec } from '../webgl/shaderEngine'
+
+// --- tunables (see TUNING.md) ----------------------------------------------------
+const GLINT_PERIOD_S = 600
+const STILL_SEED = 13 // the reduced-motion still's grain
+const STILL_GLINT_T = 37 // a glint phase with a few motes lit
+const STILL_LEAK = 0.7
+const WEAVE = 0.0011 // gate weave amplitude, fraction of pane height
+const JOLT = 0.006 // peak gate-jolt offset, fraction of pane height
+const LEAK_PERIODS_S = [23, 31, 37] // incommensurate, so the leaks never pulse together
+const TAU = Math.PI * 2
+
+const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}
+uniform vec3 uGrain;    // seedA, seedB, mix
+uniform vec2 uWeave;    // gate weave, pane-height units, y up
+uniform vec3 uLeak;     // per-leak intensity, 0..1
+uniform vec2 uBurn;     // envelope 0..1, edge (0 left, 1 right, 2 top)
+uniform vec4 uHair;     // progress 0..1, alpha 0..1, seed, unused
+uniform float uGlintT;  // seconds, wrapped at GLINT_PERIOD
+uniform float uArtShown;
+uniform vec4 uContent;  // art + title box in uv (y up); x1 <= x0 means none
+
+const float GLINT_PERIOD = ${GLINT_PERIOD_S.toFixed(1)};
+const float GRAIN = 0.06;        // grain amplitude
+const float LEAK = 0.42;         // peak leak opacity
+const float BURN = 0.6;          // peak burn opacity
+const float CELL = 0.055;        // dust cell, pane-height units
+const float DUST_DENSITY = 0.09; // fraction of cells holding a mote
+const vec3 AMBER = vec3(1.0, 0.56, 0.20);
+const vec3 WARM_WHITE = vec3(1.0, 0.92, 0.80);
+
+// Sine-free hash: stays well-distributed at pixel coordinates in the thousands,
+// where hash1's sin(large) degrades and stripes on some GPUs.
+float hashNS(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// Mirrors grainMix() in shared/halationTiming.ts: constant contrast mid-fade.
+float grain(vec2 px) {
+  float a = hashNS(px + uGrain.x * vec2(37.0, 17.0));
+  float b = hashNS(px + uGrain.y * vec2(37.0, 17.0));
+  float m = uGrain.z;
+  float wa = 1.0 - m;
+  return (a * wa + b * m - 0.5) / sqrt(wa * wa + m * m) + 0.5;
+}
+
+// 1 inside the art + title box (soft-edged), 0 outside.
+float contentMask(vec2 uv) {
+  if (uContent.z <= uContent.x) return 0.0;
+  float m = 0.05;
+  vec2 a = smoothstep(uContent.xy - m, uContent.xy, uv)
+         * (1.0 - smoothstep(uContent.zw, uContent.zw + m, uv));
+  return a.x * a.y;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  float aspect = uRes.x / uRes.y;
+  vec2 q = vec2(uv.x * aspect, uv.y);   // pane-height units
+  vec2 qw = q + uWeave;                 // the gate weaves the light, not the grain
+  vec2 uvw = vec2(qw.x / aspect, qw.y);
+  float hidden = 1.0 - uArtShown;
+  float quiet = contentMask(uv) * uArtShown;
+
+  vec3 col = uBg;
+
+  // Art hidden: a softly lit projection screen.
+  vec2 sd = abs(uvw - 0.5);
+  float screen = (1.0 - smoothstep(0.36, 0.45, sd.x)) * (1.0 - smoothstep(0.33, 0.43, sd.y));
+  col = mix(col, mix(WARM_WHITE, uPalette[0], 0.25), screen * hidden * 0.10);
+  float vig = smoothstep(0.45, 0.95, length(uv - 0.5) * 1.414);
+  col *= 1.0 - vig * (0.10 + 0.20 * hidden);
+
+  // Light leaks breathing in from the edges, in album colours warmed toward amber.
+  float quietL = 1.0 - 0.8 * quiet;
+  // (GLSL pow() is undefined for a negative base, so square by hand.)
+  float y0 = (uvw.y - 0.62) / 0.30;
+  float y1 = (uvw.y - 0.35) / 0.34;
+  float a0 = (1.0 - smoothstep(0.0, 0.30, uvw.x)) * exp(-y0 * y0);
+  float a1 = (1.0 - smoothstep(0.0, 0.26, 1.0 - uvw.x)) * exp(-y1 * y1);
+  float a2 = 1.0 - smoothstep(0.0, 0.55, length((1.0 - uvw) * vec2(aspect, 1.0)));
+  col = mix(col, mix(uPalette[0], AMBER, 0.35), a0 * a0 * uLeak.x * LEAK * quietL);
+  col = mix(col, mix(uPalette[1], AMBER, 0.35), a1 * a1 * uLeak.y * LEAK * quietL);
+  col = mix(col, mix(uPalette[2], AMBER, 0.45), a2 * a2 * uLeak.z * LEAK * quietL);
+
+  // Track-change burn: amber spreading in from one edge as the envelope rises.
+  if (uBurn.x > 0.0) {
+    float d = uBurn.y < 0.5 ? uvw.x * aspect : (uBurn.y < 1.5 ? (1.0 - uvw.x) * aspect : 1.0 - uvw.y);
+    float reach = 0.10 + 0.45 * uBurn.x;
+    vec3 bc = mix(mix(AMBER, uPalette[0], 0.2), WARM_WHITE, exp(-d / (reach * 0.35)) * 0.5);
+    col = mix(col, bc, uBurn.x * exp(-d / reach) * BURN);
+  }
+
+  // Grain, pixel-locked. Scaled with the local light so it reads on light themes too.
+  float g = grain(floor(gl_FragCoord.xy)) - 0.5;
+  col += g * GRAIN * (1.0 - 0.5 * quiet) * (0.6 + 0.8 * lum(col));
+
+  // Dust glints: one mote at most per cell, kept clear of the cell edge so the
+  // single-cell lookup never clips it.
+  vec2 cq = qw / CELL;
+  vec2 cell = floor(cq);
+  float h = hashNS(cell + 7.31);
+  if (h > 1.0 - DUST_DENSITY) {
+    vec2 pos = 0.3 + 0.4 * vec2(hashNS(cell + 19.7), hashNS(cell + 41.3));
+    float dist = length(cq - cell - pos) * CELL;
+    float rad = max(0.0035, 2.0 / uRes.y); // never sub-pixel, or it would crawl
+    float spot = exp(-(dist * dist) / (rad * rad)) + 0.25 * exp(-dist / (rad * 2.0));
+    spot *= 1.0 - smoothstep(0.7 * 0.3 * CELL, 0.3 * CELL, dist);
+    // Integer k: the envelope's period divides GLINT_PERIOD, so the clock wrap is seamless.
+    float k = 40.0 + floor(hashNS(cell + 3.7) * 50.0);
+    float s = sin(3.14159265 * k * uGlintT / GLINT_PERIOD + h * 6.2831853);
+    float env = pow(s * s, 3.0);
+    vec2 pq = vec2((uPointer.x * 0.5 + 0.5) * aspect, 0.5 - uPointer.y * 0.5);
+    float near = uPointerActive * (1.0 - smoothstep(0.0, 0.28, length(qw - pq)));
+    float glint = spot * (env * 0.55 + near * (0.3 + 0.7 * env));
+    col = mix(col, mix(WARM_WHITE, uPalette[1], 0.2), clamp(glint * (1.0 - 0.85 * quiet), 0.0, 0.9));
+  }
+
+  // A hair caught in the gate, drifting across. At least 1.5 backing px wide so it
+  // doesn't crawl; light on dark, dark on light, so it reads on every theme.
+  if (uHair.y > 0.001) {
+    float seed = uHair.z;
+    float x = qw.x - mix(-0.45, aspect + 0.05, uHair.x);
+    float len = 0.25 + 0.15 * fract(seed * 0.37);
+    float amp = 0.03 + 0.03 * fract(seed * 0.13);
+    float f = 8.0 + 6.0 * fract(seed * 0.53);
+    float y = 0.25 + 0.5 * fract(seed * 0.71) + amp * sin(x * f + seed);
+    float slope = amp * f * cos(x * f + seed);
+    float d = abs(qw.y - y) / sqrt(1.0 + slope * slope);
+    float w = 1.5 / uRes.y;
+    float along = smoothstep(0.0, 0.03, x) * (1.0 - smoothstep(len - 0.03, len, x));
+    float hair = (1.0 - smoothstep(w * 0.5, w * 1.5, d)) * along * uHair.y;
+    vec3 ink = mix(col + vec3(0.10, 0.085, 0.07), col * 0.35, smoothstep(0.25, 0.5, lum(col)));
+    col = mix(col, ink, hair * 0.8);
+  }
+
+  gl_FragColor = vec4(dither(clamp(col, 0.0, 1.0), uTime), 1.0);
+}
+`
+
+export interface HalationState {
+  burn: BurnEnvelope
+  events: RareEvents
+  lastTrackSeq: number
+}
+
+export const HALATION_SPEC: ShaderSpec<void, HalationState> = {
+  name: 'halation',
+  frag: FRAG,
+  // Grain needs more resolution than a soft background (at 0.25 it upscales into
+  // blocks). Per-pixel cost is a few hashes, so the budget is fit with the frame
+  // cap: between re-seeds only the glints and leaks move.
+  resScale: 0.5,
+  fps: 20,
+  createState: () => ({
+    burn: new BurnEnvelope(),
+    events: new RareEvents(Math.random),
+    lastTrackSeq: 0
+  }),
+  setUniforms(gl, quad, _res, frame, state) {
+    const { burn, events } = state
+    const t = frame.elapsed
+
+    if (frame.atRest) {
+      // The designed still: fixed grain, a few motes lit, no moments.
+      gl.uniform3f(quad.u('uGrain'), STILL_SEED, STILL_SEED, 0)
+      gl.uniform2f(quad.u('uWeave'), 0, 0)
+      gl.uniform3f(quad.u('uLeak'), STILL_LEAK, STILL_LEAK, STILL_LEAK)
+      gl.uniform2f(quad.u('uBurn'), 0, 0)
+      gl.uniform4f(quad.u('uHair'), 0, 0, 0, 0)
+      gl.uniform1f(quad.u('uGlintT'), STILL_GLINT_T)
+    } else {
+      if (!frame.still) {
+        if (frame.resumed) {
+          // Nothing ticked while stopped; a half-finished moment must not replay.
+          burn.cancel()
+          events.cancel(t)
+          state.lastTrackSeq = frame.trackSeq
+        }
+        if (frame.trackSeq !== state.lastTrackSeq) {
+          state.lastTrackSeq = frame.trackSeq
+          burn.trigger(Math.floor(Math.random() * BURN_EDGES))
+        }
+        burn.tick(frame.dt)
+        events.tick(frame.dt, t, frame.pointerIdle, burn.active)
+      }
+      const seeds = seedAt(t)
+      gl.uniform3f(quad.u('uGrain'), seeds.seedA, seeds.seedB, seeds.mix)
+      const wx = WEAVE * (0.6 * Math.sin((TAU * t) / 7.3) + 0.4 * Math.sin((TAU * t) / 3.1))
+      const wy =
+        WEAVE * (0.6 * Math.sin((TAU * t) / 5.9 + 1.3) + 0.4 * Math.sin((TAU * t) / 2.7)) +
+        JOLT * events.joltOffset()
+      gl.uniform2f(quad.u('uWeave'), wx, wy)
+      const leak = (i: number): number =>
+        0.55 + 0.45 * Math.sin((TAU * t) / LEAK_PERIODS_S[i] + i * 2.1)
+      gl.uniform3f(quad.u('uLeak'), leak(0), leak(1), leak(2))
+      gl.uniform2f(quad.u('uBurn'), burn.value, burn.edge)
+      const hair = events.hairProgress()
+      gl.uniform4f(
+        quad.u('uHair'),
+        Math.max(0, hair),
+        events.hairAlpha(),
+        events.active?.seed ?? 0,
+        0
+      )
+      gl.uniform1f(quad.u('uGlintT'), t % GLINT_PERIOD_S)
+    }
+
+    gl.uniform1f(quad.u('uArtShown'), frame.artShown)
+    const c = frame.contentRect
+    if (c && frame.artShown > 0) {
+      // DOM y-down to GL y-up.
+      gl.uniform4f(quad.u('uContent'), c.x0, 1 - c.y1, c.x1, 1 - c.y0)
+    } else {
+      gl.uniform4f(quad.u('uContent'), 0, 0, 0, 0)
+    }
+  }
+}

@@ -11,9 +11,10 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../../../store'
 import { accentPalette } from '../palette'
+import { measureContent } from '../contentRects'
 import type { NowPlayingEngineProps } from '../registry'
 import { registerGLTarget } from './devHooks'
-import { ShaderEngine, type ContentRect, type ShaderSpec } from './shaderEngine'
+import { ShaderEngine, type ShaderSpec } from './shaderEngine'
 import { StillBackdrop } from './StillBackdrop'
 import { accentHex, bgHex, useAlbumPalette } from './themeColors'
 
@@ -22,49 +23,9 @@ interface ShaderCanvasProps<R, S> extends NowPlayingEngineProps {
   spec: ShaderSpec<R, S>
 }
 
-/** `t` relative to the canvas box `c`, normalised (DOM y-down), shrunk by `inset` px. */
-function normalise(c: DOMRect, t: DOMRect, inset = 0): ContentRect | null {
-  if (t.width <= 2 * inset || t.height <= 2 * inset) return null
-  return {
-    x0: (t.left + inset - c.left) / c.width,
-    x1: (t.right - inset - c.left) / c.width,
-    y0: (t.top + inset - c.top) / c.height,
-    y1: (t.bottom - inset - c.top) / c.height
-  }
-}
-
-/**
- * Measure the title and the art relative to the canvas and hand both to the
- * engine. Each is null while hidden (they hide together, KAMP-769).
- *
- * The title is its TEXT box, not the element: `.now-playing-title` and
- * `.now-playing-meta` are full-width, so their boxes span the whole pane and
- * anything muted "behind the title" would be muted everywhere.
- *
- * The art is the element, inset by its corner radius so the rounded corners,
- * where the canvas shows through, stay outside it. Shaders skip the work inside
- * it (KAMP-772): the art is opaque, so those pixels are never seen.
- */
-function measureContent<R, S>(engine: ShaderEngine<R, S>, canvas: HTMLCanvasElement): void {
-  const pane = canvas.closest('.now-playing')
-  const c = canvas.getBoundingClientRect()
-  if (!pane || c.width === 0 || c.height === 0) {
-    engine.setContentRects(null, null)
-    return
-  }
-  let title: ContentRect | null = null
-  const titleEl = pane.querySelector('.now-playing-title')
-  if (titleEl) {
-    const range = document.createRange()
-    range.selectNodeContents(titleEl)
-    title = normalise(c, range.getBoundingClientRect())
-  }
-  let art: ContentRect | null = null
-  const artEl = pane.querySelector('.now-playing-art')
-  if (artEl) {
-    const radius = parseFloat(getComputedStyle(artEl).borderTopLeftRadius) || 0
-    art = normalise(c, artEl.getBoundingClientRect(), radius)
-  }
+/** Hand the title and art rects to the engine (measurement: ../contentRects.ts). */
+function measureInto<R, S>(engine: ShaderEngine<R, S>, canvas: HTMLCanvasElement): void {
+  const { title, art } = measureContent(canvas)
   engine.setContentRects(title, art)
 }
 
@@ -115,10 +76,10 @@ function ShaderGL<R, S>({
     engineRef.current = engine
     engine.setBg(bgHex())
     engine.setArtVisible(useStore.getState().nowPlayingArtVisible)
-    measureContent(engine, canvas)
+    measureInto(engine, canvas)
     engine.resize()
     const ro = new ResizeObserver(() => {
-      measureContent(engine, canvas)
+      measureInto(engine, canvas)
       engine.resize()
     })
     ro.observe(canvas)
@@ -169,7 +130,7 @@ function ShaderGL<R, S>({
     const canvas = canvasRef.current
     if (!engine || !canvas) return
     // A new title has a new text width, and a wrapped one shrinks the art.
-    measureContent(engine, canvas)
+    measureInto(engine, canvas)
     if (prev != null && trackId != null && prev !== trackId) engine.trackChanged()
   }, [trackId])
 
@@ -181,7 +142,7 @@ function ShaderGL<R, S>({
     const canvas = canvasRef.current
     if (!engine || !canvas) return
     engine.setArtVisible(artVisible)
-    measureContent(engine, canvas)
+    measureInto(engine, canvas)
   }, [artVisible])
 
   const shouldAnimate = active && !reducedMotion && !hidden

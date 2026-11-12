@@ -195,6 +195,8 @@ Behind the title text, the leaks, glints and half the grain are attenuated, so t
 
 `resScale` is 0.5 and the frame cap is 20 fps. At 0.25 the grain upscales into blocks. If GPU busy is over the target, try `__kampGL.tune({ fps: 15 })` first, then `scale: 0.4`.
 
+Measured on the Intel Mac on 2026-11-11, with dust drift: about 22% GPU busy (24% GPU active). That is just over the ~20% target and was accepted as is. Re-measure if a change adds per-pixel work.
+
 Measure these variants as described above:
 
 1. None

@@ -17,11 +17,14 @@ import type { ContentRect } from '../webgl/shaderEngine'
 import { bakeGrainSheet, type GrainSheet } from './grainSprites'
 
 // --- tunables ------------------------------------------------------------------------
-// Backing store fraction of the (capped) DPR. Grains are one CSS pixel, so they
-// need the full resolution that Sparks and Wintermute can halve.
-const RES_SCALE = 1
+// Backing store fraction of the (capped) DPR. Fine grains looked bad at the half
+// resolution Sparks and Wintermute use; 0.75 reads fine and, with 20 fps, measured
+// 19.9% GPU busy against full resolution's 47% (KAMP-773, TUNING.md).
+const RES_SCALE = 0.75
 const MAX_DPR = 2
-const DEFAULT_FPS = 30
+// The motion is slow settling, so 20 fps reads fine and was signed off in review.
+// It is every third vsync at 60 Hz; full resolution makes frames the lever (KAMP-776).
+const DEFAULT_FPS = 20
 // rAF timestamps jitter; without slack a frame cap skips an extra vsync (see shaderEngine).
 const FRAME_SLACK_MS = 1.5
 // The grain's baked halo, CSS px. Part of the animation's definition, not a user setting.

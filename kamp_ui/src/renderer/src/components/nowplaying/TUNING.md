@@ -506,7 +506,8 @@ Identity comes from `setIdentity(albumKey, trackKey)`, which the lifecycle calls
 - `BLUR_CSS` (2 px): the baked halo. It is part of the animation, not a user setting. Only the halo is blurred. The one-pixel core is drawn crisp over it, or the grain vanishes.
 - `CORE_CSS` (0.75 px radius, a 1.5 px grain), `GRAIN_ALPHA` (0.6–0.9), `LIGHT_MIX` (0.5) and `HALO_ALPHA` (0.8): grain size, opacity, how far each swatch is pulled toward white, and the halo strength. The ticket's 0.3–0.5 alpha with a one-pixel grain and 0.3 lightening was nearly invisible on the dark plate, so all four were raised together.
 - `TITLE_QUIET` (0.3): grain alpha behind the title text.
-- `RES_SCALE` (1): grains are one CSS pixel, so they need the full resolution that Sparks and Wintermute halve. `DEFAULT_FPS` is 30.
+- `RES_SCALE` (0.75): fine grains looked bad at the half resolution Sparks and Wintermute use. Three quarters reads fine.
+- `DEFAULT_FPS` (20): the motion is slow settling, so 20 fps reads fine.
 
 ## Measuring
 
@@ -516,4 +517,23 @@ The method is the same as Sparks. For the extra variants:
 - half resolution: `__kampGL.tune({ scale: 0.5 })`
 - reduced frame rate: `__kampGL.tune({ fps: 24 })`
 
-Not measured yet.
+Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing). The first rows are at full resolution and 30 fps, the original defaults:
+
+| Variant                          | GPU busy      | GPU active    | Avg cores   |
+| -------------------------------- | ------------- | ------------- | ----------- |
+| None                             | 2.98% ± 0.82  | 3.66% ± 0.89  | 1.49 ± 0.29 |
+| Castalia, art shown (30 fps)     | 47.69% ± 0.83 | 49.20% ± 0.95 | 2.04 ± 0.76 |
+| Castalia, art hidden (30 fps)    | 47.24% ± 0.75 | 48.79% ± 0.76 | 1.70 ± 0.44 |
+| No blur                          | 38.65% ± 0.98 | 40.40% ± 0.97 | 1.87 ± 0.46 |
+| `scale: 0.5`                     | 15.86% ± 1.89 | 18.05% ± 2.11 | 1.95 ± 0.87 |
+| `fps: 24` (20 drawn)             | 28.66% ± 1.59 | 30.14% ± 1.63 | 1.68 ± 0.40 |
+| `fps: 20`                        | 28.41% ± 2.61 | 30.08% ± 3.65 | 1.89 ± 0.64 |
+| `scale: 0.75, fps: 20` (shipped) | 19.90% ± 0.82 | 21.67% ± 0.88 | 1.78 ± 0.48 |
+
+What the numbers say:
+
+- **Full resolution is the cost.** It is about 44 points over None, more than twice Sparks or Wintermute, which run at half resolution. Half resolution cut it to about 13 points, close to the 4× fewer pixels, but the grains looked bad.
+- **The cost is linear in pixels × frames**, as KAMP-776 found for shaders. 20 fps (two thirds of the frames) brought it to about 25.5 points over None. `fps: 24` and `fps: 20` measure the same, because both draw every third vsync at 60 Hz.
+- **The baked halo costs about 9 points** at full resolution: each sprite is padded by 3σ of a 4-backing-px blur.
+- **Art shown and art hidden cost the same.** The cost is per frame, not per grain.
+- **Shipped at `scale: 0.75`, 20 fps: 19.9% GPU busy**, about 17 points over None and inside the ~20% target, close to Sparks and Wintermute. 20 fps alone was still about 8 points over. Three-quarter resolution (0.56× the pixels) was predicted to land at about 14 points over None and measured about 17. The linear model is a good guide, not exact.

@@ -477,3 +477,43 @@ What the numbers say:
 - **Art shown and art hidden cost the same**, as with Sparks. The cost is per frame, not per flake.
 - **Skipping tracks costs CPU, not GPU.** GPU busy stayed flat. Average cores rose to 2.15, from palette extraction and the sprite re-bakes per palette.
 - **Unexplained: sweeping the cursor measured about 3 points lower than leaving it still.** Sweeping adds no flakes and draws the same frames. The cause is not known. Treat the idle runs as the baseline.
+
+# Castalia (KAMP-773)
+
+Fine grains in album colours settle onto the nodal lines of a resonating plate (Chladni figures). Each album has its own figure, and each track shows a neighbouring harmonic of it. It is Canvas 2D, on the shared particle lifecycle (`useParticleEngine`). The model lives in `src/shared/castaliaModel.ts` and is covered by `npm test`. The engine (`castalia/castaliaEngine.ts`) only draws.
+
+There is no simulation grid. The field is closed-form, `f = (cos nπu·cos mπv + sign·cos mπu·cos nπv) / 2` over the whole pane, so each grain samples it and its gradient where it stands. Grains slide down the gradient of f², and bounce in proportion to |f|. Grains never die, so the recolour dip is shared with Wintermute (`src/shared/recolorDips.ts`).
+
+Identity comes from `setIdentity(albumKey, trackKey)`, which the lifecycle calls on mount and before every `trackChanged()`. The album key is `album_id`, or the track for an untagged (missing-album) track (`src/shared/trackIdentity.ts`).
+
+## Model — `castaliaModel.ts`
+
+| Knob                                         | Default                             | Effect                                                                                                                                                                        |
+| -------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MODE_PAIRS`                                 | 10 pairs × both signs               | The curated figures. Below m + n = 5 a figure reads as empty; much past 10 it reads as noise in the side strips. Review them with `__kampGL.tune({ mode: N })`.               |
+| `GRAINS`                                     | 500                                 | Grain count. The requirement is 400–600.                                                                                                                                      |
+| `FORCE` / `DAMP`                             | 0.3 / 3 per s                       | The pull onto the lines, and how overdamped it is. At 0.3, a scattered plate is about 60% on its lines after 5 s and 90% after 20 s. At 0.1 it was only about 65% after 20 s. |
+| `JITTER` / `JITTER_FLOOR`                    | 0.1 / 0.006                         | The bounce, in proportion to \|f\|, and the floor that keeps a settled line faintly alive.                                                                                    |
+| `VMAX` / `WALL_RESTITUTION`                  | 0.3 heights/s / 0.5                 | Speed cap, and the rebound off the plate edges. Together they keep every grain on the pane.                                                                                   |
+| `RING_KICK` / `RING_JITTER` / `RING_TAU`     | 0.15 heights/s / 4 / 1 s            | The track-change ring. A new album waits for its palette, or `RING_FALLBACK_S` (0.7 s). A ring during a ring lifts the envelope back to 1 and never moves a grain.            |
+| `JOSTLE_R` / `JOSTLE_PUSH` / `JOSTLE_JITTER` | 0.07 heights / 2 / 0.15             | The cursor. Additive, because a settled grain sits where \|f\| is about 0.                                                                                                    |
+| `SHIMMER_PEAK` / `SHIMMER_S`                 | 0.15 / 6 s                          | The rare shimmer: `f + s·f_neighbour`, a small perturbation. Never a crossfade between two fields.                                                                            |
+| `SHIMMER_GAP_*` / `SHIMMER_IDLE_S`           | 40 + exp(80) s, capped at 200 / 4 s | Its spacing. It also waits for the plate to stop ringing. Call `__kampGL.forcePop()` to see one.                                                                              |
+| `SETTLED_W`                                  | 0.04                                | Width of the still frame and prewarm: each point is kept with weight exp(-(f/W)²), a smooth falloff.                                                                          |
+
+## Look and cost — `castaliaEngine.ts` and `grainSprites.ts`
+
+- `BLUR_CSS` (2 px): the baked halo. It is part of the animation, not a user setting. Only the halo is blurred. The one-pixel core is drawn crisp over it, or the grain vanishes.
+- `LIGHT_MIX` (0.3) and `HALO_ALPHA` (0.55): how far each swatch is pulled toward white, and the halo strength.
+- `TITLE_QUIET` (0.3): grain alpha behind the title text.
+- `RES_SCALE` (1): grains are one CSS pixel, so they need the full resolution that Sparks and Wintermute halve. `DEFAULT_FPS` is 30.
+
+## Measuring
+
+The method is the same as Sparks. For the extra variants:
+
+- no blur: `__kampGL.tune({ blur: 0 })`
+- half resolution: `__kampGL.tune({ scale: 0.5 })`
+- reduced frame rate: `__kampGL.tune({ fps: 24 })`
+
+Not measured yet.

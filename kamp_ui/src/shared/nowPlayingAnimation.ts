@@ -3,7 +3,7 @@
 // (components/nowplaying/registry.ts) is keyed by NowPlayingAnimationId, so adding
 // an id here without a registry entry fails to compile.
 
-export const NOW_PLAYING_ANIMATION_IDS = ['none', 'bokeh'] as const
+export const NOW_PLAYING_ANIMATION_IDS = ['none', 'bokeh', 'chapel'] as const
 export type NowPlayingAnimationId = (typeof NOW_PLAYING_ANIMATION_IDS)[number]
 
 // KAMP-780: diagnostics-only backgrounds (measurement and wiring references).

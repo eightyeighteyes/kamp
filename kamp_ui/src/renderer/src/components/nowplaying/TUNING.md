@@ -112,3 +112,46 @@ Start with three knobs — they change the character the most:
 Occasional "firefly" motes (KAMP-627), a track-change "bloom" pulse (KAMP-628),
 per-theme palette tinting (KAMP-629), and a dev-only swatch overlay to visualize the
 extracted palette while tuning (KAMP-630). Cursor parallax shipped in KAMP-626 (above).
+
+---
+
+# Chapel (KAMP-775)
+
+Three stacked, feathered fields of album color that breathe over 20–40 s. The geometry
+and timing are in `src/shared/chapelLayout.ts` (covered by `npm test`), and the drawing
+is in `chapelEngine.ts`. Chapel has no CSS filter: the feathering comes from gradient
+stops.
+
+## Composition — `chapelLayout.ts`
+
+| Knob                                        | Default                                  | Effect                                                                                                                               |
+| ------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `MARGIN_X` / `MARGIN_TOP` / `MARGIN_BOTTOM` | 0.08 / 0.07 / 0.07                       | How far the fields float in from the edges.                                                                                          |
+| `GAP`                                       | 0.045                                    | Seam height as a fraction of pane height. It is also the edge feather, so raising it softens every edge.                             |
+| `BREATH_PERIOD_S`                           | 20–40                                    | Each field's swell period.                                                                                                           |
+| `HEIGHT_BREATH` / `ALPHA_BREATH`            | 0.08 / 0.15                              | How much a field grows and brightens at the peak of its breath.                                                                      |
+| `FIELD_ALPHA`                               | 0.5                                      | Loudness over `--bg`. The palette is already saturated, so above about 0.6 the fields upstage the art.                               |
+| `TITLE_DIM`                                 | 0.6                                      | The `--bg` band behind the title, only while the art shows. A test holds the effective field alpha under the title at or below 0.25. |
+| `PROPORTION_RANGE`                          | 0.75–1.35                                | Per-track spread of field heights.                                                                                                   |
+| `SeamWarmth.ATTACK_S` / `RELEASE_S`         | 1.5 / 4                                  | How fast the cursor glow warms and cools.                                                                                            |
+| `SeamBloom.GAP_*` / `LIFE_S`                | 90 + exp(120) s, capped at 300 / 12–16 s | Spacing and length of the rare seam warming. Lower `GAP_FLOOR_S` temporarily to see it while tuning.                                 |
+
+## Feel and cost — `chapelEngine.ts`
+
+- `CROSSFADE_MS` (4000) and `RETARGET_MS` (7000) set how slowly a track change lands.
+- `GLOW_ALPHA`, `BLOOM_ALPHA` and `WARM` set the glow intensity and how warm it reads.
+- `POINTER_REACH` (0.12 of pane height) is how close the cursor has to be before a seam warms.
+- `DEFAULT_FPS` (15) and `RES_SCALE` (0.5) set the budget. If GPU busy is over target,
+  drop to 10 fps first. Keep the scale at 0.5 or above: lower scales band on dark
+  covers, because there is no blur to hide the steps.
+
+## Measuring
+
+Measure as described in `webgl/README.md`: `powermetrics` for 60 s per variant, display
+pinned at 60 Hz, music playing. Run these variants:
+
+1. **None**: the baseline.
+2. **Chapel, cursor outside the pane**: no glows are drawn. This is the effect-off variant.
+3. **Chapel, cursor resting on a seam**: the glow is drawn every frame.
+
+The target is GPU busy at or below about 20% on the Intel Mac.

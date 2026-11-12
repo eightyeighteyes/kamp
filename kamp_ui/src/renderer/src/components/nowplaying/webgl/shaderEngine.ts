@@ -58,6 +58,13 @@ export interface FrameInfo {
    */
   pointerAt: { x: number; y: number }
   /**
+   * KAMP-772: bumped by every pointer leave and every start(). Two pointerAt
+   * samples belong to one continuous stroke only if their epochs match. A
+   * boolean "present" flag can't say this: a leave and a re-entry can both land
+   * between two drawn frames, and the flag would read true on both.
+   */
+  pointerEpoch: number
+  /**
    * The title's text box in the canvas, normalised 0..1 with y down (DOM), or
    * null when hidden. For keeping busy detail out from behind the title. It is
    * the text extent, not the full-width title element.
@@ -164,6 +171,7 @@ export class ShaderEngine<R = void, S = void> {
   // KAMP-765: the last real cursor position, never recentred (see FrameInfo.pointerAt).
   private pointerAtX = 0
   private pointerAtY = 0
+  private pointerEpoch = 0
 
   private trackSeq = 0
   private artVisible = true
@@ -314,6 +322,7 @@ export class ShaderEngine<R = void, S = void> {
     this.pointerTargetX = this.pointerTargetY = 0
     this.pointerTargetActive = 0
     this.lastPointerAt = this.elapsed
+    this.pointerEpoch++
   }
 
   /**
@@ -371,6 +380,7 @@ export class ShaderEngine<R = void, S = void> {
     // Presence restarts from "away": the cursor is only over the pane once it moves.
     this.pointerTargetActive = this.pointerActive = 0
     this.lastPointerAt = this.elapsed
+    this.pointerEpoch++
     this.artShown = this.artVisible ? 1 : 0
     this.resumed = true
     this.scheduleLoop()
@@ -502,6 +512,7 @@ export class ShaderEngine<R = void, S = void> {
       pointerActive,
       pointerIdle: this.elapsed - this.lastPointerAt,
       pointerAt: { x: this.pointerAtX, y: this.pointerAtY },
+      pointerEpoch: this.pointerEpoch,
       titleRect: this.titleRect
     }
     if (!still) {

@@ -312,21 +312,23 @@ With the art shown, the five lights gather in the side strips and new drops form
 
 ## Cost
 
-`resScale` is 0.33 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus one bead cell, the drops near it (17 slots, each rejected by a bounding box) and one texture fetch. The measurements below predate the resting drops, which swapped a hashed bead field for ten more slots. Pixels behind the art are skipped (`GLSL_ART_SKIP`). Running drops keep the mask dirty, so expect a texture upload on most frames.
+`resScale` is 0.33 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus one bead cell, the drops near it (17 slots, each rejected by a bounding box) and one texture fetch. The resting drops swapped a hashed bead field for ten more slots, which cost about a point. Pixels behind the art are skipped (`GLSL_ART_SKIP`). Running drops keep the mask dirty, so expect a texture upload on most frames.
 
 Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing):
 
-| Variant                        | GPU busy      |
-| ------------------------------ | ------------- |
-| None                           | 3.01% ± 0.74  |
-| First build, 0.4, art shown    | 34.87% ± 1.08 |
-| 0.4, art shown (art skipped)   | 23.36% ± 0.90 |
-| 0.4, art hidden                | 33.28% ± 0.95 |
-| 0.4, art hidden, 15 fps        | 24.37% ± 0.64 |
-| **0.33, art hidden** (shipped) | 23.58% ± 0.59 |
-| 0.1, art hidden (diagnostic)   | 6.28% ± 1.13  |
+| Variant                                       | GPU busy      | Avg cores   |
+| --------------------------------------------- | ------------- | ----------- |
+| None                                          | 3.01% ± 0.74  | 1.28 ± 0.29 |
+| First build, 0.4, art shown                   | 34.87% ± 1.08 | 1.43 ± 0.30 |
+| First build, 0.4, wiping continuously         | 33.53% ± 1.59 | 1.80 ± 0.41 |
+| 0.4, art shown (art skipped)                  | 23.36% ± 0.90 | 1.50 ± 0.35 |
+| 0.4, art hidden                               | 33.28% ± 0.95 | 1.39 ± 0.35 |
+| 0.4, art hidden, 15 fps                       | 24.37% ± 0.64 | 1.80 ± 0.51 |
+| 0.33, art hidden                              | 23.58% ± 0.59 | 1.70 ± 0.52 |
+| **0.33, art hidden, resting drops** (shipped) | 24.53% ± 0.51 | 1.79 ± 0.63 |
+| 0.1, art hidden (diagnostic)                  | 6.28% ± 1.13  | 1.49 ± 0.37 |
 
-At 0.33 with the art shown, projected from the above, it is about 17%. Art hidden is a few points over the ~20% target and was accepted: 15 fps looked visibly less smooth, and 0.3 (about 20%) softens the smallest beads.
+At 0.33 with the art shown, projected from the above, it is about 18%. Art hidden is a few points over the ~20% target and was accepted: 15 fps looked visibly less smooth, and 0.3 (about 20%) softens the smallest beads.
 
 What the numbers say:
 
@@ -334,6 +336,7 @@ What the numbers say:
 - **Skipping the art saved about 11 points**, roughly its share of the pane.
 - **Sine-free hashes and CPU-placed lights saved nothing measurable.** Cut pixels or frames, not arithmetic.
 - **Cursor wiping costs nothing extra**: wiping continuously measured the same as the trickle alone.
+- **The CPU cost is lost in noise.** Every Tannhäuser run sits 0.1 to 0.5 cores above None, with spreads of ±0.3 to ±0.6, and resolution (which adds no CPU work) moves it as much as anything else. The drop simulation, merge checks included, does not show up.
 
 To measure, run these variants as described above. `tune()` is lost on a reload, so set it after the page loads and don't refresh before measuring:
 

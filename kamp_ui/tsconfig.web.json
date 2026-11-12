@@ -12,6 +12,10 @@
   "exclude": ["**/*.test.ts"],
   "compilerOptions": {
     "composite": true,
+    // KAMP-765: shared modules that import a sibling must use a `.ts` specifier,
+    // because node --test loads them with native type stripping. Same option as
+    // tsconfig.node.json (KAMP-744); Vite resolves the specifier when bundling.
+    "rewriteRelativeImportExtensions": true,
     "jsx": "react-jsx",
     "paths": {
       "@renderer/*": [

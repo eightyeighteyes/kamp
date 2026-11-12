@@ -51,6 +51,13 @@ export interface FrameInfo {
   /** Seconds since the last pointer movement or leave, for idle-gated moments. */
   pointerIdle: number
   /**
+   * KAMP-765: the last real cursor position over the pane, -1..1 (DOM y-down),
+   * un-eased and never recentred on leave. uPointer slides back to the centre
+   * faster than pointerActive fades, so a cursor effect anchored on it would
+   * drift toward the middle as it fades out; anchor such effects here instead.
+   */
+  pointerAt: { x: number; y: number }
+  /**
    * The title's text box in the canvas, normalised 0..1 with y down (DOM), or
    * null when hidden. For keeping busy detail out from behind the title. It is
    * the text extent, not the full-width title element.
@@ -154,6 +161,9 @@ export class ShaderEngine<R = void, S = void> {
   private pointerTargetActive = 0
   private pointerActive = 0
   private lastPointerAt = 0 // elapsed at the last pointer event
+  // KAMP-765: the last real cursor position, never recentred (see FrameInfo.pointerAt).
+  private pointerAtX = 0
+  private pointerAtY = 0
 
   private trackSeq = 0
   private artVisible = true
@@ -293,6 +303,8 @@ export class ShaderEngine<R = void, S = void> {
   setPointer(nx: number, ny: number): void {
     this.pointerTargetX = Math.max(-1, Math.min(1, nx))
     this.pointerTargetY = Math.max(-1, Math.min(1, ny))
+    this.pointerAtX = this.pointerTargetX
+    this.pointerAtY = this.pointerTargetY
     this.pointerTargetActive = 1
     this.lastPointerAt = this.elapsed
   }
@@ -489,6 +501,7 @@ export class ShaderEngine<R = void, S = void> {
       artShown: this.artShown,
       pointerActive,
       pointerIdle: this.elapsed - this.lastPointerAt,
+      pointerAt: { x: this.pointerAtX, y: this.pointerAtY },
       titleRect: this.titleRect
     }
     if (!still) {

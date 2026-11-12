@@ -11,13 +11,17 @@
 //   * Fog density comes from a CPU-side byte mask (shared/tannhauserTiming.ts
 //     FogMask) uploaded as a LUMINANCE texture. The cursor wipes it; it refills
 //     linearly. It is the first texture any background owns; see the README.
-//   * Beads: two hashed-cell fields, one cell lookup each. Rows are shifted by a
-//     per-row hash and most beads are small enough to roam their whole cell, so
-//     the field never reads as a lattice. A fine bead beside a swelling coarse
-//     one fades into it, which reads as merging. Beads exist only on fog.
-//   * Runs: a few drops always slide in stick-slip jerks, grow, merge and leave
-//     clear trails (SliderField). Their trails are wiped into the mask, so they
-//     refog on their own and swallow the beads along the way.
+//   * Fine beads: one hashed-cell field, one cell lookup. Rows are shifted by a
+//     per-row hash and the beads are small enough to roam their whole cell, so
+//     the field never reads as a lattice. They are the mist's texture, too small
+//     to read as drops a run should collide with, and exist only on fog.
+//   * Drops: every drop large enough to look collidable lives in SliderField
+//     and is drawn from uSliders. Resting drops swell and break loose; runs slide
+//     in stick-slip jerks, lean into drops beside their path, absorb what they
+//     meet and leave clear trails. Trails are wiped into the mask, so they refog
+//     on their own and swallow the fine beads along the way. (A KAMP-772 first
+//     cut drew the larger resting drops in the shader from a hash, where the CPU
+//     model could not see them, so runs passed straight through them.)
 //   * Every drop is a bottom-heavy lens: it sags, tapers at the top, and shows
 //     an inverted, brighter view of the lights, brightest in its thick base.
 //   * Track change: fresh fog breathes outward from the centre (BreathEnvelope).
@@ -43,8 +47,22 @@ import { GLSL_TITLE_MASK, setTitleUniform } from '../webgl/titleMask'
 // --- tunables (see TUNING.md) ----------------------------------------------------
 const WIPE_R = 0.075 // cursor wipe radius, pane heights
 const DRIFT_PERIODS_S: [number, number] = [131, 197] // the lights' slow drift
-const STILL_DROPS: [number, number] = [0.37, 0.61] // the reduced-motion still's beads
+const STILL_BEADS = 0.37 // the reduced-motion still's fine-bead phase
 const STILL_DRIFT: [number, number] = [1.3, 4.1]
+// The reduced-motion still's resting drops: x, y (0..1, DOM y-down), radius. Most
+// sit in the side strips, so they show whether or not the art is.
+const STILL_RESTING: [number, number, number][] = [
+  [0.07, 0.18, 0.011],
+  [0.15, 0.42, 0.008],
+  [0.09, 0.71, 0.013],
+  [0.18, 0.86, 0.007],
+  [0.86, 0.12, 0.009],
+  [0.92, 0.37, 0.012],
+  [0.83, 0.63, 0.007],
+  [0.9, 0.81, 0.014],
+  [0.36, 0.27, 0.01],
+  [0.62, 0.74, 0.009]
+]
 const SLOTS = SliderField.SLOTS
 const TRAIL_STAMP = { floor: SliderField.TRAIL_FLOOR, soft: true }
 const TAU = Math.PI * 2
@@ -53,7 +71,7 @@ const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}${GLSL_TITLE_MASK}${GLSL_
 uniform sampler2D uFog;  // fog mask, row 0 = top of the pane; 1 = fogged
 uniform float uFogOn;    // 1 = use the mask; 0 = the designed still (all fogged)
 uniform vec2 uBreath;    // front progress 0..1, strength 0..1
-uniform vec2 uDrops;     // fine and coarse bead phases, 0..1
+uniform float uBeads;    // fine bead phase, 0..1
 uniform vec4 uSliders[${SLOTS}]; // x, y (0..1, DOM y-down), radius (pane heights), alpha
 uniform float uStretch[${SLOTS}]; // vertical elongation, 1 at rest
 uniform vec4 uLights[${LIGHTS}];  // centre (pane heights, y up), 1/rs², 1/rd² (lightField)
@@ -84,11 +102,8 @@ float frostNoise(vec2 p) {
 
 const int SLOTS = ${SLOTS};
 const float FINE_CELL = 0.03;      // pane heights
-const float COARSE_CELL = 0.075;
 const float FINE_DENSITY = 0.55;   // fraction of cells holding a bead
-const float COARSE_DENSITY = 0.35;
 const float FINE_R = 0.22;         // largest bead, fraction of the cell
-const float COARSE_R = 0.2;
 const float REFRACT = 2.2;         // lens offset, radii
 const float BREATH_W = 0.18;       // soft width of the breath front, pane heights
 const float MIST = 0.2;            // mist veil over the backdrop
@@ -155,18 +170,14 @@ void main() {
               * uBreath.y;
   dens = max(dens, cover);
 
-  // Beads, strongest wins. They form only on fog: a wiped patch or a run's trail
-  // is clear glass until it mists over again.
+  // Fine beads form only on fog: a wiped patch or a run's trail is clear glass
+  // until it mists over again.
   float onFog = smoothstep(0.3, 0.8, dens);
-  vec4 fine = dropIn(q, FINE_CELL, FINE_DENSITY, FINE_R, uDrops.x, 3.1);
-  vec4 coarse = dropIn(q, COARSE_CELL, COARSE_DENSITY, COARSE_R, uDrops.y, 7.7);
-  float swell = coarse.z / (COARSE_CELL * COARSE_R);
-  fine.w *= 1.0 - (1.0 - smoothstep(1.0, 2.2, length(coarse.xy))) * swell;
-  fine.w *= onFog;
-  coarse.w *= onFog;
-  vec4 drop = coarse.w > fine.w ? coarse : fine;
+  vec4 drop = dropIn(q, FINE_CELL, FINE_DENSITY, FINE_R, uBeads, 3.1);
+  drop.w *= onFog;
 
-  // Running drops: never gated on fog (each has just cleared its own trail).
+  // Resting and running drops, strongest wins. Not gated on fog: a run has just
+  // cleared its own trail, and a wipe takes the drops under it in the model.
   for (int i = 0; i < SLOTS; i++) {
     vec4 s = uSliders[i];
     if (s.w <= 0.0) continue;
@@ -382,6 +393,14 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
           texY(mask, seg.by),
           WIPE_R * mask.h
         )
+        // The drops under the wipe go with the fog: out to the stamp's fully
+        // clear core, which is half its radius.
+        const n = (v: number): number => v * 0.5 + 0.5
+        sliders.wipe(
+          { ax: n(seg.ax), ay: n(seg.ay), bx: n(seg.bx), by: n(seg.by) },
+          WIPE_R * 0.5,
+          aspect
+        )
       }
       // Trails are 0..1 (DOM y-down), the same mapping as the shader's drops.
       // Soft and not wiped dry, so they taper from the start, not as tubes.
@@ -402,17 +421,23 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
     sliderBuf.fill(0)
     stretchBuf.fill(1)
     if (frame.atRest) {
-      // The designed still: fully fogged, a fixed scatter of beads, nothing running.
+      // The designed still: fully fogged, a fixed scatter of resting drops, nothing running.
       gl.uniform1f(quad.u('uFogOn'), 0)
       gl.uniform2f(quad.u('uBreath'), 0, 0)
-      gl.uniform2f(quad.u('uDrops'), STILL_DROPS[0], STILL_DROPS[1])
+      gl.uniform1f(quad.u('uBeads'), STILL_BEADS)
+      STILL_RESTING.forEach(([x, y, r], i) => {
+        sliderBuf[i * 4] = x
+        sliderBuf[i * 4 + 1] = y
+        sliderBuf[i * 4 + 2] = r
+        sliderBuf[i * 4 + 3] = 1
+      })
       drift[0] = STILL_DRIFT[0]
       drift[1] = STILL_DRIFT[1]
     } else {
       gl.uniform1f(quad.u('uFogOn'), 1)
       gl.uniform2f(quad.u('uBreath'), breath.progress, breath.amount)
-      const [fine, coarse] = dropPhase(t)
-      gl.uniform2f(quad.u('uDrops'), fine, coarse)
+      // Only the fine beads remain in the shader; the larger drops are SliderField's.
+      gl.uniform1f(quad.u('uBeads'), dropPhase(t)[0])
       const list = sliders.sliders
       for (let i = 0; i < Math.min(list.length, SLOTS); i++) {
         const s = list[i]

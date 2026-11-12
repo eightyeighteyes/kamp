@@ -348,7 +348,9 @@ export interface Slider {
   /** Vertical elongation, 1 at rest; a fast drop stretches a little. */
   stretch: number
   heavy: boolean
-  /** Being drawn into a larger drop; it shrinks away into that drop's centre. */
+  /** A drop sitting on the glass, swelling with condensation until it is heavy enough to run. */
+  resting: boolean
+  /** Being drawn into a larger drop (or wiped); it shrinks away. */
   merging: boolean
 }
 
@@ -358,7 +360,7 @@ export interface Trail extends Segment {
   r: number
 }
 
-type SliderPhase = 'form' | 'stuck' | 'slip' | 'merge'
+type SliderPhase = 'form' | 'rest' | 'stuck' | 'slip' | 'merge'
 
 interface SliderState extends Slider {
   phase: SliderPhase
@@ -369,6 +371,8 @@ interface SliderState extends Slider {
   rTarget: number
   travel: number
   wobble: number
+  /** Sideways offset from x0 gathered by leaning toward drops below (normalised x). */
+  lean: number
   into: SliderState | null
 }
 
@@ -388,14 +392,42 @@ interface SliderState extends Slider {
  * stamped soft with some fog left in (TRAIL_FLOOR), so it tapers from the first
  * frame instead of reading as a clean-cut tube until the refill rounds it off.
  *
+ * Resting drops sit on the glass between the runs. They swell slowly with
+ * condensation and break loose once heavy (R_BREAK). They are part of this model
+ * rather than the shader's hashed beads so that a run can actually collide with
+ * them: a run that reaches one absorbs it and grows, and a resting drop that
+ * swallows a smaller run may become heavy enough to run itself.
+ *
+ * Runs rarely line up by chance, so a sliding drop leans sideways toward a drop
+ * just below and beside it (within CAPTURE_K of their summed radii), as water
+ * is drawn toward wet glass. The lean is bounded per pane height run, so x never
+ * jumps.
+ *
  * Motion is ambient, so it runs whatever the cursor does. The rare moment is the
  * heavy drop: bigger, longer runs, in its own slot, and only once the cursor has
  * been still a while.
  */
 export class SliderField {
-  /** Ordinary drops at once. Plus one slot for the heavy drop. */
+  /** Ordinary drops running at once. Plus one slot for the heavy drop. */
   static readonly MAX = 6
-  static readonly SLOTS = SliderField.MAX + 1
+  /** Resting drops on the glass at once. */
+  static readonly REST_MAX = 10
+  static readonly SLOTS = SliderField.MAX + 1 + SliderField.REST_MAX
+  /** A resting drop's starting radius, pane heights. */
+  static readonly REST_R: [number, number] = [0.005, 0.011]
+  /** Radius a resting drop gains per second from condensation. */
+  static readonly REST_GROW = 0.00015
+  /** A resting drop this big breaks loose and runs. */
+  static readonly R_BREAK = 0.016
+  static readonly REST_GAP_FLOOR_S = 0.3
+  static readonly REST_GAP_MEAN_S = 1
+  static readonly REST_GAP_MAX_S = 5
+  /** A sliding drop is drawn toward a drop below it within this many summed radii to the side… */
+  static readonly CAPTURE_K = 2.5
+  /** …and at most this far below it, pane heights. */
+  static readonly CAPTURE_AHEAD = 0.2
+  /** Sideways lean per pane height run, at most. */
+  static readonly LEAN = 0.5
   static readonly SPAWN_FLOOR_S = 0.8
   static readonly SPAWN_MEAN_S = 2
   static readonly SPAWN_MAX_S = 8
@@ -443,21 +475,52 @@ export class SliderField {
   private nextId = 1
   nextSpawnAt: number
   nextHeavyAt: number
+  nextRestAt: number
   private readonly rng: () => number
 
   constructor(rng: () => number) {
     this.rng = rng
     this.nextSpawnAt = this.spawnGap()
     this.nextHeavyAt = this.heavyGap()
+    this.nextRestAt = 0
   }
 
   get sliders(): readonly Slider[] {
     return this.list
   }
 
-  /** Stop ordinary spawns (tests, and tuning). */
+  /** Stop ordinary and resting spawns (tests, and tuning). */
   pauseSpawning(): void {
     this.nextSpawnAt = Infinity
+    this.nextRestAt = Infinity
+  }
+
+  /** Form a resting drop at a given place (tests, and tuning). */
+  spawnRestAt(x: number, y: number, r: number): Slider {
+    const s = this.spawnAt(x, y, r) as SliderState
+    s.resting = true
+    return s
+  }
+
+  /**
+   * The cursor wiped the glass along `seg` (0..1, DOM y-down) with radius `r`
+   * pane heights: every drop it touches is smeared away, shrinking rather than
+   * popping.
+   */
+  wipe(seg: Segment, r: number, aspect: number): void {
+    const ax = seg.ax * aspect
+    const bx = seg.bx * aspect
+    const dx = bx - ax
+    const dy = seg.by - seg.ay
+    const len2 = dx * dx + dy * dy
+    for (const s of this.list) {
+      if (s.phase === 'merge') continue
+      const px = s.x * aspect
+      const t =
+        len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (s.y - seg.ay) * dy) / len2)) : 0
+      const d = Math.hypot(px - (ax + dx * t), s.y - (seg.ay + dy * t))
+      if (d < r + s.r) this.absorb(s, null)
+    }
   }
 
   /** Make the heavy drop due now (tuning, and tests). Still waits for idle. */
@@ -476,6 +539,7 @@ export class SliderField {
       alpha: 0,
       stretch: 1,
       heavy,
+      resting: false,
       merging: false,
       phase: 'form',
       age: 0,
@@ -484,6 +548,7 @@ export class SliderField {
       rTarget: r,
       travel: 0,
       wobble: this.rng() * Math.PI * 2,
+      lean: 0,
       into: null
     }
     this.list.push(s)
@@ -526,7 +591,17 @@ export class SliderField {
         if (s.age >= s.dur) {
           // Land on exactly 1: the last form tick can stop just short of it.
           s.alpha = 1
-          this.enter(s, 'stuck')
+          this.enter(s, s.resting ? 'rest' : 'stuck')
+        }
+        break
+      case 'rest':
+        // Condensation swells it. Never shrink a drop a merge already made bigger.
+        if (s.rTarget < SliderField.R_BREAK) {
+          s.rTarget = Math.min(SliderField.R_BREAK, s.rTarget + SliderField.REST_GROW * step)
+        }
+        // Heavy enough, and room in the trickle: it breaks loose. Otherwise it waits.
+        if (s.r >= SliderField.R_BREAK * 0.97 && this.running() < SliderField.MAX) {
+          this.breakLoose(s)
         }
         break
       case 'stuck':
@@ -552,7 +627,15 @@ export class SliderField {
     s.y += dy
     s.travel += dy
     // Runs meander: x is a function of distance run, so it never jumps.
-    s.x = s.x0 + (0.01 * (Math.sin(s.wobble + s.travel * 12) - Math.sin(s.wobble))) / aspect
+    const meander = (0.01 * (Math.sin(s.wobble + s.travel * 12) - Math.sin(s.wobble))) / aspect
+    // And lean toward a drop just below and beside the path, bounded per distance run.
+    const toward = this.captureTarget(s, aspect)
+    if (toward) {
+      const maxLean = (SliderField.LEAN * dy) / aspect
+      const want = toward.x - s.x0 - meander - s.lean
+      s.lean += Math.max(-maxLean, Math.min(maxLean, want))
+    }
+    s.x = s.x0 + s.lean + meander
     s.rTarget = Math.min(SliderField.R_MAX, s.rTarget + SliderField.GROW * dy)
     s.stretch = 1 + 0.5 * (s.v / SliderField.V_CAP)
     const taper = Math.min(
@@ -594,12 +677,61 @@ export class SliderField {
         const [big, small] = a.r >= b.r ? [a, b] : [b, a]
         // The larger keeps their combined area (capped), eased in by R_TAU.
         big.rTarget = Math.min(SliderField.R_MAX, Math.hypot(big.rTarget, small.rTarget))
-        small.phase = 'merge'
-        small.merging = true
-        small.into = big
-        small.age = 0
+        this.absorb(small, big)
+        if (big.resting) {
+          // A resting drop that swallows a run may now be heavy enough to run.
+          // The run it swallowed frees its place in the trickle.
+          if (big.rTarget >= SliderField.R_BREAK && big.phase === 'rest') this.breakLoose(big)
+        } else if (big.phase === 'stuck') {
+          // The added weight pushes a clinging drop on.
+          this.enter(big, 'slip')
+        }
       }
     }
+  }
+
+  /** Start `s` shrinking away: into `into`, or in place (wiped, or `into` has gone). */
+  private absorb(s: SliderState, into: SliderState | null): void {
+    s.phase = 'merge'
+    s.merging = true
+    s.into = into
+    s.age = 0
+  }
+
+  /** Ordinary drops on the move (or about to be): not resting, heavy or shrinking away. */
+  private running(): number {
+    let n = 0
+    for (const s of this.list) if (!s.heavy && !s.resting && s.phase !== 'merge') n++
+    return n
+  }
+
+  /** A resting drop starts to run from where it sits, so its x and trail start there. */
+  private breakLoose(s: SliderState): void {
+    s.resting = false
+    s.x0 = s.x
+    s.lean = 0
+    s.travel = 0
+    this.enter(s, 'slip')
+  }
+
+  /**
+   * The nearest drop just below `s` and close enough to the side to draw it in,
+   * or null. "Below" is strict, so two drops level with each other don't pull.
+   */
+  private captureTarget(s: SliderState, aspect: number): SliderState | null {
+    let best: SliderState | null = null
+    let bestDy = Infinity
+    for (const c of this.list) {
+      if (c === s || c.phase === 'merge') continue
+      const dy = c.y - s.y
+      if (dy <= 0 || dy > SliderField.CAPTURE_AHEAD) continue
+      if (Math.abs(c.x - s.x) * aspect > SliderField.CAPTURE_K * (s.r + c.r)) continue
+      if (dy < bestDy) {
+        best = c
+        bestDy = dy
+      }
+    }
+    return best
   }
 
   private removeFinished(): void {
@@ -613,13 +745,33 @@ export class SliderField {
   }
 
   private spawn(elapsed: number, idle: number, artShown: number): void {
-    const ordinary = this.list.filter((s) => !s.heavy).length
-    if (elapsed >= this.nextSpawnAt && ordinary < SliderField.MAX) {
+    // Only spawns add drops, so checking the slot count here keeps the list
+    // within SLOTS (what the shader can draw) at all times.
+    const room = (): number => SliderField.SLOTS - this.list.length
+    if (elapsed >= this.nextSpawnAt && this.running() < SliderField.MAX && room() > 0) {
       this.spawnAt(this.pickX(artShown), this.lerp([0.02, 0.55]), this.lerp(SliderField.R))
       this.nextSpawnAt = elapsed + this.spawnGap()
     }
+    const resting = this.list.filter((s) => s.resting && s.phase !== 'merge').length
+    // Resting drops leave two slots free, so a run and the heavy drop can always start.
+    if (elapsed >= this.nextRestAt && resting < SliderField.REST_MAX && room() > 2) {
+      this.spawnRestAt(this.pickX(artShown), this.lerp([0.04, 0.92]), this.lerp(SliderField.REST_R))
+      this.nextRestAt =
+        elapsed +
+        poissonGap(
+          this.rng(),
+          SliderField.REST_GAP_FLOOR_S,
+          SliderField.REST_GAP_MEAN_S,
+          SliderField.REST_GAP_MAX_S
+        )
+    }
     const heavyLive = this.list.some((s) => s.heavy)
-    if (elapsed >= this.nextHeavyAt && idle >= SliderField.HEAVY_IDLE_S && !heavyLive) {
+    if (
+      elapsed >= this.nextHeavyAt &&
+      idle >= SliderField.HEAVY_IDLE_S &&
+      !heavyLive &&
+      room() > 0
+    ) {
       this.spawnAt(
         this.pickX(artShown),
         this.lerp([0.05, 0.3]),

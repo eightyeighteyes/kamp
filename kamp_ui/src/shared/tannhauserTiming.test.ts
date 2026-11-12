@@ -357,12 +357,125 @@ test('the trickle is steady: a few drops are usually on the move, never too many
   const { snaps } = runField(f, 120)
   let total = 0
   for (const s of snaps) {
-    assert.ok(s.filter((d) => !d.heavy).length <= SliderField.MAX)
+    const running = s.filter((d) => !d.heavy && !d.resting && !d.merging)
+    assert.ok(running.length <= SliderField.MAX)
     assert.ok(s.length <= SliderField.SLOTS)
-    total += s.length
+    total += running.length
   }
   const mean = total / snaps.length
-  assert.ok(mean >= 2 && mean <= SliderField.MAX, `mean active ${mean}`)
+  assert.ok(mean >= 2 && mean <= SliderField.MAX, `mean running ${mean}`)
+})
+
+test('resting drops are always scattered over the glass', () => {
+  const f = new SliderField(seeded(31))
+  const { snaps } = runField(f, 60)
+  const later = snaps.slice(snaps.length / 2)
+  const mean = later.reduce((n, s) => n + s.filter((d) => d.resting).length, 0) / later.length
+  assert.ok(mean >= SliderField.REST_MAX * 0.5, `mean resting ${mean}`)
+})
+
+test('a resting drop sits still and swells, then breaks loose and runs once heavy', () => {
+  const f = new SliderField(seeded(32))
+  f.pauseSpawning()
+  const d = f.spawnRestAt(0.5, 0.3, 0.008)
+  runField(f, 5)
+  let s = f.sliders.find((x) => x.id === d.id)!
+  assert.equal(s.y, 0.3, 'a resting drop moved')
+  assert.ok(s.resting)
+  assert.ok(s.r > 0.008, 'a resting drop never swelled')
+  runField(f, 120)
+  s = f.sliders.find((x) => x.id === d.id)!
+  assert.ok(!s || !s.resting, 'never broke loose')
+  if (s) assert.ok(s.y > 0.3, 'broke loose but never ran')
+})
+
+/** Run until `id` starts merging into another drop; return whether it did. */
+function mergedWithin(f: SliderField, id: number, seconds: number): boolean {
+  for (let i = 0; i < seconds * 20; i++) {
+    f.tick(1 / 20, i / 20, 0, 0, ASPECT)
+    const s = f.sliders.find((x) => x.id === id)
+    if (!s) return false
+    if (s.merging) return true
+  }
+  return false
+}
+
+test('a running drop that reaches a resting drop absorbs it and grows', () => {
+  const f = new SliderField(seeded(33))
+  f.pauseSpawning()
+  const runner = f.spawnAt(0.5, 0.2, 0.012)
+  const sitter = f.spawnRestAt(0.5, 0.45, 0.009)
+  assert.ok(mergedWithin(f, sitter.id, 60), 'the run passed through the resting drop')
+  runField(f, 1)
+  const s = f.sliders.find((x) => x.id === runner.id)!
+  assert.ok(s.r >= Math.hypot(0.012, 0.009) - 0.0005, `r=${s.r}`)
+})
+
+test('a running drop is drawn sideways into a drop just beside its path', () => {
+  const f = new SliderField(seeded(34))
+  f.pauseSpawning()
+  f.spawnAt(0.5, 0.2, 0.012)
+  // 0.025 pane heights to the side: beyond the merge distance, inside the reach.
+  const near = f.spawnRestAt(0.5 + 0.025 / ASPECT, 0.4, 0.009)
+  assert.ok(mergedWithin(f, near.id, 60), 'the run never reached the drop beside it')
+})
+
+test('a running drop leaves a drop well clear of its path alone', () => {
+  const f = new SliderField(seeded(34))
+  f.pauseSpawning()
+  const runner = f.spawnAt(0.5, 0.2, 0.012)
+  const far = f.spawnRestAt(0.5 + 0.12 / ASPECT, 0.4, 0.009)
+  for (let i = 0; i < 60 * 20 && f.sliders.some((x) => x.id === runner.id); i++) {
+    f.tick(1 / 20, i / 20, 0, 0, ASPECT)
+    const s = f.sliders.find((x) => x.id === far.id)
+    assert.ok(s && !s.merging, 'a distant drop was pulled in')
+  }
+})
+
+test('two runs on neighbouring paths combine', () => {
+  const f = new SliderField(seeded(35))
+  f.pauseSpawning()
+  f.spawnAt(0.5, 0.05, 0.016)
+  // 0.05 apart: wider than the merge distance plus both meanders, so only the
+  // sideways pull can bring them together.
+  const lower = f.spawnAt(0.5 + 0.05 / ASPECT, 0.2, 0.008)
+  assert.ok(mergedWithin(f, lower.id, 60), 'the two runs never met')
+})
+
+test('left to itself, the glass shows runs meeting other drops every few seconds', () => {
+  const f = new SliderField(seeded(37))
+  const { snaps } = runField(f, 120)
+  const merged = new Set<number>()
+  for (const s of snaps) for (const d of s) if (d.merging) merged.add(d.id)
+  // Nothing else merges here: there is no cursor, so no wipes.
+  assert.ok(merged.size >= 15, `only ${merged.size} merges in two minutes`)
+})
+
+test('a wipe takes the drops under it, which shrink away rather than pop', () => {
+  const f = new SliderField(seeded(36))
+  f.pauseSpawning()
+  const hit = f.spawnRestAt(0.5, 0.5, 0.01)
+  const miss = f.spawnRestAt(0.9, 0.5, 0.01)
+  runField(f, 1)
+  f.wipe({ ax: 0.4, ay: 0.5, bx: 0.6, by: 0.5 }, 0.05, ASPECT)
+  let prev = f.sliders.find((x) => x.id === hit.id)!.r
+  for (let i = 0; i < 40; i++) {
+    f.tick(1 / 20, i / 20, 0, 0, ASPECT)
+    const s = f.sliders.find((x) => x.id === hit.id)
+    if (!s) break
+    assert.ok(s.merging)
+    assert.ok(s.r <= prev + 1e-12)
+    prev = s.r
+  }
+  assert.equal(
+    f.sliders.find((x) => x.id === hit.id),
+    undefined,
+    'the wiped drop stayed'
+  )
+  assert.ok(
+    f.sliders.find((x) => x.id === miss.id && !x.merging),
+    'a drop outside the wipe went'
+  )
 })
 
 test('a new drop forms in place before it breaks loose', () => {

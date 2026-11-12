@@ -284,7 +284,11 @@ The fog density is a byte mask (`FogMask`, 256 texels high, width by aspect), up
 | `SliderField.TRAIL_FLOOR`                    | 60 / 255                             | Fog left in the middle of a trail. Higher reads as a damp streak; 0 wipes it dry and the trail looks cut out.           |
 | `SliderField.MERGE_K` / `MERGE_TAU`          | 0.8 / 0.08 s                         | How close two drops get before merging, and how fast the smaller is drawn into the larger. The larger keeps their area. |
 | `SliderField.HEAVY_GAP_*` / `HEAVY_IDLE_S`   | 60 + exp(100) s, capped at 240 / 6 s | The rare heavy drop: bigger, longer runs, only once the cursor has been still. Call `forceHeavy()` to see one.          |
-| `DROP_PERIODS_S`                             | 29 / 47 s                            | Life cycles of the fine and coarse beads. Each forms, swells and is drawn away once per cycle, at its own offset.       |
+| `SliderField.REST_MAX` / `REST_R`            | 10 / 0.005–0.011                     | Resting drops on the glass, and their size when they form. They are what a run visibly collides with.                   |
+| `SliderField.REST_GROW` / `R_BREAK`          | 0.00015/s / 0.016                    | How fast a resting drop swells, and the size at which it breaks loose and runs (about a minute from forming).           |
+| `SliderField.CAPTURE_K` / `CAPTURE_AHEAD`    | 2.5 / 0.2                            | How far to the side (in summed radii) and how far below a run is drawn toward a drop. Higher means more merges.         |
+| `SliderField.LEAN`                           | 0.5                                  | Sideways lean per pane height run. Higher swerves harder into a neighbour; it is also what keeps x from jumping.        |
+| `DROP_PERIODS_S`                             | 29 s                                 | Life cycle of the fine beads. The second period (47 s) belonged to the removed hashed coarse beads and is unused.       |
 
 ## Look — `tannhauserSpec.ts`
 
@@ -304,11 +308,11 @@ The GLSL constants are at the top of `FRAG`:
 - `BREATH_W` (0.18) and `FRESH` (0.12): the soft width of the breath's front, and how much thicker fresh fog looks.
 - `TITLE_QUIET` (0.75): how far the scene is pulled back to `--bg` behind the title text.
 
-With the art shown, the five lights gather in the side strips and new drops form there. A fine bead beside a swelling coarse one fades into it. Beads only form on fog, so a wiped patch or a run's trail is clear glass until it mists over.
+With the art shown, the five lights gather in the side strips and new drops form there. The shader draws only the fine beads, which are the mist's texture and only form on fog, so a wiped patch or a run's trail is clear glass until it mists over. Every larger drop, resting or running, is in `SliderField`: a drop drawn by the shader alone can't collide with anything, because the model can't see it. A cursor wipe takes the drops under it.
 
 ## Cost
 
-`resScale` is 0.33 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus two bead cells, the running drops near it and one texture fetch. Pixels behind the art are skipped (`GLSL_ART_SKIP`). Running drops keep the mask dirty, so expect a texture upload on most frames.
+`resScale` is 0.33 and the frame cap is 20 fps. Drops need crisper edges than Borealis's curtains. Each pixel evaluates the five lights once, plus one bead cell, the drops near it (17 slots, each rejected by a bounding box) and one texture fetch. The measurements below predate the resting drops, which swapped a hashed bead field for ten more slots. Pixels behind the art are skipped (`GLSL_ART_SKIP`). Running drops keep the mask dirty, so expect a texture upload on most frames.
 
 Measured on the Intel Mac on 2026-11-12 (n = 60 each, 60 Hz, music playing):
 

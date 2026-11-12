@@ -89,6 +89,25 @@ test('stamps min-blend: a second stamp never adds fog back', () => {
   for (let i = 0; i < m.data.length; i++) assert.ok(m.data[i] <= before[i])
 })
 
+test('a stamp with a floor leaves some fog at its centre, and never fogs a clearer texel', () => {
+  const m = new FogMask(64, 48)
+  m.stamp(32, 24, 6, { floor: 64 })
+  assert.equal(at(m, 32, 24), 64)
+  m.stamp(10, 10, 4) // fully clear
+  m.stamp(10, 10, 4, { floor: 64 })
+  assert.equal(at(m, 10, 10), 0)
+})
+
+test('a soft stamp is a cone: it starts refogging right away from the centre', () => {
+  const hard = new FogMask(64, 48)
+  const soft = new FogMask(64, 48)
+  hard.stamp(32, 24, 6)
+  soft.stamp(32, 24, 6, { soft: true })
+  assert.equal(at(hard, 33, 24), 0, 'a hard stamp has a flat clear core')
+  assert.ok(at(soft, 33, 24) > 0, 'a soft stamp has no flat core')
+  assert.equal(at(soft, 32, 24), 0)
+})
+
 test('a stamp outside the mask is clipped, not wrapped', () => {
   const m = new FogMask(20, 20)
   m.stamp(-3, 10, 4)
@@ -467,6 +486,41 @@ test('a drop that runs off the bottom is removed', () => {
     f.sliders.find((x) => x.id === d.id),
     undefined
   )
+})
+
+test('a running drop never fades out: it leaves only off the bottom of the pane', () => {
+  const f = new SliderField(seeded(22))
+  f.pauseSpawning()
+  const d = f.spawnAt(0.5, 0.1, 0.012)
+  let last: Slider | undefined
+  for (let i = 0; i < 20 * 300; i++) {
+    f.tick(1 / 20, i / 20, 0, 0, ASPECT)
+    const s = f.sliders.find((x) => x.id === d.id)
+    if (!s) break
+    if (i / 20 > SliderField.FORM_S) assert.equal(s.alpha, 1, `faded at y=${s.y}`)
+    last = { ...s }
+  }
+  assert.equal(
+    f.sliders.find((x) => x.id === d.id),
+    undefined,
+    'still running after 5 minutes'
+  )
+  assert.ok(last && last.y - last.r > 0.98, `vanished mid-pane at y=${last?.y}`)
+})
+
+test('a trail starts narrow where the drop broke loose and widens behind it', () => {
+  const f = new SliderField(seeded(23))
+  f.pauseSpawning()
+  const d = f.spawnAt(0.5, 0.05, 0.014)
+  const { trails, snaps } = runField(f, 30)
+  const mine = trails.flatMap((ts, i) =>
+    ts.filter((t) => t.id === d.id).map((t) => ({ t, s: snaps[i].find((x) => x.id === d.id) }))
+  )
+  assert.ok(mine.length > 10, 'too few trail segments')
+  const first = mine[0].t
+  const later = mine[mine.length - 1].t
+  assert.ok(first.r < later.r * 0.6, `no taper: ${first.r} vs ${later.r}`)
+  for (const { t, s } of mine) if (s) assert.ok(t.r <= s.r * SliderField.TRAIL_R + 1e-12)
 })
 
 test('with the art shown, drops start in the side strips', () => {

@@ -40,6 +40,17 @@ export function maskWidth(aspect: number): number {
   return Math.max(MIN_W, Math.min(MAX_W, Math.round(MASK_H * aspect)))
 }
 
+export interface StampOpts {
+  /**
+   * Fog left at the centre, 0..255. A run's trail is not wiped dry: some
+   * moisture stays, so its edges refog first and it reads as tapering from the
+   * start rather than as a clean-cut tube.
+   */
+  floor?: number
+  /** A cone with no flat clear core, for the same reason. */
+  soft?: boolean
+}
+
 export class FogMask {
   /** Seconds for a fully wiped texel to fog over again. Linear, so doodles fade evenly. */
   static readonly REFILL_S = 10
@@ -109,11 +120,12 @@ export class FogMask {
 
   /**
    * Wipe a soft disc centred on texel (cx, cy) with radius r texels. Min-blended,
-   * so overlapping stamps never add fog back.
+   * so overlapping stamps never add fog back. See StampOpts for trails.
    */
-  stamp(cx: number, cy: number, r: number): void {
+  stamp(cx: number, cy: number, r: number, opts: StampOpts = {}): void {
     const R = Math.max(r, MIN_FALLOFF)
-    const inner = Math.max(0, R - Math.max(MIN_FALLOFF, R * 0.5))
+    const inner = opts.soft ? 0 : Math.max(0, R - Math.max(MIN_FALLOFF, R * 0.5))
+    const floor = opts.floor ?? 0
     const x0 = Math.max(0, Math.floor(cx - R))
     const x1 = Math.min(this.w - 1, Math.ceil(cx + R))
     const y0 = Math.max(0, Math.floor(cy - R))
@@ -126,7 +138,7 @@ export class FogMask {
         const dx = x - cx
         const dist = Math.sqrt(dx * dx + dy * dy)
         if (dist >= R) continue
-        const v = Math.round(FOG_FULL * smoothstep((dist - inner) / (R - inner)))
+        const v = Math.round(floor + (FOG_FULL - floor) * smoothstep((dist - inner) / (R - inner)))
         const i = y * this.w + x
         if (v < d[i]) {
           d[i] = v
@@ -141,13 +153,13 @@ export class FogMask {
   }
 
   /** Wipe a capsule from (ax, ay) to (bx, by), in texels. Returns the stamp count. */
-  stroke(ax: number, ay: number, bx: number, by: number, r: number): number {
+  stroke(ax: number, ay: number, bx: number, by: number, r: number, opts: StampOpts = {}): number {
     const len = Math.hypot(bx - ax, by - ay)
     const spacing = Math.max(0.5, Math.max(r, MIN_FALLOFF) / 3)
     const n = Math.min(FogMask.MAX_STAMPS, Math.ceil(len / spacing) + 1)
     for (let i = 0; i < n; i++) {
       const t = n === 1 ? 1 : i / (n - 1)
-      this.stamp(ax + (bx - ax) * t, ay + (by - ay) * t, r)
+      this.stamp(ax + (bx - ax) * t, ay + (by - ay) * t, r, opts)
     }
     return n
   }
@@ -342,7 +354,7 @@ export interface Trail extends Segment {
   r: number
 }
 
-type SliderPhase = 'form' | 'stuck' | 'slip' | 'fade' | 'merge'
+type SliderPhase = 'form' | 'stuck' | 'slip' | 'merge'
 
 interface SliderState extends Slider {
   phase: SliderPhase
@@ -352,7 +364,6 @@ interface SliderState extends Slider {
   v: number
   rTarget: number
   travel: number
-  maxTravel: number
   wobble: number
   into: SliderState | null
 }
@@ -361,13 +372,17 @@ interface SliderState extends Slider {
  * The trickle: a few drops always on the move (KAMP-772, after a first cut with
  * only a rare single slide read as static). Each forms in place, then runs in
  * stick-slip jerks: stuck for a moment, then slipping down a short way. It
- * gathers the beads in its path (its radius grows with travel), merges with any
- * drop it meets (the larger keeps their combined area), and stops and fades
- * once it has run its course or leaves the bottom of the pane.
+ * gathers the beads in its path (its radius grows with travel) and merges with
+ * any drop it meets (the larger keeps their combined area). A running drop never
+ * fades out: water doesn't evaporate mid-run, so it leaves only off the bottom
+ * of the pane or by being drawn into a larger drop.
  *
  * The caller wipes each returned Trail into the fog mask, so a run leaves clear
  * glass behind it that refogs on its own, and the static beads along it vanish
- * (the shader beads only on fog) as if the drop had swallowed them.
+ * (the shader beads only on fog) as if the drop had swallowed them. A trail
+ * starts narrow where the drop broke loose and widens over TAPER_LEN, and it is
+ * stamped soft with some fog left in (TRAIL_FLOOR), so it tapers from the first
+ * frame instead of reading as a clean-cut tube until the refill rounds it off.
  *
  * Motion is ambient, so it runs whatever the cursor does. The rare moment is the
  * heavy drop: bigger, longer runs, in its own slot, and only once the cursor has
@@ -381,10 +396,8 @@ export class SliderField {
   static readonly SPAWN_MEAN_S = 2
   static readonly SPAWN_MAX_S = 8
   static readonly FORM_S = 0.6
-  static readonly FADE_S = 1.5
   static readonly STUCK_S: [number, number] = [0.4, 2.2]
   static readonly SLIP_S: [number, number] = [0.25, 0.9]
-  static readonly TRAVEL: [number, number] = [0.15, 0.6]
   static readonly R: [number, number] = [0.007, 0.014]
   static readonly R_MAX = 0.03
   /** Radius gained per pane height run: the beads it swallows on the way. */
@@ -399,17 +412,22 @@ export class SliderField {
   static readonly MERGE_TAU = 0.08
   /** Drops merge once their centres are this fraction of their summed radii apart. */
   static readonly MERGE_K = 0.8
+  /** A trail's full width, as a fraction of its drop's radius. */
   static readonly TRAIL_R = 0.7
+  /** Width at the very start of a run, as a fraction of the full trail width. */
+  static readonly TRAIL_START = 0.3
+  /** Pane heights a drop runs before its trail reaches full width. */
+  static readonly TAPER_LEN = 0.1
+  /** Fog left in the middle of a trail, 0..255: a run doesn't wipe the glass dry. */
+  static readonly TRAIL_FLOOR = 60
   static readonly HEAVY_GAP_FLOOR_S = 60
   static readonly HEAVY_GAP_MEAN_S = 100
   static readonly HEAVY_GAP_MAX_S = 240
   static readonly HEAVY_IDLE_S = 6
   static readonly HEAVY_R: [number, number] = [0.022, 0.028]
-  static readonly HEAVY_TRAVEL: [number, number] = [0.5, 0.9]
   static readonly MAX_DT = 0.1
-  /** smoothstep's steepest slope is 1.5 / duration; the shortest fade bounds every alpha step. */
-  static readonly MAX_ALPHA_STEP =
-    (1.5 * SliderField.MAX_DT) / Math.min(SliderField.FORM_S, SliderField.FADE_S)
+  /** smoothstep's steepest slope is 1.5 / duration; forming is the only alpha change. */
+  static readonly MAX_ALPHA_STEP = (1.5 * SliderField.MAX_DT) / SliderField.FORM_S
   static readonly MAX_R_STEP =
     SliderField.R_MAX * (1 - Math.exp(-SliderField.MAX_DT / SliderField.R_TAU))
 
@@ -441,7 +459,6 @@ export class SliderField {
 
   /** Form an ordinary drop at a given place (tests, and tuning). */
   spawnAt(x: number, y: number, r: number, heavy = false): Slider {
-    const range = heavy ? SliderField.HEAVY_TRAVEL : SliderField.TRAVEL
     const s: SliderState = {
       id: this.nextId++,
       x,
@@ -458,7 +475,6 @@ export class SliderField {
       v: 0,
       rTarget: r,
       travel: 0,
-      maxTravel: this.lerp(range),
       wobble: this.rng() * Math.PI * 2,
       into: null
     }
@@ -499,19 +515,17 @@ export class SliderField {
     switch (s.phase) {
       case 'form':
         s.alpha = smoothstep(s.age / s.dur)
-        if (s.age >= s.dur) this.enter(s, 'stuck')
+        if (s.age >= s.dur) {
+          // Land on exactly 1: the last form tick can stop just short of it.
+          s.alpha = 1
+          this.enter(s, 'stuck')
+        }
         break
       case 'stuck':
-        if (s.age >= s.dur) {
-          if (s.travel >= s.maxTravel) this.enter(s, 'fade')
-          else this.enter(s, 'slip')
-        }
+        if (s.age >= s.dur) this.enter(s, 'slip')
         break
       case 'slip':
         if (s.age >= s.dur) this.enter(s, 'stuck')
-        break
-      case 'fade':
-        s.alpha = 1 - smoothstep(s.age / s.dur)
         break
     }
 
@@ -533,7 +547,11 @@ export class SliderField {
     s.x = s.x0 + (0.01 * (Math.sin(s.wobble + s.travel * 12) - Math.sin(s.wobble))) / aspect
     s.rTarget = Math.min(SliderField.R_MAX, s.rTarget + SliderField.GROW * dy)
     s.stretch = 1 + 0.5 * (s.v / SliderField.V_CAP)
-    trails.push({ id: s.id, ax, ay, bx: s.x, by: s.y, r: s.r * SliderField.TRAIL_R })
+    const taper = Math.min(
+      1,
+      SliderField.TRAIL_START + ((1 - SliderField.TRAIL_START) * s.travel) / SliderField.TAPER_LEN
+    )
+    trails.push({ id: s.id, ax, ay, bx: s.x, by: s.y, r: s.r * SliderField.TRAIL_R * taper })
   }
 
   private enter(s: SliderState, phase: SliderPhase): void {
@@ -546,9 +564,6 @@ export class SliderField {
         break
       case 'slip':
         s.dur = this.lerp(heavy ? [0.6, 1.4] : SliderField.SLIP_S)
-        break
-      case 'fade':
-        s.dur = SliderField.FADE_S
         break
       default:
         break
@@ -582,10 +597,7 @@ export class SliderField {
   private removeFinished(): void {
     for (let i = this.list.length - 1; i >= 0; i--) {
       const s = this.list[i]
-      const gone =
-        (s.phase === 'merge' && s.r < 0.0004) ||
-        (s.phase === 'fade' && s.age >= s.dur) ||
-        s.y - s.r > 1.02
+      const gone = (s.phase === 'merge' && s.r < 0.0004) || s.y - s.r > 1.02
       if (gone) this.list.splice(i, 1)
     }
     // A drop being drawn into one that has gone just finishes shrinking in place.

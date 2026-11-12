@@ -43,6 +43,7 @@ const DRIFT_PERIODS_S: [number, number] = [131, 197] // the lights' slow drift
 const STILL_DROPS: [number, number] = [0.37, 0.61] // the reduced-motion still's beads
 const STILL_DRIFT: [number, number] = [1.3, 4.1]
 const SLOTS = SliderField.SLOTS
+const TRAIL_STAMP = { floor: SliderField.TRAIL_FLOOR, soft: true }
 const TAU = Math.PI * 2
 
 const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}${GLSL_TITLE_MASK}
@@ -351,13 +352,15 @@ export const TANNHAUSER_SPEC: ShaderSpec<TannhauserRes, TannhauserState> = {
         )
       }
       // Trails are 0..1 (DOM y-down), the same mapping as the shader's drops.
+      // Soft and not wiped dry, so they taper from the start, not as tubes.
       for (const tr of sliders.tick(frame.dt, t, frame.pointerIdle, frame.artShown, aspect)) {
         mask.stroke(
           tr.ax * mask.w - 0.5,
           tr.ay * mask.h - 0.5,
           tr.bx * mask.w - 0.5,
           tr.by * mask.h - 0.5,
-          tr.r * mask.h
+          tr.r * mask.h,
+          TRAIL_STAMP
         )
       }
       mask.refill(frame.dt)

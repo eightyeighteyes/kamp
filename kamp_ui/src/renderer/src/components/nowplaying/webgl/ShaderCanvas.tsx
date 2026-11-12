@@ -23,26 +23,27 @@ interface ShaderCanvasProps<R, S> extends NowPlayingEngineProps {
 }
 
 /**
- * The art + title box relative to the canvas, normalised (DOM y-down), or null
- * when the art is hidden. Measured from the DOM, as Chapel's measureTitle does.
+ * The title's TEXT box relative to the canvas, normalised (DOM y-down), or null
+ * when the title is hidden (it hides with the art, KAMP-769).
+ *
+ * The text, not the element: `.now-playing-title` and `.now-playing-meta` are
+ * full-width, so their boxes span the whole pane and anything muted "behind the
+ * title" would be muted everywhere. The art is opaque, so it needs no rect at all.
  */
-function measureContent(canvas: HTMLCanvasElement): ContentRect | null {
-  const pane = canvas.closest('.now-playing')
-  const art = pane?.querySelector('.now-playing-art')
-  if (!art) return null
+function measureTitle(canvas: HTMLCanvasElement): ContentRect | null {
+  const title = canvas.closest('.now-playing')?.querySelector('.now-playing-title')
+  if (!title) return null
   const c = canvas.getBoundingClientRect()
   if (c.width === 0 || c.height === 0) return null
-  const a = art.getBoundingClientRect()
-  const m = pane?.querySelector('.now-playing-meta')?.getBoundingClientRect()
-  const left = Math.min(a.left, m?.left ?? a.left)
-  const right = Math.max(a.right, m?.right ?? a.right)
-  const top = a.top
-  const bottom = Math.max(a.bottom, m?.bottom ?? a.bottom)
+  const range = document.createRange()
+  range.selectNodeContents(title)
+  const t = range.getBoundingClientRect()
+  if (t.width === 0 || t.height === 0) return null
   return {
-    x0: (left - c.left) / c.width,
-    x1: (right - c.left) / c.width,
-    y0: (top - c.top) / c.height,
-    y1: (bottom - c.top) / c.height
+    x0: (t.left - c.left) / c.width,
+    x1: (t.right - c.left) / c.width,
+    y0: (t.top - c.top) / c.height,
+    y1: (t.bottom - c.top) / c.height
   }
 }
 
@@ -93,10 +94,10 @@ function ShaderGL<R, S>({
     engineRef.current = engine
     engine.setBg(bgHex())
     engine.setArtVisible(useStore.getState().nowPlayingArtVisible)
-    engine.setContentRect(measureContent(canvas))
+    engine.setTitleRect(measureTitle(canvas))
     engine.resize()
     const ro = new ResizeObserver(() => {
-      engine.setContentRect(measureContent(canvas))
+      engine.setTitleRect(measureTitle(canvas))
       engine.resize()
     })
     ro.observe(canvas)
@@ -143,18 +144,23 @@ function ShaderGL<R, S>({
   useEffect(() => {
     const prev = prevTrackId.current
     prevTrackId.current = trackId
-    if (prev != null && trackId != null && prev !== trackId) engineRef.current?.trackChanged()
+    const engine = engineRef.current
+    const canvas = canvasRef.current
+    if (!engine || !canvas) return
+    // A new title has a new text width.
+    engine.setTitleRect(measureTitle(canvas))
+    if (prev != null && trackId != null && prev !== trackId) engine.trackChanged()
   }, [trackId])
 
   // The canvas ResizeObserver doesn't fire on an art toggle, so re-measure here.
-  // Effects run after commit, so the art and title are already in (or out of) the DOM.
+  // Effects run after commit, so the title is already in (or out of) the DOM.
   const artVisible = useStore((s) => s.nowPlayingArtVisible)
   useEffect(() => {
     const engine = engineRef.current
     const canvas = canvasRef.current
     if (!engine || !canvas) return
     engine.setArtVisible(artVisible)
-    engine.setContentRect(measureContent(canvas))
+    engine.setTitleRect(measureTitle(canvas))
   }, [artVisible])
 
   const shouldAnimate = active && !reducedMotion && !hidden

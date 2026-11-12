@@ -51,10 +51,11 @@ export interface FrameInfo {
   /** Seconds since the last pointer movement or leave, for idle-gated moments. */
   pointerIdle: number
   /**
-   * The art + title box in the canvas, normalised 0..1 with y down (DOM), or null
-   * when hidden. For keeping busy detail out from behind the title.
+   * The title's text box in the canvas, normalised 0..1 with y down (DOM), or
+   * null when hidden. For keeping busy detail out from behind the title. It is
+   * the text extent, not the full-width title element.
    */
-  contentRect: ContentRect | null
+  titleRect: ContentRect | null
 }
 
 export interface ContentRect {
@@ -157,7 +158,7 @@ export class ShaderEngine<R = void, S = void> {
   private trackSeq = 0
   private artVisible = true
   private artShown = 1
-  private contentRect: ContentRect | null = null
+  private titleRect: ContentRect | null = null
   private resumed = false
 
   private readonly level = new LevelFollower()
@@ -320,9 +321,9 @@ export class ShaderEngine<R = void, S = void> {
     }
   }
 
-  /** The art + title box (normalised, DOM y-down), or null when hidden. */
-  setContentRect(rect: ContentRect | null): void {
-    this.contentRect = rect
+  /** The title's text box (normalised, DOM y-down), or null when hidden. */
+  setTitleRect(rect: ContentRect | null): void {
+    this.titleRect = rect
     if (!this.running) this.renderStatic()
   }
 
@@ -488,7 +489,7 @@ export class ShaderEngine<R = void, S = void> {
       artShown: this.artShown,
       pointerActive,
       pointerIdle: this.elapsed - this.lastPointerAt,
-      contentRect: this.contentRect
+      titleRect: this.titleRect
     }
     if (!still) {
       this.lastDrawElapsed = time

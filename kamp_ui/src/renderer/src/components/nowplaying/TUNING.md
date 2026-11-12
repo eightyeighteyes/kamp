@@ -185,7 +185,7 @@ The TypeScript constants are:
 - `WEAVE` and `JOLT`: the gate offsets, as a fraction of pane height. Keep `WEAVE` tiny, because it moves the dust and the light but never the grain.
 - `LEAK_PERIODS_S`: the breathing period of each leak.
 
-Under the art and title, the leaks, glints and half the grain are attenuated by the measured content rect, so the title stays legible.
+Behind the title text, the leaks, glints and half the grain are attenuated, so the title stays legible. The mask is the title's text box, never the full-width title element.
 
 ## Cost
 

@@ -40,7 +40,7 @@ uniform vec2 uBurn;     // envelope 0..1, edge (0 left, 1 right, 2 top)
 uniform vec4 uHair;     // progress 0..1, alpha 0..1, seed, unused
 uniform float uGlintT;  // seconds, wrapped at GLINT_PERIOD
 uniform float uArtShown;
-uniform vec4 uContent;  // art + title box in uv (y up); x1 <= x0 means none
+uniform vec4 uTitle;    // title text box in uv (y up); x1 <= x0 means none
 
 const float GLINT_PERIOD = ${GLINT_PERIOD_S.toFixed(1)};
 const float GRAIN = 0.06;        // grain amplitude
@@ -70,12 +70,13 @@ float grain(vec2 px) {
   return (a * wa + b * m - 0.5) / sqrt(wa * wa + m * m) + 0.5;
 }
 
-// 1 inside the art + title box (soft-edged), 0 outside.
-float contentMask(vec2 uv) {
-  if (uContent.z <= uContent.x) return 0.0;
-  float m = 0.05;
-  vec2 a = smoothstep(uContent.xy - m, uContent.xy, uv)
-         * (1.0 - smoothstep(uContent.zw, uContent.zw + m, uv));
+// 1 behind the title text (soft-edged), 0 elsewhere. Only the title: the art is
+// opaque, and the side strips beside it are where this background has to read.
+float titleMask(vec2 uv) {
+  if (uTitle.z <= uTitle.x) return 0.0;
+  float m = 0.03;
+  vec2 a = smoothstep(uTitle.xy - m, uTitle.xy, uv)
+         * (1.0 - smoothstep(uTitle.zw, uTitle.zw + m, uv));
   return a.x * a.y;
 }
 
@@ -86,7 +87,7 @@ void main() {
   vec2 qw = q + uWeave;                 // the gate weaves the light, not the grain
   vec2 uvw = vec2(qw.x / aspect, qw.y);
   float hidden = 1.0 - uArtShown;
-  float quiet = contentMask(uv) * uArtShown;
+  float quiet = titleMask(uv) * uArtShown;
 
   vec3 col = uBg;
 
@@ -233,12 +234,12 @@ export const HALATION_SPEC: ShaderSpec<void, HalationState> = {
     }
 
     gl.uniform1f(quad.u('uArtShown'), frame.artShown)
-    const c = frame.contentRect
+    const c = frame.titleRect
     if (c && frame.artShown > 0) {
       // DOM y-down to GL y-up.
-      gl.uniform4f(quad.u('uContent'), c.x0, 1 - c.y1, c.x1, 1 - c.y0)
+      gl.uniform4f(quad.u('uTitle'), c.x0, 1 - c.y1, c.x1, 1 - c.y0)
     } else {
-      gl.uniform4f(quad.u('uContent'), 0, 0, 0, 0)
+      gl.uniform4f(quad.u('uTitle'), 0, 0, 0, 0)
     }
   }
 }

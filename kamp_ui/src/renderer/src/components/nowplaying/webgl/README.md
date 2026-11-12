@@ -51,7 +51,7 @@ The standard uniforms are set every frame:
 - `trackSeq`: increments once per real track change while running. It never increments on mount, on a null transition or while stopped. Compare it with the last value you saw.
 - `artShown`: eased 0..1 art visibility (KAMP-769). It lands directly while stopped.
 - `pointerActive` and `pointerIdle` (seconds), for cursor effects and idle-gated rare moments.
-- `contentRect`: the art + title box, normalised and DOM y-down, or null. Keep busy detail out from behind the title.
+- `titleRect`: the title's text box, normalised and DOM y-down, or null. Keep busy detail out from behind the title. It is the text extent: the title element itself is full-width, so its box would cover the whole pane.
 
 **Per-mount state goes in `createState()`, not in `R` or the module.** It is created once per engine, survives a context restore (so a moment in flight carries on), and is passed to `setUniforms` as its last argument.
 

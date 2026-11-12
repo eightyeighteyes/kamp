@@ -111,9 +111,14 @@ void main() {
     float h = uv.y - edge;
 
     // Lower edge: a thin bright glow; above it, rays fading upward.
-    float below = h < 0.0 ? h / EDGE_W : 0.0;
-    float glow = exp(-below * below) * (h < 0.0 ? 1.0 : exp(-h / (EDGE_W * 2.5)));
-    float rays = h > 0.0 ? exp(-h / rayH) : 0.0;
+    float ew = max(EDGE_W, 2.0 / uRes.y); // never sub-pixel, or it stairs too
+    float below = h < 0.0 ? h / ew : 0.0;
+    float glow = exp(-below * below) * (h < 0.0 ? 1.0 : exp(-h / (ew * 2.5)));
+    // The rays fade in across the edge rather than switching on at h = 0: a hard
+    // step there is a one-pixel stair that the ¼-res upscale turns into visible
+    // blocks. The ramp is never narrower than a few backing pixels.
+    float ramp = max(EDGE_W, 3.0 / uRes.y);
+    float rays = smoothstep(-ramp, ramp, h) * exp(-max(h, 0.0) / rayH);
     float stri = 0.45 + 0.35 * valueNoise(vec2(X * 6.0 + fi * 11.0, 0.0) + c1)
                       + 0.20 * valueNoise(vec2(X * 14.0 + fi * 5.0, 3.0) + c0 * 1.7);
     // Curtains come and go along their length, never the full width at once.

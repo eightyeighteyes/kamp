@@ -22,6 +22,14 @@ import {
   orbSprite,
   type OrbSprite
 } from '../../../../shared/bokehSprites'
+import {
+  BLOOM_MAX_DELAY,
+  advanceField,
+  makeField,
+  orbCenter,
+  type Orb,
+  type Rng
+} from '../../../../shared/bokehField'
 
 // --- tunables (the "5 knobs") ----------------------------------------------
 // Backing store fraction of (clamped) devicePixelRatio. Everything drawn is a smooth
@@ -35,7 +43,6 @@ const FRAME_MS = 33 // ~30fps cap — slow drift needs no more
 // ever gets, which is what a baked sprite holds (globalAlpha can only dim).
 const ORB_ALPHA_PEAK = 1 + 0.06 + 0.2
 const CROSSFADE_MS = 1000 // palette recolor duration on track change
-const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
 const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor parallax
 // Firefly motes (KAMP-627): a rare, single transient spark. Poisson inter-arrival
 // (floor + exponential(mean)) so the cadence never feels scheduled; idle-gated so it
@@ -56,92 +63,11 @@ const FIREFLY_CORE: RGB = { r: 255, g: 246, b: 230 } // warm off-white centre
 // so the light settles *after* the new colors land.
 const BLOOM_DURATION = 1.5 // seconds — total bloom lifetime
 const BLOOM_ATTACK = 0.3 // fraction of duration spent rising to peak (~0.45s)
-const BLOOM_MAX_DELAY = 0.12 // seconds — per-orb onset jitter, so the field never blooms in lockstep
 const BLOOM_RADIUS = 0.16 // peak orb-radius boost (fraction of base)
 const BLOOM_ALPHA = 0.2 // peak orb-alpha boost (kept low — brightness spikes read as a flash)
 const BLOOM_DONE = BLOOM_DURATION + BLOOM_MAX_DELAY // sentinel: no bloom active
 
-type Tier = 'hero' | 'mid' | 'accent'
-
-interface Orb {
-  bx: number // drifting base position, normalized [0,1] of width/height
-  by: number
-  vx: number // drift velocity, normalized units / second
-  vy: number
-  sizePct: number // diameter as a fraction of S = min(cssW, cssH)
-  ax: number // wobble amplitude, fraction of S
-  ay: number
-  px1: number // incommensurate wobble periods (seconds) — never a closed loop
-  px2: number
-  py1: number
-  py2: number
-  breathP: number // breathing period (seconds)
-  breathPhase: number
-  baseAlpha: number
-  colorIndex: number // stable palette slot (so recolor never flickers)
-  parallax: number // cursor-parallax amplitude, fraction of S
-  bloomDelay: number // per-orb bloom onset jitter (seconds), breaks lockstep
-}
-
-type Rng = () => number
-
 const rand = (rng: Rng, min: number, max: number): number => min + rng() * (max - min)
-
-// Tier -> [count, sizePct range, alpha range, cross-screen seconds range].
-// `parallax` is the per-tier cursor-parallax amplitude. Note the mapping is
-// intentionally *inverted* from physical depth: hero (big) orbs move least and the
-// small accents move most, so the calm backdrop stays still while the sparkle
-// dances. It reads as atmosphere, not a literal 3D depth cue.
-const TIERS: Record<
-  Tier,
-  {
-    size: [number, number]
-    alpha: [number, number]
-    cross: [number, number]
-    parallax: number
-  }
-> = {
-  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150], parallax: 0.02 },
-  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110], parallax: 0.04 },
-  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70], parallax: 0.056 }
-}
-
-// 7 orbs, most-dominant palette slots to the big hero orbs.
-const ORB_PLAN: { tier: Tier; colorIndex: number }[] = [
-  { tier: 'hero', colorIndex: 0 },
-  { tier: 'hero', colorIndex: 1 },
-  { tier: 'mid', colorIndex: 2 },
-  { tier: 'mid', colorIndex: 3 },
-  { tier: 'mid', colorIndex: 0 },
-  { tier: 'accent', colorIndex: 4 },
-  { tier: 'accent', colorIndex: 2 }
-]
-
-function makeOrb(plan: { tier: Tier; colorIndex: number }, rng: Rng): Orb {
-  const t = TIERS[plan.tier]
-  const cross = rand(rng, t.cross[0], t.cross[1])
-  const angle = rand(rng, 0, Math.PI * 2)
-  const speed = 1 / cross // ~1.0 normalized traversal over `cross` seconds
-  return {
-    bx: rand(rng, 0, 1),
-    by: rand(rng, 0, 1),
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    sizePct: rand(rng, t.size[0], t.size[1]),
-    ax: rand(rng, 0.05, 0.07),
-    ay: rand(rng, 0.05, 0.07),
-    px1: rand(rng, 15, 19),
-    px2: rand(rng, 27, 31),
-    py1: rand(rng, 18, 22),
-    py2: rand(rng, 29, 33),
-    breathP: rand(rng, 12, 20),
-    breathPhase: rand(rng, 0, Math.PI * 2),
-    baseAlpha: rand(rng, t.alpha[0], t.alpha[1]),
-    colorIndex: plan.colorIndex,
-    parallax: t.parallax,
-    bloomDelay: rand(rng, 0, BLOOM_MAX_DELAY)
-  }
-}
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 const smoothstep = (t: number): number => t * t * (3 - 2 * t)
@@ -176,7 +102,7 @@ interface Firefly {
 export class BokehEngine {
   private ctx: CanvasRenderingContext2D | null
   private rng: Rng = Math.random
-  private orbs: Orb[] = ORB_PLAN.map((p) => makeOrb(p, this.rng))
+  private orbs: Orb[] = makeField(this.rng)
   private cssW = 0
   private cssH = 0
   private scale = 1 // effective backing scale (reduced dpr)
@@ -276,7 +202,7 @@ export class BokehEngine {
   // can be screenshotted at the same moment of the same layout.
   private reseed(seed: number): void {
     this.rng = seededRng(seed)
-    this.orbs = ORB_PLAN.map((p) => makeOrb(p, this.rng))
+    this.orbs = makeField(this.rng)
     this.elapsed = 0
     this.firefly = null
     this.nextFireflyAt = this.fireflyGap()
@@ -431,14 +357,7 @@ export class BokehEngine {
     ) {
       this.spawnFirefly()
     }
-    for (const o of this.orbs) {
-      o.bx += o.vx * dt
-      o.by += o.vy * dt
-      if (o.bx < -EDGE_MARGIN) o.bx += 1 + 2 * EDGE_MARGIN
-      else if (o.bx > 1 + EDGE_MARGIN) o.bx -= 1 + 2 * EDGE_MARGIN
-      if (o.by < -EDGE_MARGIN) o.by += 1 + 2 * EDGE_MARGIN
-      else if (o.by > 1 + EDGE_MARGIN) o.by -= 1 + 2 * EDGE_MARGIN
-    }
+    advanceField(this.orbs, dt)
   }
 
   private draw(): void {
@@ -453,15 +372,10 @@ export class BokehEngine {
     ctx.globalCompositeOperation = 'screen'
     for (let i = 0; i < this.orbs.length; i++) {
       const o = this.orbs[i]
-      const ox = o.ax * (Math.sin(this.elapsed / o.px1) + Math.sin(this.elapsed / o.px2))
-      const oy = o.ay * (Math.sin(this.elapsed / o.py1) + Math.sin(this.elapsed / o.py2))
       const breath = Math.sin(this.elapsed / o.breathP + o.breathPhase)
       // Track-change bloom: a brief per-orb swell (radius-led) on top of the breath.
       const bloom = this.bloomEnvelope(this.bloomAge - o.bloomDelay)
-      // Subtract the eased pointer offset so orbs drift *opposite* the cursor —
-      // the "peering through a deeper field" read, not dragging the field along.
-      const x = o.bx * w + ox * s - this.pointerX * o.parallax * s
-      const y = o.by * h + oy * s - this.pointerY * o.parallax * s
+      const { x, y } = orbCenter(o, this.elapsed, w, h, this.pointerX, this.pointerY)
       const radius = o.sizePct * s * 0.5 * (1 + 0.08 * breath + BLOOM_RADIUS * bloom)
       if (radius <= 0) continue
       const alpha = o.baseAlpha * (1 + 0.06 * breath + BLOOM_ALPHA * bloom)

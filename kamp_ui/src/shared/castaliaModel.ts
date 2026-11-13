@@ -16,7 +16,7 @@
 // and its gradient where it stands.
 
 import { clampDt, poissonGap } from './rareSchedule.ts'
-import { lerp, pick, seededRng } from './particleUtil.ts'
+import { fnv1a, lerp, pick, seededRng } from './particleUtil.ts'
 import { RecolorDips } from './recolorDips.ts'
 
 // --- the plate ---------------------------------------------------------------------
@@ -88,16 +88,6 @@ export function chladniGrad(mode: Mode, u: number, v: number, out: Float64Array)
   out[0] = (cnu * cmv + sign * cmu * cnv) / 2
   out[1] = (-Math.PI / 2) * (n * snu * cmv + sign * m * smu * cnv)
   out[2] = (-Math.PI / 2) * (m * cnu * smv + sign * n * cmu * snv)
-}
-
-/** FNV-1a, 32-bit: a stable hash for album and track keys. */
-export function fnv1a(s: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
 }
 
 /** The album's own figure: its base mode. */

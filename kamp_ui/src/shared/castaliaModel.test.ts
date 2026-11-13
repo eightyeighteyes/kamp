@@ -15,12 +15,11 @@ import {
   albumMode,
   chladni,
   chladniGrad,
-  fnv1a,
   harmonicSet,
   settledPositions,
   type PlateOptions
 } from './castaliaModel.ts'
-import { seededRng } from './particleUtil.ts'
+import { fnv1a, seededRng } from './particleUtil.ts'
 
 const DT = 1 / 30
 const ASPECT = 1.6

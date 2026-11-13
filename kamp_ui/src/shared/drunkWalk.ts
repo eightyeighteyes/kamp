@@ -7,12 +7,12 @@
 // mean-reverting second-order walk. The path is smooth, never periodic, and
 // spends most of its time within about half its bound; a hard reflection at the
 // bound catches the rare excursion. With these constants, the value's spread is
-// about 0.45 of the bound and its speed about 0.05 of the bound per second.
+// about 0.25 of the bound and its speed about 0.05 of the bound per second.
 
 import { clampDt } from './rareSchedule.ts'
 
 const VEL_TAU_S = 4 // how long a drift keeps its direction
-const PULL_S = 10 // how strongly it is drawn back to the centre
+const PULL_S = 5 // how strongly it is drawn back to the centre
 const SIGMA = 0.032 // velocity kick, in bounds per s^1.5
 const DT_MAX = 0.1 // a stalled frame is clamped, never one giant step
 

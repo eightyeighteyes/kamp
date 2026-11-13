@@ -25,11 +25,11 @@ test('it never leaves its bound', () => {
   }
 })
 
-test('it actually wanders: over ten minutes it reaches well out on both sides', () => {
+test('it actually wanders: over ten minutes it reaches a third of its bound on both sides', () => {
   for (let s = 1; s <= 10; s++) {
     const v = trace(s, 600)
     assert.ok(
-      Math.max(...v) > 3 && Math.min(...v) < -3,
+      Math.max(...v) > 2 && Math.min(...v) < -2,
       `seed ${s}: ${Math.min(...v)}..${Math.max(...v)}`
     )
   }

@@ -163,7 +163,7 @@ paint, so it can't break the title bound.
 - `SOFT_MIN` / `SOFT_MAX` (0.35–1.0 of the feather) and `SOFT_ALONG_*` (0.6–1.4): each
   field's edge softness drifts on its own 20–40 s cycle and varies along its edges.
   Only a per-field uniform moves.
-- `HUE_WANDER_DEG` (6°) and `HUE_SPATIAL` (4°): each field's hue drifts around the
+- `HUE_WANDER_DEG` (10°) and `HUE_SPATIAL` (4°): each field's hue drifts around the
   selected colour on its own drunkard's walk (`src/shared/drunkWalk.ts`, a damped,
   mean-reverting walk that is smooth and never periodic), plus a static shift across
   the field taken from the second wash. The rest frame shows the selected colour.

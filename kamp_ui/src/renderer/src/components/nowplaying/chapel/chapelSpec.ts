@@ -56,7 +56,7 @@ const SOFT_MIN = 0.35
 const SOFT_MAX = 1.0
 // Hue wander: each field's colour drifts a few degrees around the selected one on
 // its own drunkard's walk (shared/drunkWalk.ts), slow and never periodic.
-const HUE_WANDER_DEG = 6
+const HUE_WANDER_DEG = 10
 
 const f = (n: number): string => n.toFixed(4)
 

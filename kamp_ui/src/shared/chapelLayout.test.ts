@@ -4,14 +4,22 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   FIELD_COUNT,
+  FieldWarmth,
+  OFFSET_MAX,
   ProportionTween,
   SeamBloom,
   SeamWarmth,
+  Warmth,
   breathedWeights,
   fieldColors,
   layoutFields,
   makeBreaths,
+  randomOffsets,
   randomProportions,
+  retargetDecision,
+  fieldAlpha,
+  TEXTURE_PEAK,
+  TITLE_DIM,
   titleBandAlpha
 } from './chapelLayout.ts'
 
@@ -80,12 +88,66 @@ test('a still frame (no breath) is the composition at rest', () => {
   assert.deepEqual(breathedWeights(base, null, 123), base)
 })
 
-test('every field shares the same x-range, so the side feather masks them all', () => {
+test('without offsets the fields are centred and share one x-range', () => {
   const { fields } = layoutFields(1200, 800, [1, 1, 1])
   for (const f of fields) {
     assert.equal(f.x, fields[0].x)
     assert.equal(f.w, fields[0].w)
+    assert.ok(close(f.x + f.w / 2, 600))
   }
+})
+
+// --- horizontal offsets (KAMP-781) -----------------------------------------------------
+
+test('an offset moves its field by exactly that fraction of the width: the range is reachable', () => {
+  const centred = layoutFields(1200, 800, [1, 1, 1]).fields
+  const moved = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0]).fields
+  assert.ok(close(moved[0].x - centred[0].x, OFFSET_MAX * 1200))
+  assert.ok(close(moved[1].x - centred[1].x, -OFFSET_MAX * 1200))
+  assert.ok(close(moved[2].x, centred[2].x))
+  assert.equal(moved[0].w, centred[0].w)
+})
+
+test('at the extreme offsets no field or its feather leaves the pane, at any aspect', () => {
+  for (const [w, h] of [
+    [1200, 800],
+    [2400, 600],
+    [600, 1400],
+    [4000, 120],
+    [120, 4000]
+  ]) {
+    for (const off of [OFFSET_MAX, -OFFSET_MAX]) {
+      const { fields, featherX } = layoutFields(w, h, [1, 1, 1], [off, off, off])
+      for (const f of fields) {
+        assert.ok(f.x - featherX / 2 >= -1e-9, `${w}x${h} off ${off}: left ${f.x - featherX / 2}`)
+        assert.ok(f.x + f.w + featherX / 2 <= w + 1e-9, `${w}x${h} off ${off}: right`)
+      }
+    }
+  }
+})
+
+test('an offset past the range is held at the bound', () => {
+  const a = layoutFields(1200, 800, [1, 1, 1], [1, 0, 0]).fields[0]
+  const b = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, 0, 0]).fields[0]
+  assert.equal(a.x, b.x)
+})
+
+test('random offsets stay in range and always stagger the stack', () => {
+  const rng = seeded(9)
+  for (let i = 0; i < 200; i++) {
+    const o = randomOffsets(rng)
+    assert.equal(o.length, FIELD_COUNT)
+    for (const x of o) assert.ok(Math.abs(x) <= OFFSET_MAX, `offset ${x}`)
+    // Bold, not timid: the fields never line up.
+    assert.ok(Math.max(...o) - Math.min(...o) >= OFFSET_MAX * 0.6, `spread of ${o}`)
+  }
+})
+
+test('a seam spans both fields it divides, so its glow covers a stagger', () => {
+  const { fields, seamX } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  assert.equal(seamX.length, 2)
+  assert.ok(close(seamX[0].x0, Math.min(fields[0].x, fields[1].x)))
+  assert.ok(close(seamX[0].x1, Math.max(fields[0].x + fields[0].w, fields[1].x + fields[1].w)))
 })
 
 test('degenerate panes give no fields rather than negative geometry', () => {
@@ -201,6 +263,68 @@ test('clear() drops all warmth, for a resume that must not replay a stale glow',
   assert.deepEqual(w.values(), [0, 0])
 })
 
+// --- field warmth (cursor, KAMP-781) --------------------------------------------------
+
+function heldOn(x: number, y: number, titleTop: number | null = null, seconds = 10): number[] {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  const w = new FieldWarmth(FIELD_COUNT)
+  for (let i = 0; i < seconds * 15; i++) {
+    w.aim(x, y, fields, titleTop)
+    w.tick(1 / 15)
+  }
+  return w.values()
+}
+
+test('the field under the cursor warms, and only that one', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  const f = fields[1]
+  const v = heldOn(f.x + f.w / 2, f.y + f.h / 2)
+  assert.ok(v[1] > 0.9, `field ${v[1]}`)
+  assert.equal(v[0], 0)
+  assert.equal(v[2], 0)
+})
+
+test('a cursor in the gap between fields warms no field', () => {
+  const { fields, seams } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  assert.deepEqual(heldOn(fields[0].x + fields[0].w / 2, seams[0]), [0, 0, 0])
+})
+
+test('a cursor in the side margin warms no field', () => {
+  assert.deepEqual(heldOn(5, 400), [0, 0, 0])
+})
+
+test('the hit test follows an offset field, not the centred stack', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  // Field 0 is pushed right: just past its left edge is outside it.
+  const f = fields[0]
+  assert.deepEqual(heldOn(f.x - 5, f.y + f.h / 2), [0, 0, 0])
+  assert.ok(heldOn(f.x + f.w - 5, f.y + f.h / 2)[0] > 0.9)
+})
+
+test('no field warms behind the title band, to keep the title legible', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1])
+  const f = fields[2]
+  const y = f.y + f.h / 2
+  assert.deepEqual(heldOn(f.x + f.w / 2, y, y - 10), [0, 0, 0])
+  assert.ok(heldOn(f.x + f.w / 2, y, y + 10)[2] > 0.9, 'above the band it still warms')
+})
+
+test('a field warms on the shared attack and cools on the shared release', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1])
+  const f = fields[0]
+  const w = new FieldWarmth(FIELD_COUNT)
+  w.aim(f.x + 10, f.y + 10, fields, null)
+  w.tick(Warmth.ATTACK_S)
+  assert.ok(Math.abs(w.values()[0] - (1 - Math.exp(-1))) < 1e-9)
+  for (let i = 0; i < 100; i++) w.tick(0.1)
+  const hot = w.values()[0]
+  // Leaving: the same field cools; nothing near the pane's centre picks it up.
+  w.aim(null, null, fields, null)
+  w.tick(Warmth.RELEASE_S)
+  assert.ok(Math.abs(w.values()[0] - hot * Math.exp(-1)) < 1e-9)
+  assert.equal(w.values()[1], 0)
+})
+
 // --- rare seam bloom -------------------------------------------------------------------
 
 test('the gap before a bloom is bounded and deterministic for a given RNG', () => {
@@ -274,4 +398,43 @@ test('an empty palette yields no field colors (the engine uses the accent)', () 
 
 test('under the title, a field shows at most a quarter of its color over --bg', () => {
   assert.ok(titleBandAlpha() <= 0.25, `effective alpha ${titleBandAlpha()}`)
+})
+
+test('the bound holds at every breath, warmth and texture density (KAMP-781)', () => {
+  let worst = 0
+  for (let b = -1; b <= 1; b += 0.25) {
+    for (let warm = 0; warm <= 1; warm += 0.25) {
+      for (let d = 0; d <= TEXTURE_PEAK; d += TEXTURE_PEAK / 4) {
+        worst = Math.max(worst, fieldAlpha(b, warm, d, 1) * (1 - TITLE_DIM))
+      }
+    }
+  }
+  assert.ok(worst <= 0.25, `worst ${worst}`)
+  assert.ok(Math.abs(worst - titleBandAlpha()) < 1e-9, 'titleBandAlpha is the worst case')
+})
+
+test('the texture thins the paint in proportion to its density', () => {
+  assert.ok(Math.abs(fieldAlpha(0, 0, 0.5, 0) - fieldAlpha(0, 0, 1, 0) / 2) < 1e-12)
+  assert.equal(fieldAlpha(0, 0, 0, 0), 0)
+})
+
+test('field warmth visibly brightens a field outside the title band', () => {
+  assert.ok(fieldAlpha(0, 1, 1, 0) >= fieldAlpha(0, 0, 1, 0) * 1.3)
+})
+
+// --- retarget decision (KAMP-781) ------------------------------------------------------
+
+test('the first frame records the count and retargets nothing (mount, restore)', () => {
+  assert.equal(retargetDecision(null, 3, false), 'none')
+  assert.equal(retargetDecision(null, 3, true), 'none')
+})
+
+test('no change in the count retargets nothing (a resume, a repaint)', () => {
+  assert.equal(retargetDecision(3, 3, false), 'none')
+  assert.equal(retargetDecision(3, 3, true), 'none')
+})
+
+test('a real change while running eases; while stopped it lands', () => {
+  assert.equal(retargetDecision(3, 4, false), 'animate')
+  assert.equal(retargetDecision(3, 4, true), 'land')
 })

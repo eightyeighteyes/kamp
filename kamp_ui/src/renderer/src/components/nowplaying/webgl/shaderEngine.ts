@@ -44,6 +44,19 @@ export interface FrameInfo {
    * fire on opening the pane or replay late on resume.
    */
   trackSeq: number
+  /**
+   * KAMP-781: every real track change, counted while stopped too (a change
+   * while stopped also repaints a still frame). For state keyed to the track,
+   * such as a layout, that must land before the pane is next seen. Delight
+   * moments use trackSeq instead.
+   */
+  trackChanges: number
+  /**
+   * KAMP-781: the target palette (the accent fallback when the cover has none),
+   * for a spec that runs its own crossfade. The reference changes only when the
+   * palette or fallback does, so compare it by reference.
+   */
+  palette: readonly RGB[]
   /** The art (and title) are shown (KAMP-769), eased 0..1 over ~0.6 s. */
   artShown: number
   /** The cursor is over the pane, eased 0..1. uPointer alone can't say: it recentres on leave. */
@@ -121,6 +134,13 @@ export interface ShaderSpec<R = void, S = void> {
   /** Upload background-specific uniforms; the program is already bound. Put
    * delight-moment logic here, driven by `frame`. */
   setUniforms?(gl: WebGLRenderingContext, quad: GlQuad, res: R, frame: FrameInfo, state: S): void
+  /**
+   * KAMP-781: spec-specific measurement knobs from __kampGL.tune (the base
+   * handles scale and fps). The base repaints after it.
+   */
+  tune?(opts: Parameters<GLDevTarget['tune']>[0], state: S): void
+  /** KAMP-781: launch the rare moment now (__kampGL.forcePop), for tuning. */
+  forcePop?(state: S): void
 }
 
 export interface ShaderEngineOptions {
@@ -168,6 +188,11 @@ export class ShaderEngine<R = void, S = void> {
 
   private readonly crossfade: PaletteCrossfade
   private fallback: RGB[]
+  // KAMP-781: the last palette as given, and what it resolves to (the accent
+  // fallback when it has no colors). A new array only when either changes, so a
+  // spec can compare FrameInfo.palette by reference.
+  private paletteRaw: RGB[]
+  private paletteTarget: readonly RGB[]
   private readonly paletteBuf = new Float32Array(PALETTE_SLOTS * 3)
   private bg = DEFAULT_BG
 
@@ -184,6 +209,7 @@ export class ShaderEngine<R = void, S = void> {
   private pointerEpoch = 0
 
   private trackSeq = 0
+  private trackChanges = 0 // KAMP-781: every real change, stopped or not
   private artVisible = true
   private artShown = 1
   private titleRect: ContentRect | null = null
@@ -240,6 +266,8 @@ export class ShaderEngine<R = void, S = void> {
     this.state = spec.createState ? spec.createState() : (undefined as S)
     this.crossfade = new PaletteCrossfade(initial.colors, CROSSFADE_MS)
     this.fallback = initial.colors
+    this.paletteRaw = initial.colors
+    this.paletteTarget = initial.colors
     this.resScale = spec.resScale ?? DEFAULT_RES_SCALE
     this.frameMs = 1000 / (spec.fps ?? DEFAULT_FPS)
     canvas.addEventListener('webglcontextlost', this.onLost)
@@ -311,11 +339,14 @@ export class ShaderEngine<R = void, S = void> {
   /** Theme accent, for the fallback palette when a cover yields no colors. */
   setAccent(hex: string): void {
     this.fallback = accentPalette(hex).colors
+    if (this.paletteRaw.length === 0) this.paletteTarget = this.fallback
   }
 
   setPalette(next: Palette): void {
     // While stopped nothing advances the fade, so land on the new colors directly.
     this.crossfade.set(next.colors, this.running)
+    this.paletteRaw = next.colors
+    this.paletteTarget = next.colors.length > 0 ? next.colors : this.fallback
     if (!this.running) this.renderStatic()
   }
 
@@ -343,7 +374,11 @@ export class ShaderEngine<R = void, S = void> {
    * loop runs: a change seen while stopped must not replay as a late moment.
    */
   trackChanged(): void {
+    // KAMP-781: trackChanges counts every real change and repaints while
+    // stopped, so a layout keyed to the track lands before the pane returns.
+    this.trackChanges++
     if (this.running) this.trackSeq++
+    else this.renderStatic()
   }
 
   /** KAMP-769 art toggle. Eased while running; lands directly while stopped. */
@@ -439,7 +474,9 @@ export class ShaderEngine<R = void, S = void> {
     return {
       lose: () => this.loseExt?.loseContext(),
       restore: () => this.loseExt?.restoreContext(),
-      tune: ({ scale, fps }) => {
+      tune: (opts) => {
+        const { scale, fps } = opts
+        this.spec.tune?.(opts, this.state)
         if (scale != null && scale > 0) this.resScale = scale
         if (fps != null && fps > 0) this.frameMs = 1000 / fps
         this.resize(true)
@@ -456,7 +493,9 @@ export class ShaderEngine<R = void, S = void> {
           fps: Math.round(fps * 10) / 10,
           backing: `${this.canvas.width}x${this.canvas.height}`
         }
-      }
+      },
+      // Only offered when the spec has one, so the hook warns rather than no-ops.
+      ...(this.spec.forcePop ? { forcePop: () => this.spec.forcePop?.(this.state) } : {})
     }
   }
 
@@ -524,6 +563,8 @@ export class ShaderEngine<R = void, S = void> {
       atRest: centred,
       resumed: !still && this.resumed,
       trackSeq: this.trackSeq,
+      trackChanges: this.trackChanges,
+      palette: this.paletteTarget,
       artShown: this.artShown,
       pointerActive,
       pointerIdle: this.elapsed - this.lastPointerAt,

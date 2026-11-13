@@ -14,7 +14,11 @@ export const FIELD_COUNT = 3
 // --- tunables ----------------------------------------------------------------------
 // Fractions of the pane. Rothko-like insets: the fields float on --bg rather than
 // bleeding off the edges, which is what keeps them reading as rectangles.
-const MARGIN_X = 0.08 // of width
+const MARGIN_X = 0.06 // of width, outside the widest possible stagger
+// KAMP-781: the most a field is offset sideways, as a fraction of width. The
+// field width is derived from it (w · (1 - 2 · (MARGIN_X + OFFSET_MAX))), so the
+// whole range is reachable and an offset field never needs clamping.
+export const OFFSET_MAX = 0.08
 const MARGIN_TOP = 0.07 // of height
 const MARGIN_BOTTOM = 0.07 // of height
 // Seam gap, of height. The vertical feather equals the gap: each edge fades over
@@ -49,20 +53,31 @@ export interface FieldLayout {
   fields: Rect[]
   /** y of each seam's centre, between field i and i + 1. */
   seams: number[]
+  /** Each seam's horizontal extent: the union of the two fields it divides. */
+  seamX: Array<{ x0: number; x1: number }>
   /** Vertical feather width in px; equals the seam gap. */
   feather: number
   /** Horizontal feather width in px, at the side margins. */
   featherX: number
 }
 
-const EMPTY: FieldLayout = { fields: [], seams: [], feather: 0, featherX: 0 }
+const EMPTY: FieldLayout = { fields: [], seams: [], seamX: [], feather: 0, featherX: 0 }
 
 /**
  * Stack one field per weight, top to bottom. The total field height is fixed by
  * the pane, so weights only redistribute it: breathing and re-proportioning can
  * never push a field into its neighbour or off the pane.
+ *
+ * `offsets` (KAMP-781) shift each field sideways by a fraction of the width,
+ * held to ±OFFSET_MAX. Fields are narrow enough that the extreme offset still
+ * leaves MARGIN_X for the side feather.
  */
-export function layoutFields(w: number, h: number, weights: number[]): FieldLayout {
+export function layoutFields(
+  w: number,
+  h: number,
+  weights: number[],
+  offsets: readonly number[] = []
+): FieldLayout {
   const n = weights.length
   if (n === 0 || w < MIN_PANE_PX || h < MIN_PANE_PX) return EMPTY
   const gap = GAP * h
@@ -70,22 +85,28 @@ export function layoutFields(w: number, h: number, weights: number[]): FieldLayo
   const total = weights.reduce((a, b) => a + b, 0)
   if (avail <= 0 || !(total > 0)) return EMPTY
   const marginX = MARGIN_X * w
-  const x = marginX
-  const fw = w - 2 * marginX
+  const fw = w * (1 - 2 * (MARGIN_X + OFFSET_MAX))
+  const centredX = (w - fw) / 2
   const fields: Rect[] = []
   const seams: number[] = []
   let y = MARGIN_TOP * h
   for (let i = 0; i < n; i++) {
     const fh = (avail * weights[i]) / total
-    fields.push({ x, y, w: fw, h: fh })
+    const off = Math.max(-OFFSET_MAX, Math.min(OFFSET_MAX, offsets[i] ?? 0))
+    fields.push({ x: centredX + off * w, y, w: fw, h: fh })
     y += fh
     if (i < n - 1) {
       seams.push(y + gap / 2)
       y += gap
     }
   }
+  const seamX = seams.map((_, i) => {
+    const a = fields[i]
+    const b = fields[i + 1]
+    return { x0: Math.min(a.x, b.x), x1: Math.max(a.x + a.w, b.x + b.w) }
+  })
   // The side feather has to fit inside the margin, or it would eat the canvas edge.
-  return { fields, seams, feather: gap, featherX: Math.min(2 * gap, marginX) }
+  return { fields, seams, seamX, feather: gap, featherX: Math.min(2 * gap, marginX) }
 }
 
 // --- breathing -----------------------------------------------------------------------
@@ -122,6 +143,20 @@ export function breathedWeights(base: number[], breaths: Breath[] | null, t: num
 export function randomProportions(rng: () => number, n = FIELD_COUNT): number[] {
   const [lo, hi] = PROPORTION_RANGE
   return Array.from({ length: n }, () => lo + (hi - lo) * rng())
+}
+
+/**
+ * KAMP-781: a fresh sideways offset per field, for tension. Each is at least 40%
+ * of OFFSET_MAX, and never all to one side, so the stack always visibly staggers
+ * instead of landing nearly aligned. Eased in with a ProportionTween.
+ */
+export function randomOffsets(rng: () => number, n = FIELD_COUNT): number[] {
+  const o = Array.from({ length: n }, () => {
+    const m = (0.4 + 0.6 * rng()) * OFFSET_MAX
+    return rng() < 0.5 ? -m : m
+  })
+  if (n > 1 && (o.every((x) => x > 0) || o.every((x) => x < 0))) o[1] = -o[1]
+  return o
 }
 
 const smoothstep = (t: number): number => t * t * (3 - 2 * t)
@@ -167,23 +202,46 @@ export class ProportionTween {
 // --- seam warmth (cursor) ----------------------------------------------------------------
 
 /**
- * Per-seam glow that follows the cursor: the nearest seam within reach warms in
- * proportion to closeness, everything else cools. Exponential approach, so the
- * curve is the same at any frame rate; cooling is slower than warming so the
- * glow lingers after the cursor moves on.
+ * A set of glows that warm toward per-slot targets and cool when released.
+ * Exponential approach, so the curve is the same at any frame rate; cooling is
+ * slower than warming so a glow lingers after the cursor moves on. Subclasses
+ * only decide the targets (KAMP-781: shared by the seam and field warmth).
  */
-export class SeamWarmth {
+export class Warmth {
   static readonly ATTACK_S = 1.5
   static readonly RELEASE_S = 4
 
-  private readonly v: number[]
-  private readonly target: number[]
+  protected readonly v: number[]
+  protected readonly target: number[]
 
   constructor(n: number) {
     this.v = new Array<number>(n).fill(0)
     this.target = new Array<number>(n).fill(0)
   }
 
+  tick(dt: number): void {
+    for (let i = 0; i < this.v.length; i++) {
+      const tau = this.target[i] > this.v[i] ? Warmth.ATTACK_S : Warmth.RELEASE_S
+      this.v[i] += (this.target[i] - this.v[i]) * (1 - Math.exp(-dt / tau))
+    }
+  }
+
+  values(): number[] {
+    return this.v
+  }
+
+  /** Drop all warmth and aim, so a resumed loop never replays a stale glow. */
+  clear(): void {
+    this.v.fill(0)
+    this.target.fill(0)
+  }
+}
+
+/**
+ * Per-seam glow that follows the cursor: the nearest seam within reach warms in
+ * proportion to closeness, everything else cools.
+ */
+export class SeamWarmth extends Warmth {
   /** Aim at the cursor's y (same units as `seams`), or null once it has left. */
   aim(y: number | null, seams: number[], reach: number): void {
     this.target.fill(0)
@@ -199,22 +257,28 @@ export class SeamWarmth {
     }
     if (best >= 0 && bestD < reach) this.target[best] = 1 - bestD / reach
   }
+}
 
-  tick(dt: number): void {
-    for (let i = 0; i < this.v.length; i++) {
-      const tau = this.target[i] > this.v[i] ? SeamWarmth.ATTACK_S : SeamWarmth.RELEASE_S
-      this.v[i] += (this.target[i] - this.v[i]) * (1 - Math.exp(-dt / tau))
-    }
-  }
-
-  values(): number[] {
-    return this.v
-  }
-
-  /** Drop all warmth and aim, so a resumed loop never replays a stale glow. */
-  clear(): void {
-    this.v.fill(0)
+/**
+ * KAMP-781: the whole field under the cursor warms (that field only, a design
+ * decision), on the same attack and release as the seams. The values are per
+ * field, not positions, so a release cools the field the cursor was on rather
+ * than drifting with a recentring pointer (KAMP-765). Nothing warms inside the
+ * title band, so the brightening can't undo the title's dimming.
+ */
+export class FieldWarmth extends Warmth {
+  /** Aim at the cursor (same units as `fields`), or nulls once it has left. */
+  aim(x: number | null, y: number | null, fields: Rect[], titleTop: number | null): void {
     this.target.fill(0)
+    if (x === null || y === null) return
+    if (titleTop !== null && y >= titleTop) return
+    for (let i = 0; i < fields.length && i < this.target.length; i++) {
+      const f = fields[i]
+      if (x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h) {
+        this.target[i] = 1
+        return // layoutFields never overlaps fields, so this is the only hit
+      }
+    }
   }
 }
 
@@ -315,7 +379,45 @@ export function fieldColors(colors: Rgb[], n = FIELD_COUNT): Rgb[] {
 
 // --- legibility --------------------------------------------------------------------------------
 
+// KAMP-781: how much a fully warmed field brightens (its alpha × 1 + this), and
+// the texture density's peak. The texture only thins the paint (scumble, dry
+// brush), never thickens it past FIELD_ALPHA, so it can't break the title bound.
+export const FIELD_WARM_GAIN = 0.45
+export const TEXTURE_PEAK = 1
+
+/**
+ * A field's opacity at one pixel: breath (-1..1), field warmth (0..1), texture
+ * density (0..TEXTURE_PEAK), and how far into the title band it is (0..1). The
+ * warmth fades out inside the band, so hovering the bottom field can't undo the
+ * title's dimming. The shader mirrors this formula.
+ */
+export function fieldAlpha(breath: number, warmth: number, density: number, band: number): number {
+  return (
+    FIELD_ALPHA *
+    (1 + ALPHA_BREATH * breath) *
+    (1 + FIELD_WARM_GAIN * warmth * (1 - band)) *
+    density
+  )
+}
+
 /** Worst-case field opacity left under the title once the dim band is applied. */
 export function titleBandAlpha(): number {
-  return FIELD_ALPHA * (1 + ALPHA_BREATH) * (1 - TITLE_DIM)
+  return fieldAlpha(1, 1, TEXTURE_PEAK, 1) * (1 - TITLE_DIM)
+}
+
+// --- track change -------------------------------------------------------------------------
+
+/**
+ * KAMP-781: what a frame does with the base's real-track-change count. The first
+ * frame (mount, a restore) only records it; an unchanged count (a resume, a
+ * repaint) does nothing; a change eases in while running and lands on a still
+ * frame, so a skip while the pane was hidden is already in place on return.
+ */
+export function retargetDecision(
+  prev: number | null,
+  now: number,
+  still: boolean
+): 'none' | 'animate' | 'land' {
+  if (prev === null || prev === now) return 'none'
+  return still ? 'land' : 'animate'
 }

@@ -15,6 +15,7 @@
 //   * the __kampGL dev target, so the measurement variants can be run.
 
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { playbackOf, type RunoutPlayback } from '../../../../shared/runoutPlayback'
 import { albumKeyOf, trackKeyOf } from '../../../../shared/trackIdentity'
 import { useStore } from '../../store'
 import { measureContent } from './contentRects'
@@ -36,6 +37,12 @@ export interface ParticleEngine {
    * can tell a skip within an album from a new album.
    */
   setIdentity?(albumKey: string, trackKey: string): void
+  /**
+   * Optional (KAMP-771): playback state, pushed once on mount and then on every
+   * player or queue snapshot. Only an engine that implements it is subscribed.
+   * It may arrive before or after a track change's setIdentity/trackChanged.
+   */
+  setPlayback?(p: RunoutPlayback): void
   setPointer(nx: number, ny: number): void
   pointerLeave(): void
   setContentRects(title: ContentRect | null, art: ContentRect | null): void
@@ -96,7 +103,24 @@ export function useParticleEngine(
     })
     ro.observe(canvas)
     const unregister = registerGLTarget(engine.devTarget())
+    // KAMP-771: playback, for an engine that wants it. A store subscription rather
+    // than a selector, so the ~4 Hz position ticks never re-render this component.
+    // subscribe() doesn't fire on subscribe, and applyServerState sets nothing
+    // while paused, so push the current state once or a paused launch never
+    // arrives. Filtering on the slice references ignores every unrelated set().
+    let unsubscribe = (): void => {}
+    if (engine.setPlayback) {
+      const push = (): void => {
+        const { player, queue } = useStore.getState()
+        engine.setPlayback?.(playbackOf(player, queue))
+      }
+      push()
+      unsubscribe = useStore.subscribe((s, prev) => {
+        if (s.player !== prev.player || s.queue !== prev.queue) push()
+      })
+    }
     return () => {
+      unsubscribe()
       unregister()
       ro.disconnect()
       engine.destroy()

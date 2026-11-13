@@ -252,8 +252,9 @@ const seamColBuf = new Float32Array((FIELD_COUNT - 1) * 3)
 export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
   name: 'chapel',
   frag: FRAG,
-  // Texture wants more pixels than a soft shader; measured in TUNING.md.
-  resScale: 0.4,
+  // Measured (TUNING.md): 0.33 reads as well as 0.4 and is the one inside budget
+  // with the art hidden (18.5% GPU busy against 0.4's 28.4%).
+  resScale: 0.33,
   // Motion periods are 20-40 s; more frames buy nothing visible.
   fps: 15,
   createState: () => ({

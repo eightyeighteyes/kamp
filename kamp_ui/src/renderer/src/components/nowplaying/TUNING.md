@@ -115,46 +115,107 @@ extracted palette while tuning (KAMP-630). Cursor parallax shipped in KAMP-626 (
 
 ---
 
-# Chapel (KAMP-775)
+# Chapel (KAMP-775, KAMP-781)
 
-Three stacked, feathered fields of album color that breathe over 20–40 s. The geometry
-and timing are in `src/shared/chapelLayout.ts` (covered by `npm test`), and the drawing
-is in `chapelEngine.ts`. Chapel has no CSS filter: the feathering comes from gradient
-stops.
+Three stacked fields of album colour that breathe over 20–40 s, staggered sideways,
+with painted surface: cloudy washes, dry-brush streaks, scumbled edges whose
+softness wanders, and a faint bleed into a coloured ground. It is a WebGL shader on
+the shared base (`webgl/README.md`). The model (layout, offsets, breath, warmth,
+bloom, retarget) is in `src/shared/chapelLayout.ts` and covered by `npm test`. The
+shader and its uniforms are in `chapel/chapelSpec.ts`.
+
+KAMP-781 ported it from Canvas 2D. Gradients can't carry per-pixel texture, and the
+base already provided the track-change gating, the last real pointer position and
+the title and art rects.
 
 ## Composition — `chapelLayout.ts`
 
-| Knob                                        | Default                                  | Effect                                                                                                                               |
-| ------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `MARGIN_X` / `MARGIN_TOP` / `MARGIN_BOTTOM` | 0.08 / 0.07 / 0.07                       | How far the fields float in from the edges.                                                                                          |
-| `GAP`                                       | 0.045                                    | Seam height as a fraction of pane height. It is also the edge feather, so raising it softens every edge.                             |
-| `BREATH_PERIOD_S`                           | 20–40                                    | Each field's swell period.                                                                                                           |
-| `HEIGHT_BREATH` / `ALPHA_BREATH`            | 0.08 / 0.15                              | How much a field grows and brightens at the peak of its breath.                                                                      |
-| `FIELD_ALPHA`                               | 0.5                                      | Loudness over `--bg`. The palette is already saturated, so above about 0.6 the fields upstage the art.                               |
-| `TITLE_DIM`                                 | 0.6                                      | The `--bg` band behind the title, only while the art shows. A test holds the effective field alpha under the title at or below 0.25. |
-| `PROPORTION_RANGE`                          | 0.75–1.35                                | Per-track spread of field heights.                                                                                                   |
-| `SeamWarmth.ATTACK_S` / `RELEASE_S`         | 1.5 / 4                                  | How fast the cursor glow warms and cools.                                                                                            |
-| `SeamBloom.GAP_*` / `LIFE_S`                | 90 + exp(120) s, capped at 300 / 12–16 s | Spacing and length of the rare seam warming. Lower `GAP_FLOOR_S` temporarily to see it while tuning.                                 |
+| Knob                                        | Default                                  | Effect                                                                                                                                                                   |
+| ------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MARGIN_X` / `MARGIN_TOP` / `MARGIN_BOTTOM` | 0.06 / 0.07 / 0.07                       | How far the fields float in from the edges. `MARGIN_X` is outside the widest stagger.                                                                                    |
+| `OFFSET_MAX`                                | 0.08                                     | The widest sideways stagger, as a fraction of width. The field width is derived from it, so every offset is reachable and none is clamped.                               |
+| `GAP`                                       | 0.045                                    | Seam height as a fraction of pane height. It is also the base edge feather.                                                                                              |
+| `BREATH_PERIOD_S`                           | 20–40                                    | Each field's swell period.                                                                                                                                               |
+| `HEIGHT_BREATH` / `ALPHA_BREATH`            | 0.08 / 0.15                              | How much a field grows and brightens at the peak of its breath.                                                                                                          |
+| `FIELD_ALPHA`                               | 0.5                                      | Loudness over `--bg`. The palette is already saturated, so above about 0.6 the fields upstage the art.                                                                   |
+| `FIELD_WARM_GAIN`                           | 0.45                                     | How much the field under the cursor brightens. It fades out inside the title band.                                                                                       |
+| `TITLE_DIM`                                 | 0.6                                      | The `--bg` band behind the title, only while the art shows. A test holds the field alpha under the title at or below 0.25 over every breath, warmth and texture density. |
+| `PROPORTION_RANGE`                          | 0.75–1.35                                | Per-track spread of field heights.                                                                                                                                       |
+| `Warmth.ATTACK_S` / `RELEASE_S`             | 1.5 / 4                                  | How fast the seam and field warmth rise and cool.                                                                                                                        |
+| `SeamBloom.GAP_*` / `LIFE_S`                | 90 + exp(120) s, capped at 300 / 12–16 s | Spacing and length of the rare seam warming. Call `__kampGL.forcePop()` to see one.                                                                                      |
 
-## Feel and cost — `chapelEngine.ts`
+## Look — `chapelSpec.ts`
 
-- `CROSSFADE_MS` (4000) and `RETARGET_MS` (7000) set how slowly a track change lands.
-- `GLOW_ALPHA`, `BLOOM_ALPHA` and `WARM` set the glow intensity and how warm it reads.
-- `POINTER_REACH` (0.12 of pane height) is how close the cursor has to be before a seam warms.
-- `DEFAULT_FPS` (15) and `RES_SCALE` (0.5) set the budget. If GPU busy is over target,
-  drop to 10 fps first. Keep the scale at 0.5 or above: lower scales band on dark
-  covers, because there is no blur to hide the steps.
+The texture coordinates are in pane heights and move only with a field's sideways
+offset. The breath changes a field's height but never stretches its texture, so no
+pixel re-samples noise from frame to frame (KAMP-774). The texture only thins the
+paint, so it can't break the title bound.
 
-## Measuring
+- `TEX_FLOOR` (0.4), `WASH_SCALE` (1.3), `WASH2_SCALE`, `STREAK_SCALE` (1.6 × 14): the
+  thinnest the paint gets, and the sizes of the cloudy washes and the horizontal
+  dry-brush streaks.
+- `LIFT` (0.12): the dense middle lifts toward white, as light from within. It changes
+  colour, not alpha.
+- `EDGE_SCALE` / `EDGE_AMP` (0.15 feathers): a small, slow waver of the outline.
+  Larger, slower values read as ribbons. Finer ones read as aliased crinkle at this
+  resolution. The edge's irregularity belongs in `SCUMBLE` (0.75), where streaks break
+  up the feather's opacity.
+- `SOFT_MIN` / `SOFT_MAX` (0.35–1.0 of the feather) and `SOFT_ALONG_*` (0.6–1.4): each
+  field's edge softness drifts on its own 20–40 s cycle and varies along its edges.
+  Only a per-field uniform moves.
+- `BLEED` (2.5 feathers) / `BLEED_ALPHA` (0.22) and `GROUND` (0.06): each field's
+  colour carries past its edge, and `--bg` is tinted toward the deepest field. Without
+  them the eye invents a dark band at every edge. That band is a Mach band: the pixels
+  measured smoothly down to exactly `--bg`, never below. Darkening the rim made it
+  worse.
+- `GLOW_ALPHA`, `BLOOM_ALPHA`, `WARM` and `SEAM_STREAK` (0.6): seam glow strength and
+  warmth. A seam's glow follows the midpoint of its two wavering edges, across the
+  union of both fields' widths.
+- `CROSSFADE_MS` (4000) and `RETARGET_MS` (7000): how slowly a track change lands. A
+  change while the pane is hidden lands directly (`FrameInfo.trackChanges`).
+- `POINTER_REACH` (0.12 of pane height): how close the cursor must be before a seam
+  warms.
 
-Measure as described in `webgl/README.md`: `powermetrics` for 60 s per variant, display
-pinned at 60 Hz, music playing. Run these variants:
+## Cost
 
-1. **None**: the baseline.
-2. **Chapel, cursor outside the pane**: no glows are drawn. This is the effect-off variant.
-3. **Chapel, cursor resting on a seam**: the glow is drawn every frame.
+`resScale` is 0.33 and the frame cap is 15 fps. Pixels behind the art are skipped
+(`GLSL_ART_SKIP`). Each field pixel does about five value-noise lookups: waver,
+softness, two washes and a streak.
 
-The target is GPU busy at or below about 20% on the Intel Mac.
+Measured on the Intel Mac on 2026-11-13 (n = 60 each, 60 Hz, music playing):
+
+| Variant                            | GPU busy      |
+| ---------------------------------- | ------------- |
+| None                               | 3.89% ± 2.15  |
+| 0.4, art shown                     | 19.91% ± 0.45 |
+| 0.4, art hidden                    | 28.36% ± 1.10 |
+| 0.4, art hidden, cursor on a field | 28.82% ± 0.64 |
+| 0.4, art hidden, `texture: 'off'`  | 22.38% ± 0.73 |
+| **0.33, art hidden** (shipped)     | 18.53% ± 0.57 |
+| 0.5, art hidden                    | 37.84% ± 1.07 |
+| 0.1, art hidden (diagnostic)       | 5.49% ± 0.83  |
+
+What the numbers say:
+
+- **The cost is per pixel**, as KAMP-776 found. It fell with pixel count from 0.5 to
+  0.4 to 0.33. At 0.1 it was under 2 points over None, so the per-frame CPU work
+  (layout, warmth, uniforms) costs next to nothing.
+- **0.33 is the shipped scale.** It is inside the ~20% target with the art hidden, and
+  it read the same as 0.4 by eye. With the art shown, projected from the above, it is
+  about 15%.
+- **The texture costs about 6 points** at 0.4. Without it, the per-pixel field work
+  (the edges, the bleed, three fields) is most of the cost.
+- **Cursor warmth costs nothing measurable.** It is one uniform per field.
+- The old Canvas 2D Chapel was never measured, so there is no before-and-after.
+
+To re-measure, run these variants as described above. `tune()` is lost on a reload, so
+set it after the page loads:
+
+1. None
+2. Chapel, art shown, cursor outside the pane
+3. Chapel, art hidden
+4. Chapel, art hidden, cursor resting on a field
+5. `__kampGL.tune({ texture: 'off' })`: the effect-off variant
 
 ---
 

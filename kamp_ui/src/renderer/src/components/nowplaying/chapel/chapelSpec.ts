@@ -49,6 +49,10 @@ const BLOOM_ALPHA = 0.42 // peak opacity of the rare seam warming
 const GLOW_HALF_H = 1.4 // glow band half-height, in feathers
 const TITLE_FEATHER = 0.06 // of pane height: the band behind the title fades in over this
 const WARM: Rgb = { r: 255, g: 222, b: 184 } // glows lean toward warm white
+// Wandering softness: each field's edges drift between these multiples of the
+// feather on their own slow cycle. Below 1 on average: crisper than the first port.
+const SOFT_MIN = 0.35
+const SOFT_MAX = 1.0
 
 const f = (n: number): string => n.toFixed(4)
 
@@ -56,6 +60,7 @@ const FRAG = `${GLSL_HEADER}${GLSL_NOISE}${GLSL_DITHER}${GLSL_ART_SKIP}
 uniform vec4 uField[${FIELD_COUNT}];    // x0, y0, x1, y1 in backing px, GL y-up
 uniform vec3 uFieldCol[${FIELD_COUNT}];
 uniform vec3 uFieldA[${FIELD_COUNT}];   // breath -1..1, warmth 0..1, x offset (px)
+uniform float uFieldSoft[${FIELD_COUNT}]; // edge softness, a multiple of the feather
 uniform vec2 uFeather;                  // vertical, horizontal (px)
 uniform vec4 uSeam[${FIELD_COUNT - 1}]; // y, x0, x1 (px), glow alpha
 uniform vec3 uSeamCol[${FIELD_COUNT - 1}];
@@ -87,10 +92,18 @@ const float LIFT = 0.12;           // inner light: the dense middle lifts toward
 // The bleed: each field's colour carries past its edge at low opacity, so it sits
 // in its ground instead of on near-black. Without it the eye invents a dark band
 // at every edge (a Mach band: measured, the pixels never drop below --bg).
-const float BLEED = 3.0;           // its width, in feathers
+const float BLEED = 2.5;           // its width, in feathers
 const float BLEED_ALPHA = 0.22;    // its strength, of the field's own opacity
 const float GROUND = 0.06;         // --bg tinted this far toward the deepest field
 const float SEAM_STREAK = 0.6;     // how far brush streaks break up a seam's glow
+// Wandering softness. Each field's edge softness (a multiple of the feather)
+// varies along its edges, from a static noise, and the whole field's drifts on
+// its own slow cycle (uFieldSoft, from the CPU). Neither re-samples noise per
+// frame: the noise is fixed and only a per-field uniform moves.
+const vec2 SOFT_SCALE = vec2(2.5, 3.0);
+const float SOFT_ALONG_MIN = 0.6;
+const float SOFT_ALONG_MAX = 1.4;
+const float SOFT_REACH = ${f(SOFT_MAX)} * SOFT_ALONG_MAX; // the widest a feather gets
 
 // Smooth 0..1 across [e - w/2, e + w/2], width floored in backing pixels.
 float ramp(float d, float w) {
@@ -123,7 +136,7 @@ void main() {
     vec4 r = uField[i];
     // Out past the bleed, and as far as a seam glow reaches, so wvs is never 0
     // under a glow's fringe.
-    float reach = max(fv, fh) * (1.0 + EDGE_AMP + BLEED) + fv * ${f(GLOW_HALF_H)};
+    float reach = max(fv, fh) * SOFT_REACH * (1.0 + EDGE_AMP + BLEED) + fv * ${f(GLOW_HALF_H)};
     if (p.x < r.x - reach || p.x > r.z + reach || p.y < r.y - reach || p.y > r.w + reach) continue;
     float fi = float(i);
     // Pane-height units, moved with the field's x offset only (see header).
@@ -134,11 +147,16 @@ void main() {
     float wv = waver * fv * uTexture;
     float wh = waver * fh * uTexture;
     wvs[i] = wv;
-    float core = ramp(p.y - r.y + wv, fv) * ramp(r.w - p.y + wv, fv)
-               * ramp(p.x - r.x + wh, fh) * ramp(r.z - p.x + wh, fh);
+    // This field's softness here: its own drifting amount, varied along the edge.
+    float soft = mix(1.0, uFieldSoft[i] * mix(SOFT_ALONG_MIN, SOFT_ALONG_MAX,
+                     valueNoise(q * SOFT_SCALE + 53.0)), uTexture);
+    float sv = fv * soft;
+    float sh = fh * soft;
+    float core = ramp(p.y - r.y + wv, sv) * ramp(r.w - p.y + wv, sv)
+               * ramp(p.x - r.x + wh, sh) * ramp(r.z - p.x + wh, sh);
     // The bleed: the same rect, widened and far softer.
-    float bv = fv * BLEED;
-    float bh = fh * BLEED;
+    float bv = sv * BLEED;
+    float bh = sh * BLEED;
     float wide = ramp(p.y - r.y + wv + 0.5 * bv, bv) * ramp(r.w - p.y + wv + 0.5 * bv, bv)
                * ramp(p.x - r.x + wh + 0.5 * bh, bh) * ramp(r.z - p.x + wh + 0.5 * bh, bh);
     // core + BLEED_ALPHA·(1 - core) never exceeds 1, so the title bound holds.
@@ -209,6 +227,7 @@ export interface ChapelState {
   proportions: ProportionTween
   offsets: ProportionTween // the same tween, over sideways offsets
   breaths: Breath[]
+  blurs: Breath[] // each field's wandering softness: its own slow cycle
   seamWarmth: SeamWarmth
   fieldWarmth: FieldWarmth
   bloom: SeamBloom
@@ -226,6 +245,7 @@ const mixRgb = (a: Rgb, b: Rgb, t: number): Rgb => ({
 const fieldBuf = new Float32Array(FIELD_COUNT * 4)
 const fieldColBuf = new Float32Array(FIELD_COUNT * 3)
 const fieldABuf = new Float32Array(FIELD_COUNT * 3)
+const fieldSoftBuf = new Float32Array(FIELD_COUNT)
 const seamBuf = new Float32Array((FIELD_COUNT - 1) * 4)
 const seamColBuf = new Float32Array((FIELD_COUNT - 1) * 3)
 
@@ -244,6 +264,7 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
     proportions: new ProportionTween(randomProportions(Math.random), RETARGET_MS),
     offsets: new ProportionTween(randomOffsets(Math.random), RETARGET_MS),
     breaths: makeBreaths(Math.random),
+    blurs: makeBreaths(Math.random),
     seamWarmth: new SeamWarmth(FIELD_COUNT - 1),
     fieldWarmth: new FieldWarmth(FIELD_COUNT),
     bloom: new SeamBloom(Math.random),
@@ -344,6 +365,9 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
       const b = breaths?.[i] ? breathAt(breaths[i], t) : 0
       const off = r ? r.x - (W - r.w) / 2 : 0
       fieldABuf.set([b, glows ? (fieldWarm[i] ?? 0) : 0, off], i * 3)
+      // The rest frame holds the middle of the range.
+      const blur = frame.atRest || !state.blurs[i] ? 0 : breathAt(state.blurs[i], t)
+      fieldSoftBuf[i] = SOFT_MIN + (SOFT_MAX - SOFT_MIN) * (0.5 + 0.5 * blur)
     }
     for (let j = 0; j < FIELD_COUNT - 1; j++) {
       const c = mixRgb(mixRgb(colorAt(j), colorAt(j + 1), 0.5), WARM, 0.55)
@@ -355,6 +379,7 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
     gl.uniform4fv(quad.u('uField[0]'), fieldBuf)
     gl.uniform3fv(quad.u('uFieldCol[0]'), fieldColBuf)
     gl.uniform3fv(quad.u('uFieldA[0]'), fieldABuf)
+    gl.uniform1fv(quad.u('uFieldSoft[0]'), fieldSoftBuf)
     gl.uniform2f(quad.u('uFeather'), feather, featherX)
     gl.uniform4fv(quad.u('uSeam[0]'), seamBuf)
     gl.uniform3fv(quad.u('uSeamCol[0]'), seamColBuf)

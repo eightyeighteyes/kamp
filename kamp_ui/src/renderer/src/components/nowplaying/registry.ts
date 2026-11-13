@@ -27,6 +27,7 @@ import { BorealisCanvas } from './borealis/BorealisCanvas'
 import { CastaliaCanvas } from './castalia/CastaliaCanvas'
 import { ChapelCanvas } from './ChapelCanvas'
 import { HalationCanvas } from './halation/HalationCanvas'
+import { RunoutCanvas } from './runout/RunoutCanvas'
 import { SparksCanvas } from './sparks/SparksCanvas'
 import { TannhauserCanvas } from './tannhauser/TannhauserCanvas'
 import { FlatReference } from './webgl/reference/FlatReference'
@@ -54,7 +55,8 @@ export const NOW_PLAYING_ANIMATIONS = {
   tannhauser: { label: 'Tannhäuser', Engine: TannhauserCanvas },
   sparks: { label: 'Sparks', Engine: SparksCanvas },
   wintermute: { label: 'Wintermute', Engine: WintermuteCanvas },
-  castalia: { label: 'Castalia', Engine: CastaliaCanvas }
+  castalia: { label: 'Castalia', Engine: CastaliaCanvas },
+  runout: { label: 'Runout', Engine: RunoutCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>
 
 // KAMP-780: diagnostics-only backgrounds, selected via window.__kampGL and shown

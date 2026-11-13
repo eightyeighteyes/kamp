@@ -67,3 +67,8 @@ test('castalia is a known id that survives a reload (KAMP-773)', () => {
   assert.equal(resolveNowPlayingAnimation('castalia', 'false'), 'castalia')
   assert.equal(legacyGlowValue('castalia'), 'true')
 })
+
+test('runout is a known id that survives a reload (KAMP-771)', () => {
+  assert.equal(resolveNowPlayingAnimation('runout', 'false'), 'runout')
+  assert.equal(legacyGlowValue('runout'), 'true')
+})

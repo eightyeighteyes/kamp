@@ -165,6 +165,15 @@ Bokeh's `filter: blur(28px)` on the canvas went from 66.3% to 8.3% GPU busy (Non
 - **An "effect off" variant may not *look* off.** At `blur: 0`, the user expected sharp spheres and saw soft ones, and suspected the switch was broken. The orbs are radial gradients that already fade to zero at the edge. The measurement settled it: the control matched KAMP-776's no-blur figure to within a point. Check the numbers against a known reference before doubting the switch.
 - **`__kampGL.tune()` settings persist until a reload, so a variant can silently inherit the last run's knobs.** A suggested `tune({ softness: 'baked' })` without `blur: 28` would have measured an unblurred bake after a `blur: 0` run. It didn't, only because the user reloaded in between. `stats()` can now return a `settings` string. Read it before each run, and always pass every knob a variant depends on.
 
+## Keeping a drifting field populated — KAMP-779
+
+Bokeh "sometimes looked blank". An offline replica of its motion answered that in seconds: with the art and the vignette's edge band masked, the wrap model showed zero orbs 11% of the time. Numbers are in `nowplaying/TUNING.md`.
+- **Measure density with a pure model before tuning anything.** Moving the orb maths into `shared/bokehField.ts` let `node --test` run hours of seeded motion per second, and the same `visibleOrbCount` feeds `__kampGL.stats().density` in the real app. A one-off in-app sample would have missed a blank that shows up one second in ten.
+- **Count what the eye sees, not what's on the pane.** A disc counts as visible only if a quarter of it lies outside the opaque art *and* the vignette band. With pane-only intersection, the wrap model looked half as bad.
+- **A wrap can't be both pop-free and dense for large sprites.** To wrap unseen, the margin has to cover radius + wobble + 3σ blur. For hero orbs that is as large as the old 0.45 margin, which still had a latent pop vertically. The fix was a motion model with no wrap at all: bounded, mean-reverting walks (`DrunkWalk`) with a per-tier reach.
+- **Reuse `DrunkWalk` unchanged: scale its clock, soften its bound.** `walk.tick(dt * rate)` changes the speed without touching Chapel's constants. Its hard reflection (`v → -0.5v`) reads as an abrupt mid-pane turn, so map the value through `tanh(2u)/tanh(2)`. That cut the worst frame-to-frame velocity change about 5×, and a test pins the bound. Prewarm in *walk* time so a new field doesn't open gathered on the art.
+- **Key a sprite cache on `PaletteCrossfade.current()`'s array identity.** It returns the same target array once settled and a fresh blend mid-fade, so `SpriteBakeGate` re-bakes exactly when needed. Test it against the real crossfade, not a mock.
+
 ## Porting a Canvas 2D background to the WebGL base — KAMP-781
 
 Chapel moved from Canvas 2D to a `ShaderSpec` to get per-pixel texture. Its model (`chapelLayout.ts`) moved over unchanged, and the hand-rolled `ChapelCanvas` lifecycle was deleted.

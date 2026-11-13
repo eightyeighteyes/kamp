@@ -64,21 +64,49 @@ __kampGL.tune({ blur: 0 }) // no-blur control
 __kampGL.tune({ scale: 0.125, blur: 28 }) // always pass blur explicitly
 __kampGL.tune({ seed: 1, freeze: true }) // identical frame for A/B shots
 __kampGL.forcePop() // firefly now
-__kampGL.stats() // fps, backing size, and the settings actually applied
+__kampGL.stats() // fps, backing size, settings applied, and the visible-orb census
 ```
+
+`stats().density` (KAMP-779) is the share of one-second samples with 0, 1 and 2+
+visible orbs since the previous call, with the art masked. The first call starts
+sampling, so call it, wait a few minutes, and call it again.
 
 `tune()` persists until a reload, which resets every knob; check `stats().settings`
 before each run.
 
-## Motion feel — `bokehEngine.ts`
+## Motion feel — `shared/bokehField.ts`, `bokehEngine.ts`
 
-| Knob                       | Default      | Effect                                                                                       |
-| -------------------------- | ------------ | -------------------------------------------------------------------------------------------- |
-| `TIERS[*].cross`           | 45–150 s     | Seconds to cross the screen. **Raise for slower, calmer drift**; lower for livelier.         |
-| `CROSSFADE_MS`             | 1000         | Track-change recolor duration. Raise for a lazier color morph.                               |
-| `ax` / `ay` (in `makeOrb`) | 0.05–0.07    | Wobble amplitude — higher = more meandering, less linear travel.                             |
-| `breathP`                  | 12–20 s      | Breathing period. Depth is set by the `0.08` (scale) and `0.06` (alpha) factors in `draw()`. |
-| `FRAME_MS`                 | 33 (~30 fps) | Frame cap. Raise (~50 → ~20 fps) for an even lazier, lighter feel.                           |
+Orbs no longer drift in straight lines and wrap (KAMP-779). Each orb's base position
+wanders on a bounded, mean-reverting walk per axis (`shared/drunkWalk.ts`), so the
+field never empties and nothing pops at an edge.
+
+| Knob                       | Default                       | Effect                                                                                                                                        |
+| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TIERS[*].reach`           | hero 0.8, mid 1.1, accent 1.5 | How far an orb's base roams from the centre, as a fraction of half the pane. Above 1 an orb can leave and come back. **The density lever.**   |
+| `TIERS[*].rate`            | 0.35                          | Walk clock multiplier; speed is linear in it. **Lower for calmer drift.** Speed also grows with `reach`, so smaller orbs move most.           |
+| `SOFT`                     | 2                             | Softness of the walk's bound (tanh). Lower toward 0 and the bound becomes a visible mid-pane turn; a test pins it.                            |
+| `PREWARM_S`                | 600                           | Walk seconds simulated at creation, so a new field opens spread out rather than gathered on the art.                                          |
+| `CROSSFADE_MS`             | 1000                          | Track-change recolor duration (shared `PaletteCrossfade`). A palette set while stopped lands at once, so the reduced-motion frame is current. |
+| `ax` / `ay` (in `makeOrb`) | 0.05–0.07                     | Wobble amplitude: higher = more meandering.                                                                                                   |
+| `breathP`                  | 12–20 s                       | Breathing period. Depth is set by the `0.08` (scale) and `0.06` (alpha) factors in `draw()`.                                                  |
+| `FRAME_MS`                 | 33 (~30 fps)                  | Frame cap. Raise (~50 → ~20 fps) for an even lazier, lighter feel.                                                                            |
+
+### Density — measured (KAMP-779)
+
+Orbs with at least a quarter of their disc visible, outside the art and the
+vignette's 6% edge band, sampled each second over hours of seeded motion at 1600×1000
+(`bokehField.test.ts` asserts the floor):
+
+| Visible orbs          | 0     | 1     | 2     | 3     | 4     | 5+    |
+| --------------------- | ----- | ----- | ----- | ----- | ----- | ----- |
+| Before (wrap at 0.45) | 11.4% | 30.0% | 32.6% | 17.7% | 6.1%  | 2.2%  |
+| After (bounded walks) | 0%    | 0.1%  | 8.2%  | 27.7% | 39.6% | 24.4% |
+
+Both rows: art shown, 6 seeds × 1 h. Blank time varied by seed under the wrap (seed
+1 alone was blank 19% of the time). Hiding the art barely changes either row, because
+the vignette band and the off-pane legs were the real cost. Mean base speeds match
+the old drift: hero 0.009, mid 0.013, accent 0.016 panes/s, against 0.008, 0.012
+and 0.018.
 
 ## Cursor parallax — `bokehEngine.ts` (KAMP-626)
 
@@ -130,6 +158,11 @@ new colors are ~half arrived. A soft "inhale," never a flash; off under
 | `TIERS[*].alpha` | 0.32–0.56                                       | Per-orb opacity. **Lower the whole set to let the art pop more**; raise for a bolder background. |
 | `ORB_PLAN`       | 7 entries                                       | Orb _count_ and which palette slot each orb wears. Add/remove rows to change density.            |
 
+Tiers, sizes and the orb plan live in `shared/bokehField.ts` since KAMP-779. About
+twice as many orbs are on screen at once with the bounded walks (mean ~3.9 against
+~1.9), so if the field reads louder than before, lower `TIERS[*].alpha` rather than
+the reach.
+
 ## Focus on the art (vignette) — `bokehEngine.ts`, `drawVignette()`
 
 - Inner radius `r * 0.45` and outer stop alpha `0.35` control the "clearing" behind
@@ -150,7 +183,7 @@ new colors are ~half arrived. A soft "inhale," never a flash; off under
 Start with three knobs — they change the character the most:
 
 1. `BOKEH_BLUR_CSS` (softness)
-2. `TIERS[*].cross` (drift speed)
+2. `TIERS[*].rate` and `TIERS[*].reach` (drift speed and density)
 3. `TIERS[*].alpha` (how loud vs. how much the art pops)
 
 ## Deferred ideas (filed as follow-up tickets)

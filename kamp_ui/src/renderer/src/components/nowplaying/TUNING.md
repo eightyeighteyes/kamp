@@ -2,7 +2,7 @@
 
 The "Bokeh" Now Playing animation (KAMP-561; one entry in `registry.ts` since
 KAMP-766) is built from tunable constants at
-the top of two files, plus one CSS line. Nothing here needs a rebuild to try —
+the top of a few files. Nothing here needs a rebuild to try —
 Vite hot-reloads edits, so you can slide values with the app running. All knobs
 are at conservative midpoints; this is the map for adjusting the character by eye.
 
@@ -17,12 +17,36 @@ Grouped by what you actually _see_.
 | `MONO_SAT_THRESHOLD`      | 0.12        | More covers judged "grey" and fall back to the theme accent (lower → trusts faint cover colors) |
 | `HUE_BINS`                | 16          | Finer hue separation — more distinct swatches from busy covers                                  |
 
-## Softness / blur — `assets/track-list.css`, `.now-playing-bokeh`
+## Softness / blur — `shared/bokehSprites.ts`, `bokehEngine.ts` (KAMP-777)
 
-- `filter: blur(28px)` — **the single biggest aesthetic lever.** Higher = dreamier
-  and more diffuse; lower = defined, more distinct "orbs." Useful range ~20–40px.
-- Positioning and the KAMP-631 opaque backing live on the shared
-  `.now-playing-backdrop` class; `.now-playing-bokeh` holds only the blur.
+- `BOKEH_BLUR_CSS` (28) — Gaussian sigma in CSS px. **The single biggest aesthetic
+  lever.** Higher = dreamier and more diffuse; lower = defined, more distinct "orbs."
+  Useful range ~20–40.
+- `SOFTNESS` — how that blur is applied. `'css'` is the original `filter: blur()` over
+  the whole canvas, re-run by the compositor every frame (~50 of Bokeh's 65 GPU
+  points). `'baked'` draws each orb and the firefly from a sprite with the blur baked
+  in by the offscreen context's filter. Sprites re-bake only when the pane size,
+  backing scale or blur changes, or while a palette crossfade is moving.
+- The blur used to run _after_ the `screen` blend; baked, each orb is blurred before
+  it. Overlaps differ slightly. The vignette was never visibly affected.
+- The engine owns `canvas.style.filter`; there is no CSS rule for it. Positioning and
+  the KAMP-631 opaque backing live on the shared `.now-playing-backdrop` class.
+
+### Measuring (KAMP-777)
+
+With `KAMP_DIAGNOSTICS=1` and Bokeh selected, in DevTools:
+
+```js
+__kampGL.tune({ softness: 'css' }) // shipped
+__kampGL.tune({ softness: 'css', blur: 0 }) // no-blur control
+__kampGL.tune({ softness: 'baked', blur: 28 }) // baked, scale 0.5
+__kampGL.tune({ softness: 'baked', scale: 0.25 }) // baked, quarter
+__kampGL.tune({ seed: 1, freeze: true }) // identical frame for A/B shots
+__kampGL.forcePop() // firefly now
+__kampGL.stats() // fps + backing size
+```
+
+`tune()` is lost on reload; re-apply it before each run.
 
 ## Motion feel — `bokehEngine.ts`
 
@@ -103,7 +127,7 @@ new colors are ~half arrived. A soft "inhale," never a flash; off under
 
 Start with three knobs — they change the character the most:
 
-1. CSS `blur` (`.now-playing-bokeh`)
+1. `BOKEH_BLUR_CSS` (softness)
 2. `TIERS[*].cross` (drift speed)
 3. `TIERS[*].alpha` (how loud vs. how much the art pops)
 

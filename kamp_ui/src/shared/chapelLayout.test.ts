@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   FIELD_COUNT,
+  OFFSET_MAX,
   ProportionTween,
   SeamBloom,
   SeamWarmth,
@@ -11,6 +12,7 @@ import {
   fieldColors,
   layoutFields,
   makeBreaths,
+  randomOffsets,
   randomProportions,
   titleBandAlpha
 } from './chapelLayout.ts'
@@ -80,12 +82,66 @@ test('a still frame (no breath) is the composition at rest', () => {
   assert.deepEqual(breathedWeights(base, null, 123), base)
 })
 
-test('every field shares the same x-range, so the side feather masks them all', () => {
+test('without offsets the fields are centred and share one x-range', () => {
   const { fields } = layoutFields(1200, 800, [1, 1, 1])
   for (const f of fields) {
     assert.equal(f.x, fields[0].x)
     assert.equal(f.w, fields[0].w)
+    assert.ok(close(f.x + f.w / 2, 600))
   }
+})
+
+// --- horizontal offsets (KAMP-781) -----------------------------------------------------
+
+test('an offset moves its field by exactly that fraction of the width: the range is reachable', () => {
+  const centred = layoutFields(1200, 800, [1, 1, 1]).fields
+  const moved = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0]).fields
+  assert.ok(close(moved[0].x - centred[0].x, OFFSET_MAX * 1200))
+  assert.ok(close(moved[1].x - centred[1].x, -OFFSET_MAX * 1200))
+  assert.ok(close(moved[2].x, centred[2].x))
+  assert.equal(moved[0].w, centred[0].w)
+})
+
+test('at the extreme offsets no field or its feather leaves the pane, at any aspect', () => {
+  for (const [w, h] of [
+    [1200, 800],
+    [2400, 600],
+    [600, 1400],
+    [4000, 120],
+    [120, 4000]
+  ]) {
+    for (const off of [OFFSET_MAX, -OFFSET_MAX]) {
+      const { fields, featherX } = layoutFields(w, h, [1, 1, 1], [off, off, off])
+      for (const f of fields) {
+        assert.ok(f.x - featherX / 2 >= -1e-9, `${w}x${h} off ${off}: left ${f.x - featherX / 2}`)
+        assert.ok(f.x + f.w + featherX / 2 <= w + 1e-9, `${w}x${h} off ${off}: right`)
+      }
+    }
+  }
+})
+
+test('an offset past the range is held at the bound', () => {
+  const a = layoutFields(1200, 800, [1, 1, 1], [1, 0, 0]).fields[0]
+  const b = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, 0, 0]).fields[0]
+  assert.equal(a.x, b.x)
+})
+
+test('random offsets stay in range and always stagger the stack', () => {
+  const rng = seeded(9)
+  for (let i = 0; i < 200; i++) {
+    const o = randomOffsets(rng)
+    assert.equal(o.length, FIELD_COUNT)
+    for (const x of o) assert.ok(Math.abs(x) <= OFFSET_MAX, `offset ${x}`)
+    // Bold, not timid: the fields never line up.
+    assert.ok(Math.max(...o) - Math.min(...o) >= OFFSET_MAX * 0.6, `spread of ${o}`)
+  }
+})
+
+test('a seam spans both fields it divides, so its glow covers a stagger', () => {
+  const { fields, seamX } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  assert.equal(seamX.length, 2)
+  assert.ok(close(seamX[0].x0, Math.min(fields[0].x, fields[1].x)))
+  assert.ok(close(seamX[0].x1, Math.max(fields[0].x + fields[0].w, fields[1].x + fields[1].w)))
 })
 
 test('degenerate panes give no fields rather than negative geometry', () => {

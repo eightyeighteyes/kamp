@@ -14,7 +14,11 @@ export const FIELD_COUNT = 3
 // --- tunables ----------------------------------------------------------------------
 // Fractions of the pane. Rothko-like insets: the fields float on --bg rather than
 // bleeding off the edges, which is what keeps them reading as rectangles.
-const MARGIN_X = 0.08 // of width
+const MARGIN_X = 0.06 // of width, outside the widest possible stagger
+// KAMP-781: the most a field is offset sideways, as a fraction of width. The
+// field width is derived from it (w · (1 - 2 · (MARGIN_X + OFFSET_MAX))), so the
+// whole range is reachable and an offset field never needs clamping.
+export const OFFSET_MAX = 0.08
 const MARGIN_TOP = 0.07 // of height
 const MARGIN_BOTTOM = 0.07 // of height
 // Seam gap, of height. The vertical feather equals the gap: each edge fades over
@@ -49,20 +53,31 @@ export interface FieldLayout {
   fields: Rect[]
   /** y of each seam's centre, between field i and i + 1. */
   seams: number[]
+  /** Each seam's horizontal extent: the union of the two fields it divides. */
+  seamX: Array<{ x0: number; x1: number }>
   /** Vertical feather width in px; equals the seam gap. */
   feather: number
   /** Horizontal feather width in px, at the side margins. */
   featherX: number
 }
 
-const EMPTY: FieldLayout = { fields: [], seams: [], feather: 0, featherX: 0 }
+const EMPTY: FieldLayout = { fields: [], seams: [], seamX: [], feather: 0, featherX: 0 }
 
 /**
  * Stack one field per weight, top to bottom. The total field height is fixed by
  * the pane, so weights only redistribute it: breathing and re-proportioning can
  * never push a field into its neighbour or off the pane.
+ *
+ * `offsets` (KAMP-781) shift each field sideways by a fraction of the width,
+ * held to ±OFFSET_MAX. Fields are narrow enough that the extreme offset still
+ * leaves MARGIN_X for the side feather.
  */
-export function layoutFields(w: number, h: number, weights: number[]): FieldLayout {
+export function layoutFields(
+  w: number,
+  h: number,
+  weights: number[],
+  offsets: readonly number[] = []
+): FieldLayout {
   const n = weights.length
   if (n === 0 || w < MIN_PANE_PX || h < MIN_PANE_PX) return EMPTY
   const gap = GAP * h
@@ -70,22 +85,28 @@ export function layoutFields(w: number, h: number, weights: number[]): FieldLayo
   const total = weights.reduce((a, b) => a + b, 0)
   if (avail <= 0 || !(total > 0)) return EMPTY
   const marginX = MARGIN_X * w
-  const x = marginX
-  const fw = w - 2 * marginX
+  const fw = w * (1 - 2 * (MARGIN_X + OFFSET_MAX))
+  const centredX = (w - fw) / 2
   const fields: Rect[] = []
   const seams: number[] = []
   let y = MARGIN_TOP * h
   for (let i = 0; i < n; i++) {
     const fh = (avail * weights[i]) / total
-    fields.push({ x, y, w: fw, h: fh })
+    const off = Math.max(-OFFSET_MAX, Math.min(OFFSET_MAX, offsets[i] ?? 0))
+    fields.push({ x: centredX + off * w, y, w: fw, h: fh })
     y += fh
     if (i < n - 1) {
       seams.push(y + gap / 2)
       y += gap
     }
   }
+  const seamX = seams.map((_, i) => {
+    const a = fields[i]
+    const b = fields[i + 1]
+    return { x0: Math.min(a.x, b.x), x1: Math.max(a.x + a.w, b.x + b.w) }
+  })
   // The side feather has to fit inside the margin, or it would eat the canvas edge.
-  return { fields, seams, feather: gap, featherX: Math.min(2 * gap, marginX) }
+  return { fields, seams, seamX, feather: gap, featherX: Math.min(2 * gap, marginX) }
 }
 
 // --- breathing -----------------------------------------------------------------------
@@ -122,6 +143,20 @@ export function breathedWeights(base: number[], breaths: Breath[] | null, t: num
 export function randomProportions(rng: () => number, n = FIELD_COUNT): number[] {
   const [lo, hi] = PROPORTION_RANGE
   return Array.from({ length: n }, () => lo + (hi - lo) * rng())
+}
+
+/**
+ * KAMP-781: a fresh sideways offset per field, for tension. Each is at least 40%
+ * of OFFSET_MAX, and never all to one side, so the stack always visibly staggers
+ * instead of landing nearly aligned. Eased in with a ProportionTween.
+ */
+export function randomOffsets(rng: () => number, n = FIELD_COUNT): number[] {
+  const o = Array.from({ length: n }, () => {
+    const m = (0.4 + 0.6 * rng()) * OFFSET_MAX
+    return rng() < 0.5 ? -m : m
+  })
+  if (n > 1 && (o.every((x) => x > 0) || o.every((x) => x < 0))) o[1] = -o[1]
+  return o
 }
 
 const smoothstep = (t: number): number => t * t * (3 - 2 * t)

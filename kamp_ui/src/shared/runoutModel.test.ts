@@ -103,8 +103,11 @@ test('the sag is slower than the spin-up', () => {
   const down = running()
   down.setPlayback(play({ playing: false }), true)
   run(down, 0.5)
-  // Fraction of the way to the target after the same time.
-  assert.ok(up.speed / NOMINAL > 1 - down.speed / NOMINAL)
+  // Fraction of the way to the target after the same time, with a margin: equal
+  // time constants give equal fractions, which float noise could order either way.
+  const upDone = up.speed / NOMINAL
+  const downDone = 1 - down.speed / NOMINAL
+  assert.ok(upDone > downDone + 0.1, `up ${upDone} down ${downDone}`)
 })
 
 test('the angle advances with the speed and stays wrapped in [0, 2π)', () => {
@@ -262,7 +265,10 @@ test('the identity may arrive after the track change, as the store can order it'
   const p = running()
   p.trackChanged(true)
   p.setIdentity('album:2', '2', true)
-  run(p, GAP_S + 0.5)
+  // The band carries it: revealed behind the band, not snapped once it has passed.
+  run(p, GAP_S / 2)
+  assert.equal(p.seedAt(p.gapX! - 1), fnv1a('album:2'))
+  run(p, GAP_S / 2 + 0.5)
   assert.equal(p.seedAt(0), fnv1a('album:2'))
 })
 

@@ -141,10 +141,13 @@ export class RunoutPlatter {
     )
   }
 
-  /** Nothing would change from one frame to the next, so the engine can skip draws. */
+  /**
+   * Nothing would change from one frame to the next, so the engine can skip draws.
+   * Playing needs no clause of its own: a playing platter's speed is never 0 by
+   * the time the engine asks, as it ticks first (the mutation pass confirmed it).
+   */
   get idle(): boolean {
     return (
-      !this.playing &&
       this.base === 0 &&
       this.nudge === 0 &&
       this.band == null &&

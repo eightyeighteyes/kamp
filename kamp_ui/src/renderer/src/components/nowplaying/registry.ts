@@ -45,16 +45,19 @@ interface NowPlayingAnimation {
   Engine: ComponentType<NowPlayingEngineProps> | null
 }
 
+// KAMP-783: labels are lowercase to match the rest of the Style rail; the picker
+// orders them via pickerOrder(). 'off' is display text only: the id stays 'none'
+// because it is persisted and mirrored to the legacy glow key.
 export const NOW_PLAYING_ANIMATIONS = {
-  none: { label: 'None', Engine: null },
-  bokeh: { label: 'Bokeh', Engine: BokehCanvas },
-  chapel: { label: 'Chapel', Engine: ChapelCanvas },
-  halation: { label: 'Halation', Engine: HalationCanvas },
-  borealis: { label: 'Borealis', Engine: BorealisCanvas },
-  tannhauser: { label: 'Tannhäuser', Engine: TannhauserCanvas },
-  sparks: { label: 'Sparks', Engine: SparksCanvas },
-  wintermute: { label: 'Wintermute', Engine: WintermuteCanvas },
-  castalia: { label: 'Castalia', Engine: CastaliaCanvas }
+  none: { label: 'off', Engine: null },
+  bokeh: { label: 'bokeh', Engine: BokehCanvas },
+  chapel: { label: 'chapel', Engine: ChapelCanvas },
+  halation: { label: 'halation', Engine: HalationCanvas },
+  borealis: { label: 'borealis', Engine: BorealisCanvas },
+  tannhauser: { label: 'tannhäuser', Engine: TannhauserCanvas },
+  sparks: { label: 'sparks', Engine: SparksCanvas },
+  wintermute: { label: 'wintermute', Engine: WintermuteCanvas },
+  castalia: { label: 'castalia', Engine: CastaliaCanvas }
 } satisfies Record<NowPlayingAnimationId, NowPlayingAnimation>
 
 // KAMP-780: diagnostics-only backgrounds, selected via window.__kampGL and shown

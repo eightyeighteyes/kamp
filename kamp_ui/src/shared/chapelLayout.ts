@@ -167,23 +167,46 @@ export class ProportionTween {
 // --- seam warmth (cursor) ----------------------------------------------------------------
 
 /**
- * Per-seam glow that follows the cursor: the nearest seam within reach warms in
- * proportion to closeness, everything else cools. Exponential approach, so the
- * curve is the same at any frame rate; cooling is slower than warming so the
- * glow lingers after the cursor moves on.
+ * A set of glows that warm toward per-slot targets and cool when released.
+ * Exponential approach, so the curve is the same at any frame rate; cooling is
+ * slower than warming so a glow lingers after the cursor moves on. Subclasses
+ * only decide the targets (KAMP-781: shared by the seam and field warmth).
  */
-export class SeamWarmth {
+export class Warmth {
   static readonly ATTACK_S = 1.5
   static readonly RELEASE_S = 4
 
-  private readonly v: number[]
-  private readonly target: number[]
+  protected readonly v: number[]
+  protected readonly target: number[]
 
   constructor(n: number) {
     this.v = new Array<number>(n).fill(0)
     this.target = new Array<number>(n).fill(0)
   }
 
+  tick(dt: number): void {
+    for (let i = 0; i < this.v.length; i++) {
+      const tau = this.target[i] > this.v[i] ? Warmth.ATTACK_S : Warmth.RELEASE_S
+      this.v[i] += (this.target[i] - this.v[i]) * (1 - Math.exp(-dt / tau))
+    }
+  }
+
+  values(): number[] {
+    return this.v
+  }
+
+  /** Drop all warmth and aim, so a resumed loop never replays a stale glow. */
+  clear(): void {
+    this.v.fill(0)
+    this.target.fill(0)
+  }
+}
+
+/**
+ * Per-seam glow that follows the cursor: the nearest seam within reach warms in
+ * proportion to closeness, everything else cools.
+ */
+export class SeamWarmth extends Warmth {
   /** Aim at the cursor's y (same units as `seams`), or null once it has left. */
   aim(y: number | null, seams: number[], reach: number): void {
     this.target.fill(0)
@@ -198,23 +221,6 @@ export class SeamWarmth {
       }
     }
     if (best >= 0 && bestD < reach) this.target[best] = 1 - bestD / reach
-  }
-
-  tick(dt: number): void {
-    for (let i = 0; i < this.v.length; i++) {
-      const tau = this.target[i] > this.v[i] ? SeamWarmth.ATTACK_S : SeamWarmth.RELEASE_S
-      this.v[i] += (this.target[i] - this.v[i]) * (1 - Math.exp(-dt / tau))
-    }
-  }
-
-  values(): number[] {
-    return this.v
-  }
-
-  /** Drop all warmth and aim, so a resumed loop never replays a stale glow. */
-  clear(): void {
-    this.v.fill(0)
-    this.target.fill(0)
   }
 }
 

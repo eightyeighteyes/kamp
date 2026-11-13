@@ -59,7 +59,7 @@ const float GRAIN = 0.06;        // grain amplitude
 const float LEAK = 0.42;         // peak leak opacity
 const float BURN = 0.6;          // peak burn opacity
 const float CELL = ${CELL.toFixed(3)};        // dust cell, pane-height units
-const float DUST_DENSITY = 0.09; // fraction of cells holding a mote
+const float DUST_DENSITY = 0.2; // fraction of cells holding a mote
 const float DUST_TILE = ${DUST_TILE.toFixed(1)}; // dust field period, cells
 // Per-mote meander, cell units. With motes placed in 0.4..0.6 of the cell and a
 // 0.3-cell cutoff radius, 0.1 is the most that never clips at the cell edge.

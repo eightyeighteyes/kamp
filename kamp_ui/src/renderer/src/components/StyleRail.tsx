@@ -3,10 +3,17 @@ import '../assets/style-rail.css'
 import { useStore } from '../store'
 import { ThemePicker } from './ThemePicker'
 import { NOW_PLAYING_ANIMATIONS } from './nowplaying/registry'
-import { NOW_PLAYING_ANIMATION_IDS } from '../../../shared/nowPlayingAnimation'
+import { pickerOrder } from '../../../shared/nowPlayingAnimation'
 import type { NowPlayingAnimationId } from '../../../shared/nowPlayingAnimation'
 
 const HIGHLIGHT_STYLES = ['shiny', 'newmoji', 'vaporwave', 'proud', 'pressed', 'boring', 'static']
+
+// Labels are static, so the order is computed once.
+const ANIMATION_ORDER = pickerOrder(
+  Object.fromEntries(
+    Object.entries(NOW_PLAYING_ANIMATIONS).map(([id, a]) => [id, a.label])
+  ) as Record<NowPlayingAnimationId, string>
+)
 
 export function StyleRail(): React.JSX.Element | null {
   const styleRailVisible = useStore((s) => s.styleRailVisible)
@@ -49,10 +56,10 @@ export function StyleRail(): React.JSX.Element | null {
         Now Playing animation
         <select
           value={nowPlayingAnimation}
-          // Options come only from NOW_PLAYING_ANIMATION_IDS, so the cast is sound.
+          // Options come only from ANIMATION_ORDER (animation ids), so the cast is sound.
           onChange={(e) => setNowPlayingAnimation(e.target.value as NowPlayingAnimationId)}
         >
-          {NOW_PLAYING_ANIMATION_IDS.map((id) => (
+          {ANIMATION_ORDER.map((id) => (
             <option key={id} value={id}>
               {NOW_PLAYING_ANIMATIONS[id].label}
             </option>

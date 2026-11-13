@@ -44,6 +44,21 @@ export function resolveNowPlayingAnimation(
   return legacyGlow === 'false' ? 'none' : 'bokeh'
 }
 
+/**
+ * KAMP-783: the order the picker lists animations in. 'none' (labelled "off") is
+ * pinned first; the rest are alphabetical by label. The locale is explicit
+ * because the default follows the runtime's, and some (sv, fi) collate ä after z,
+ * so node --test and Electron could disagree. NOW_PLAYING_ANIMATION_IDS keeps
+ * registration order; it's the registry's key set, not a display order.
+ */
+export function pickerOrder(
+  labelOf: Record<NowPlayingAnimationId, string>
+): NowPlayingAnimationId[] {
+  const rest = NOW_PLAYING_ANIMATION_IDS.filter((id) => id !== 'none')
+  rest.sort((a, b) => labelOf[a].localeCompare(labelOf[b], 'en'))
+  return ['none', ...rest]
+}
+
 /** The legacy toggle value that mirrors an animation choice. */
 export function legacyGlowValue(id: NowPlayingAnimationId): 'true' | 'false' {
   return id === 'none' ? 'false' : 'true'

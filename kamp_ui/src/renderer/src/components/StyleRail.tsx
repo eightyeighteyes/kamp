@@ -5,8 +5,8 @@ import { ThemePicker } from './ThemePicker'
 import { NOW_PLAYING_ANIMATIONS } from './nowplaying/registry'
 import { pickerOrder } from '../../../shared/nowPlayingAnimation'
 import type { NowPlayingAnimationId } from '../../../shared/nowPlayingAnimation'
-
-const HIGHLIGHT_STYLES = ['shiny', 'newmoji', 'vaporwave', 'proud', 'pressed', 'boring', 'static']
+import { HIGHLIGHT_PICKER_ORDER, highlightChoice } from '../../../shared/newArrivalHighlight'
+import type { HighlightChoice } from '../../../shared/newArrivalHighlight'
 
 // Labels are static, so the order is computed once.
 const ANIMATION_ORDER = pickerOrder(
@@ -19,8 +19,7 @@ export function StyleRail(): React.JSX.Element | null {
   const styleRailVisible = useStore((s) => s.styleRailVisible)
   const highlightEnabled = useStore((s) => s.highlightEnabled)
   const highlightStyle = useStore((s) => s.highlightStyle)
-  const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
-  const setHighlightStyle = useStore((s) => s.setHighlightStyle)
+  const setNewArrivalHighlight = useStore((s) => s.setNewArrivalHighlight)
   const nowPlayingAnimation = useStore((s) => s.nowPlayingAnimation)
   const setNowPlayingAnimation = useStore((s) => s.setNowPlayingAnimation)
   const nowPlayingArtVisible = useStore((s) => s.nowPlayingArtVisible)
@@ -33,27 +32,21 @@ export function StyleRail(): React.JSX.Element | null {
       <ThemePicker />
       <div className="style-rail-spacer" />
       <label className="style-rail-control">
-        <input
-          type="checkbox"
-          checked={highlightEnabled}
-          onChange={(e) => setHighlightEnabled(e.target.checked)}
-        />
-        Highlight new arrivals
+        New Arrival Highlight
+        <select
+          value={highlightChoice(highlightEnabled, highlightStyle)}
+          // Options come only from HIGHLIGHT_PICKER_ORDER, so the cast is sound.
+          onChange={(e) => setNewArrivalHighlight(e.target.value as HighlightChoice)}
+        >
+          {HIGHLIGHT_PICKER_ORDER.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
       </label>
-      {highlightEnabled && (
-        <label className="style-rail-control">
-          Style
-          <select value={highlightStyle} onChange={(e) => setHighlightStyle(e.target.value)}>
-            {HIGHLIGHT_STYLES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
       <label className="style-rail-control">
-        Now Playing animation
+        Now Playing Animation
         <select
           value={nowPlayingAnimation}
           // Options come only from ANIMATION_ORDER (animation ids), so the cast is sound.

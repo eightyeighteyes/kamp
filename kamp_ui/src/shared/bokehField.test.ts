@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  SpriteBakeGate,
   TIERS,
   VISIBLE_SHARE,
   advanceField,
@@ -12,6 +13,7 @@ import {
   type Tier
 } from './bokehField.ts'
 import { seededRng, type PaneRect } from './particleUtil.ts'
+import { PaletteCrossfade } from './paletteCrossfade.ts'
 
 // A wide Now Playing pane with the art centred at 45% of its height, roughly the
 // shipped layout. Art hidden (KAMP-769) is the `null` case.
@@ -193,3 +195,52 @@ for (const art of [ART, null]) {
     }
   })
 }
+
+// --- sprite re-bake gate, against the real PaletteCrossfade -----------------
+
+const RED = [{ r: 255, g: 0, b: 0 }]
+const BLUE = [{ r: 0, g: 0, b: 255 }]
+
+test('a settled field never re-bakes its sprites', () => {
+  const fade = new PaletteCrossfade(RED, 1000)
+  const gate = new SpriteBakeGate()
+  assert.equal(gate.shouldBake('k', fade.current()), true) // first frame
+  for (let f = 0; f < 300; f++) {
+    fade.tick(33)
+    assert.equal(gate.shouldBake('k', fade.current()), false, `re-baked on frame ${f}`)
+  }
+})
+
+test('a fade re-bakes every drawn frame until it settles, then stops', () => {
+  const fade = new PaletteCrossfade(RED, 1000)
+  const gate = new SpriteBakeGate()
+  gate.shouldBake('k', fade.current())
+  fade.set(BLUE, true)
+  let bakes = 0
+  for (let f = 0; f < 60; f++) {
+    fade.tick(33)
+    if (gate.shouldBake('k', fade.current())) bakes++
+  }
+  // ~1000 ms / 33 ms of fade frames, plus the one that lands on the target.
+  assert.ok(bakes >= 30 && bakes <= 32, `${bakes} bakes`)
+  assert.equal(gate.shouldBake('k', fade.current()), false)
+})
+
+test('a palette set while stopped re-bakes once, in its final colours', () => {
+  const fade = new PaletteCrossfade(RED, 1000)
+  const gate = new SpriteBakeGate()
+  gate.shouldBake('k', fade.current())
+  fade.set(BLUE, false) // the loop is stopped: reduced motion, or the pane hidden
+  assert.deepEqual(fade.current(), BLUE)
+  assert.equal(gate.shouldBake('k', fade.current()), true)
+  assert.equal(gate.shouldBake('k', fade.current()), false)
+})
+
+test('a geometry change or invalidate() re-bakes a settled field', () => {
+  const fade = new PaletteCrossfade(RED, 1000)
+  const gate = new SpriteBakeGate()
+  gate.shouldBake('k', fade.current())
+  assert.equal(gate.shouldBake('k2', fade.current()), true)
+  gate.invalidate()
+  assert.equal(gate.shouldBake('k2', fade.current()), true)
+})

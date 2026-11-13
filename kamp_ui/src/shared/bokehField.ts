@@ -223,3 +223,31 @@ export function visibleOrbCount(
   }
   return n
 }
+
+// --- sprite re-bake gate -------------------------------------------------------
+
+/**
+ * Decides when the orb sprites need baking again (KAMP-777's baked blur is the
+ * expensive part: 7 blurred canvases). A bake is due when the geometry key
+ * changes or the colours do. Colours are compared by array *reference*, which is
+ * PaletteCrossfade's contract: once settled `current()` returns the same target
+ * array every call, and mid-fade a fresh blend each call. So a settled field never
+ * re-bakes, a fade re-bakes on every drawn frame (as before), and a palette that
+ * lands while the loop is stopped re-bakes once.
+ */
+export class SpriteBakeGate {
+  private key = ''
+  private colors: unknown = null
+
+  shouldBake(key: string, colors: readonly unknown[]): boolean {
+    if (key === this.key && colors === this.colors) return false
+    this.key = key
+    this.colors = colors
+    return true
+  }
+
+  /** Force the next call to bake (a tune() changed the scale or blur). */
+  invalidate(): void {
+    this.key = ''
+  }
+}

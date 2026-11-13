@@ -22,8 +22,10 @@ import {
   orbSprite,
   type OrbSprite
 } from '../../../../shared/bokehSprites'
+import { PaletteCrossfade } from '../../../../shared/paletteCrossfade'
 import {
   BLOOM_MAX_DELAY,
+  SpriteBakeGate,
   advanceField,
   makeField,
   orbCenter,
@@ -69,16 +71,10 @@ const BLOOM_DONE = BLOOM_DURATION + BLOOM_MAX_DELAY // sentinel: no bloom active
 
 const rand = (rng: Rng, min: number, max: number): number => min + rng() * (max - min)
 
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 const smoothstep = (t: number): number => t * t * (3 - 2 * t)
 // Quintic ease with zero acceleration (not just velocity) at the ends — kills the faint
 // onset "snap" that betrays a triggered animation. Used for the bloom envelope.
 const smootherstep = (t: number): number => t * t * t * (t * (t * 6 - 15) + 10)
-const lerpRgb = (a: RGB, b: RGB, t: number): RGB => ({
-  r: Math.round(lerp(a.r, b.r, t)),
-  g: Math.round(lerp(a.g, b.g, t)),
-  b: Math.round(lerp(a.b, b.b, t))
-})
 
 // A transient firefly mote (KAMP-627). Position is derived from `age` each frame
 // (not integrated), so a stop/resume never desyncs it. Color is snapshotted at spawn.
@@ -117,18 +113,15 @@ export class BokehEngine {
 
   // Baked orb sprites, one per orb (each has its own radius and palette slot).
   // Re-baked when the geometry key changes, or the colours have moved since the
-  // last bake (only during a crossfade: paletteT stops at 1).
+  // last bake (only during a crossfade; SpriteBakeGate has the rule and its tests).
   private sprites: (CanvasImageSource | null)[] = []
   private spriteGeom: (OrbSprite | null)[] = []
-  private bakedKey = ''
-  private bakedGen = -1
-  private bakedT = -1
-  private paletteGen = 0
+  private bakeGate = new SpriteBakeGate()
 
-  // Palette crossfade state.
-  private from: RGB[]
-  private to: RGB[]
-  private paletteT = 1 // 0..1
+  // Palette crossfade (shared with the WebGL backgrounds). KAMP-779: a palette set
+  // while the loop is stopped lands at once, so the reduced-motion still frame
+  // shows the current track, not the previous one.
+  private palette: PaletteCrossfade
 
   // Cursor parallax. Target is set by pointer events (normalized [-1,1], 0 =
   // pane center); the rendered value eases toward it in advance(). Both start
@@ -160,8 +153,7 @@ export class BokehEngine {
     initial: Palette
   ) {
     this.ctx = canvas.getContext('2d')
-    this.from = initial.colors
-    this.to = initial.colors
+    this.palette = new PaletteCrossfade(initial.colors, CROSSFADE_MS)
     this.refreshBg()
     this.nextFireflyAt = this.fireflyGap()
   }
@@ -175,7 +167,7 @@ export class BokehEngine {
         if (blur != null && blur >= 0) this.blurCss = blur
         if (freeze != null) this.frozen = freeze
         if (seed != null) this.reseed(seed)
-        this.bakedKey = '' // force a re-bake at the new scale or blur
+        this.bakeGate.invalidate() // force a re-bake at the new scale or blur
         this.resize()
       },
       stats: () => {
@@ -227,18 +219,14 @@ export class BokehEngine {
   }
 
   private currentColors(): RGB[] {
-    if (this.paletteT >= 1) return this.to
-    const t = smoothstep(this.paletteT)
-    return this.to.map((c, i) => lerpRgb(this.from[i] ?? c, c, t))
+    return this.palette.current()
   }
 
   setPalette(next: Palette): void {
-    // Snapshot the currently-interpolated colors so a track change mid-crossfade
-    // continues smoothly rather than snapping.
-    this.from = this.currentColors()
-    this.to = next.colors
-    this.paletteT = 0
-    this.paletteGen++
+    // Running: fade from whatever is on screen (a mid-fade skip never snaps).
+    // Stopped: land at once — nothing would advance the fade, and a resume after
+    // a hidden track change has nothing on screen to fade from.
+    this.palette.set(next.colors, this.rafId != null)
     // Trigger the bloom. If one is still in flight, re-arm from the peak (not 0) so a
     // rapid skip re-excites the field smoothly instead of stuttering back through the attack.
     this.bloomAge = this.bloomAge < BLOOM_DONE ? BLOOM_ATTACK * BLOOM_DURATION : 0
@@ -290,9 +278,9 @@ export class BokehEngine {
     this.resetPointer() // resume centered; no stale offset from a prior activation
     // Suppress a stale bloom on resume: the palette effect can fire setPalette while the
     // loop is stopped (it's keyed on the art URL, not visibility), so a track change during
-    // hidden/inactive would otherwise replay a late bloom here. The *crossfade* still replays
-    // (state-convergence — colors must reach their final value), but the bloom is a discrete
-    // "this just happened" event, so it should not fire late.
+    // hidden/inactive would otherwise replay a late bloom here. The bloom is a discrete
+    // "this just happened" event, so it should not fire late; the colors already landed
+    // when setPalette ran while stopped (KAMP-779).
     this.bloomAge = BLOOM_DONE
     this.rafId = requestAnimationFrame(this.tick)
   }
@@ -338,7 +326,7 @@ export class BokehEngine {
     if (document.hidden) return // belt-and-suspenders; the component also gates
     if (this.frozen) return
     this.elapsed += dt
-    if (this.paletteT < 1) this.paletteT = Math.min(1, this.paletteT + (dt * 1000) / CROSSFADE_MS)
+    this.palette.tick(dt * 1000)
     this.bloomAge = Math.min(BLOOM_DONE, this.bloomAge + dt)
     // Framerate-independent exponential lag toward the cursor target.
     const k = 1 - Math.exp(-dt / PARALLAX_TAU)
@@ -425,11 +413,7 @@ export class BokehEngine {
   // In steady state this does nothing: colours only move during the 1 s crossfade.
   private bakeSprites(s: number, colors: RGB[]): void {
     const key = bakeKey(s, this.scale, this.blurCss)
-    if (key === this.bakedKey && this.paletteGen === this.bakedGen && this.paletteT === this.bakedT)
-      return
-    this.bakedKey = key
-    this.bakedGen = this.paletteGen
-    this.bakedT = this.paletteT
+    if (!this.bakeGate.shouldBake(key, colors)) return
     this.sprites = this.orbs.map((o, i) => {
       const geom = orbSprite(o.sizePct * s * 0.5, this.blurCss, this.scale)
       this.spriteGeom[i] = geom

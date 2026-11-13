@@ -4,10 +4,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   FIELD_COUNT,
+  FieldWarmth,
   OFFSET_MAX,
   ProportionTween,
   SeamBloom,
   SeamWarmth,
+  Warmth,
   breathedWeights,
   fieldColors,
   layoutFields,
@@ -255,6 +257,68 @@ test('clear() drops all warmth, for a resume that must not replay a stale glow',
   assert.deepEqual(w.values(), [0, 0])
   w.tick(1)
   assert.deepEqual(w.values(), [0, 0])
+})
+
+// --- field warmth (cursor, KAMP-781) --------------------------------------------------
+
+function heldOn(x: number, y: number, titleTop: number | null = null, seconds = 10): number[] {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  const w = new FieldWarmth(FIELD_COUNT)
+  for (let i = 0; i < seconds * 15; i++) {
+    w.aim(x, y, fields, titleTop)
+    w.tick(1 / 15)
+  }
+  return w.values()
+}
+
+test('the field under the cursor warms, and only that one', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  const f = fields[1]
+  const v = heldOn(f.x + f.w / 2, f.y + f.h / 2)
+  assert.ok(v[1] > 0.9, `field ${v[1]}`)
+  assert.equal(v[0], 0)
+  assert.equal(v[2], 0)
+})
+
+test('a cursor in the gap between fields warms no field', () => {
+  const { fields, seams } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  assert.deepEqual(heldOn(fields[0].x + fields[0].w / 2, seams[0]), [0, 0, 0])
+})
+
+test('a cursor in the side margin warms no field', () => {
+  assert.deepEqual(heldOn(5, 400), [0, 0, 0])
+})
+
+test('the hit test follows an offset field, not the centred stack', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1], [OFFSET_MAX, -OFFSET_MAX, 0])
+  // Field 0 is pushed right: just past its left edge is outside it.
+  const f = fields[0]
+  assert.deepEqual(heldOn(f.x - 5, f.y + f.h / 2), [0, 0, 0])
+  assert.ok(heldOn(f.x + f.w - 5, f.y + f.h / 2)[0] > 0.9)
+})
+
+test('no field warms behind the title band, to keep the title legible', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1])
+  const f = fields[2]
+  const y = f.y + f.h / 2
+  assert.deepEqual(heldOn(f.x + f.w / 2, y, y - 10), [0, 0, 0])
+  assert.ok(heldOn(f.x + f.w / 2, y, y + 10)[2] > 0.9, 'above the band it still warms')
+})
+
+test('a field warms on the shared attack and cools on the shared release', () => {
+  const { fields } = layoutFields(1200, 800, [1, 1, 1])
+  const f = fields[0]
+  const w = new FieldWarmth(FIELD_COUNT)
+  w.aim(f.x + 10, f.y + 10, fields, null)
+  w.tick(Warmth.ATTACK_S)
+  assert.ok(Math.abs(w.values()[0] - (1 - Math.exp(-1))) < 1e-9)
+  for (let i = 0; i < 100; i++) w.tick(0.1)
+  const hot = w.values()[0]
+  // Leaving: the same field cools; nothing near the pane's centre picks it up.
+  w.aim(null, null, fields, null)
+  w.tick(Warmth.RELEASE_S)
+  assert.ok(Math.abs(w.values()[0] - hot * Math.exp(-1)) < 1e-9)
+  assert.equal(w.values()[1], 0)
 })
 
 // --- rare seam bloom -------------------------------------------------------------------

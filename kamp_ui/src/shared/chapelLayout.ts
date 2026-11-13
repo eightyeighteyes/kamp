@@ -259,6 +259,29 @@ export class SeamWarmth extends Warmth {
   }
 }
 
+/**
+ * KAMP-781: the whole field under the cursor warms (that field only, a design
+ * decision), on the same attack and release as the seams. The values are per
+ * field, not positions, so a release cools the field the cursor was on rather
+ * than drifting with a recentring pointer (KAMP-765). Nothing warms inside the
+ * title band, so the brightening can't undo the title's dimming.
+ */
+export class FieldWarmth extends Warmth {
+  /** Aim at the cursor (same units as `fields`), or nulls once it has left. */
+  aim(x: number | null, y: number | null, fields: Rect[], titleTop: number | null): void {
+    this.target.fill(0)
+    if (x === null || y === null) return
+    if (titleTop !== null && y >= titleTop) return
+    for (let i = 0; i < fields.length && i < this.target.length; i++) {
+      const f = fields[i]
+      if (x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h) {
+        this.target[i] = 1
+        return
+      }
+    }
+  }
+}
+
 // --- rare seam bloom -----------------------------------------------------------------------
 
 export interface ActiveBloom {

@@ -36,6 +36,11 @@ export interface GLDevTarget {
    * `blur: 0` is the no-blur control. `seed` rebuilds the field from a fixed seed
    * with the clock at zero, and `freeze` holds the clock, so two variants can be
    * screenshotted identically.
+   *
+   * Bokeh's depth of field (KAMP-782): `focus` 'off' draws every orb soft (the
+   * effect-off variant), 'on' holds two accents fully in focus (the worst case
+   * for cost), and 'auto' is the shipped rack focus, racking at once.
+   * `sharpSigma` is the in-focus disc's edge blur in backing px.
    */
   tune(opts: {
     scale?: number
@@ -47,6 +52,8 @@ export interface GLDevTarget {
     texture?: 'on' | 'off'
     seed?: number
     freeze?: boolean
+    focus?: 'auto' | 'on' | 'off'
+    sharpSigma?: number
   }): void
   /**
    * Draw rate since the previous call (verifies the frame cap), and backing size.

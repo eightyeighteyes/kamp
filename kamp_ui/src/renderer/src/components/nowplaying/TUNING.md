@@ -74,6 +74,74 @@ sampling, so call it, wait a few minutes, and call it again.
 `tune()` persists until a reload, which resets every knob; check `stats().settings`
 before each run.
 
+## Focus / depth of field — `shared/bokehField.ts`, `shared/bokehFocus.ts`, `bokehEngine.ts` (KAMP-782)
+
+The field has depth of field. Each orb bakes its own blur, so softness spans a range
+instead of one sheet. Every 20–40 s focus is "racked" onto one or two of the three
+small accent orbs. They sharpen over 3 s into defined discs with a bright lens-like
+rim, while everything else stays soft.
+
+Focus is not derived from the cursor parallax. That parallax is inverted on purpose
+(big orbs move least), so it implies no physical depth to match.
+
+| Knob                      | Default                                     | Effect                                                                                                                                                                                                        |
+| ------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TIERS[*].blur`           | hero 1.0–1.3, mid 0.7–0.95, accent 0.35–0.6 | Each orb's baked sigma, as a multiple of `BOKEH_BLUR_CSS`. The ranges don't overlap, so a smaller orb is always the sharper one; a test pins that. Wider hero sigma grows sprite padding (3σ), so measure it. |
+| `RACK_GAP` / `FIRST_RACK` | 20–40 s / 4–10 s                            | Time between racks, and before the first one.                                                                                                                                                                 |
+| `PULL_S`                  | 3 s                                         | Length of a focus pull (smootherstep). Keep it below the rack gap.                                                                                                                                            |
+| `HIDDEN_RERACK_S`         | 5 s                                         | A target hidden this long (behind the art, off the pane) loses focus. A rack only picks accents visible at that moment.                                                                                       |
+| `MAX_SHARP`               | 2                                           | At most this many orbs sharp at once. A test holds it over an hour.                                                                                                                                           |
+| `SOFT_DIM`                | 0.5                                         | How far the soft layer dims at full focus, at most. More reads more like a disc; too little reads as a brighter blob.                                                                                         |
+| `SHARP_RADIUS`            | 0.85                                        | The in-focus disc's radius, as a fraction of the orb's.                                                                                                                                                       |
+| `SHARP_GAIN` / `RIM_GAIN` | 1.25 / 1.25                                 | Disc interior alpha over the orb's, and rim alpha over the interior. Both clamp at 1, so a bright orb's rim can't outshine its disc.                                                                          |
+| `RIM_STOPS`               | 0.8, 0.93, 1                                | Where the interior ends, where the rim peaks, and the edge (fractions of the disc radius).                                                                                                                    |
+| `SHARP_SIGMA`             | 1.5 backing px                              | The disc's edge blur. **A floor, not a look:** at scale 0.25 one backing px is 2–4 CSS px, and below ~1.5 the edge crawls as the disc drifts.                                                                 |
+
+- **Soft under sharp, never a crossfade (KAMP-768/774).** The soft sprite draws first,
+  then the sharp one over it at the focus amount. The soft layer dims by
+  `k·focus`. Under `screen` the centre stays non-darkening only while
+  `k ≤ a_sharp·(1 − a_soft)/a_soft`, so `focusAlphas()` caps k from the alphas
+  actually drawn. A bloomed orb therefore dims its halo less rather than let its
+  centre dip mid-pull. A test sweeps that bound.
+- **"Defined", not razor.** At `RES_SCALE` 0.25 the rim is 3–6 CSS px wide after
+  upscaling. Sharper needs a higher scale, and cost is linear in pixels (0.5
+  measured 15.7%).
+- **Reduced motion draws no orbs** (`renderStatic()` is a two-swatch gradient), so
+  depth of field doesn't appear there. That is unchanged.
+- The third accent (slot 1) exists so a rack has a real choice. Two accents made
+  "1 or 2 at random" nearly fixed. The density test still holds with 8 orbs.
+
+```js
+__kampGL.tune({ focus: 'off' }) // every orb soft: the effect-off variant
+__kampGL.tune({ focus: 'on' }) // two accents held in focus: the cost worst case
+__kampGL.tune({ focus: 'auto' }) // shipped schedule, racking now
+__kampGL.tune({ sharpSigma: 1 }) // the disc's edge blur, backing px
+```
+
+`stats().density` also reports **in-focus orbs visible**: the share of one-second
+samples where an orb above 0.5 focus was actually seen.
+
+### Measurements (KAMP-782)
+
+Same rig and method as KAMP-777 (Intel Mac, integrated GPU, 60 Hz, music playing,
+art hidden, 60 × 1 s samples per variant, one session). GPU busy:
+
+| Variant                                | GPU busy         |
+| -------------------------------------- | ---------------- |
+| `focus: 'off'` (per-orb blur only)     | 8.77% ± 0.97     |
+| **`focus: 'auto'` (shipped)**          | **8.89% ± 1.17** |
+| `focus: 'on'` (two accents held sharp) | 9.00% ± 1.13     |
+
+- **Depth of field is free within the noise.** All three variants sit within about a
+  quarter of a standard deviation of each other. Holding two sharp discs on screen
+  all the time, the worst case, adds about 0.2 points.
+- **The wider hero blur costs nothing measurable.** `'off'` is 0.5 points above
+  KAMP-777's 8.3% ± 0.8. That is inside one standard deviation, measured in a
+  different session with no None control. The 3σ padding growth on the heroes is
+  real, but too small to see.
+- Package power and CPU swung by 10 W and 25 points between these runs, with the
+  GPU flat: system noise, as always (KAMP-776/773).
+
 ## Motion feel — `shared/bokehField.ts`, `bokehEngine.ts`
 
 Orbs no longer drift in straight lines and wrap (KAMP-779). Each orb's base position
@@ -156,7 +224,7 @@ new colors are ~half arrived. A soft "inhale," never a flash; off under
 | ---------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `TIERS[*].size`  | hero 0.55–0.75, mid 0.30–0.45, accent 0.12–0.22 | Orb diameter as a fraction of the short screen edge. Bigger hero orbs = more color wash.         |
 | `TIERS[*].alpha` | 0.32–0.56                                       | Per-orb opacity. **Lower the whole set to let the art pop more**; raise for a bolder background. |
-| `ORB_PLAN`       | 7 entries                                       | Orb _count_ and which palette slot each orb wears. Add/remove rows to change density.            |
+| `ORB_PLAN`       | 8 entries                                       | Orb _count_ and which palette slot each orb wears. Add/remove rows to change density.            |
 
 Tiers, sizes and the orb plan live in `shared/bokehField.ts` since KAMP-779. About
 twice as many orbs are on screen at once with the bounded walks (mean ~3.9 against

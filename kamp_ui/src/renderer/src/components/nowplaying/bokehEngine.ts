@@ -29,13 +29,16 @@ import {
   BLOOM_MAX_DELAY,
   ORB_PLAN,
   SpriteBakeGate,
+  VISIBLE_SHARE,
   advanceField,
   makeField,
   orbCenter,
   visibleOrbCount,
+  visibleShare,
   type Orb,
   type Rng
 } from '../../../../shared/bokehField'
+import { MAX_SHARP, RackFocus, focusAlphas } from '../../../../shared/bokehFocus'
 
 // --- tunables (the "5 knobs") ----------------------------------------------
 // Backing store fraction of (clamped) devicePixelRatio. Everything drawn is a smooth
@@ -72,6 +75,21 @@ const BLOOM_ATTACK = 0.3 // fraction of duration spent rising to peak (~0.45s)
 const BLOOM_RADIUS = 0.16 // peak orb-radius boost (fraction of base)
 const BLOOM_ALPHA = 0.2 // peak orb-alpha boost (kept low — brightness spikes read as a flash)
 const BLOOM_DONE = BLOOM_DURATION + BLOOM_MAX_DELAY // sentinel: no bloom active
+// Depth of field (KAMP-782). An in-focus accent is drawn as a second, sharp
+// sprite over its soft one (soft under sharp, shared/bokehFocus.ts): a flat disc
+// with a brighter lens-like rim.
+// Edge blur of the sharp disc, in *backing* px. A floor, not a look: at RES_SCALE
+// 0.25 one backing px is 2–4 CSS px, so anything under ~1.5 aliases into a
+// crawling edge as the disc drifts (the stairs of KAMP-774). "Defined", not razor.
+const SHARP_SIGMA = 1.5
+const SHARP_RADIUS = 0.85 // disc radius, fraction of the orb's radius: focus gathers light
+const SHARP_GAIN = 1.25 // disc interior alpha over the orb's alpha (must cover the soft centre)
+const RIM_GAIN = 1.25 // rim alpha over the interior: the bright ring of real lens bokeh
+const RIM_STOPS: [number, number, number] = [0.8, 0.93, 1] // interior ends, rim peak, edge
+// The accents: the only orbs that ever come into focus.
+const FOCUSABLE = ORB_PLAN.flatMap((p, i) => (p.tier === 'accent' ? [i] : []))
+
+type FocusMode = 'auto' | 'on' | 'off'
 
 const rand = (rng: Rng, min: number, max: number): number => min + rng() * (max - min)
 
@@ -112,8 +130,18 @@ export class BokehEngine {
   private frameMs = FRAME_MS
   private blurCss = BOKEH_BLUR_CSS
   private frozen = false // A/B screenshots: hold the clock still
+  private focusMode: FocusMode = 'auto'
+  private sharpSigma = SHARP_SIGMA
   private draws = 0
   private drawsSince = 0
+
+  // Rack focus (KAMP-782). Visibility asks where the art is; that's a DOM read,
+  // so the rect is refreshed once a second rather than every frame.
+  private rack = new RackFocus(ORB_PLAN.length, FOCUSABLE, this.rng)
+  private focusArt: PaneRect | null = null
+  private nextArtAt = 0
+  private sharpSprites: (CanvasImageSource | null)[] = []
+  private sharpGeom: (OrbSprite | null)[] = []
 
   // Baked orb sprites, one per orb (each has its own radius and palette slot).
   // Re-baked when the geometry key changes, or the colours have moved since the
@@ -150,6 +178,7 @@ export class BokehEngine {
   private census: number[] | null = null
   private censusArt: PaneRect | null = null
   private nextCensusAt = 0
+  private sharpCensus = { seen: 0, all: 0 } // samples of in-focus (> 0.5) orbs, and visible ones
 
   // Track-change bloom. Seconds since the last palette change; BLOOM_DONE = inactive.
   private bloomAge = BLOOM_DONE
@@ -173,12 +202,18 @@ export class BokehEngine {
   /** The __kampGL handle (KAMP-780), for measuring and tuning the softness. */
   devTarget(): GLDevTarget {
     return {
-      tune: ({ scale, fps, blur, seed, freeze }) => {
+      tune: ({ scale, fps, blur, seed, freeze, focus, sharpSigma }) => {
         if (scale != null && scale > 0) this.resScale = scale
         if (fps != null && fps > 0) this.frameMs = 1000 / fps
         if (blur != null && blur >= 0) this.blurCss = blur
         if (freeze != null) this.frozen = freeze
+        if (sharpSigma != null && sharpSigma >= 0) this.sharpSigma = sharpSigma
         if (seed != null) this.reseed(seed)
+        if (focus != null) {
+          this.focusMode = focus
+          // 'auto' racks at once, so a tuning session needn't wait 20–40 s.
+          if (focus === 'auto') this.rack.rack((i) => this.orbVisible(i))
+        }
         this.bakeGate.invalidate() // force a re-bake at the new scale or blur
         this.resize()
       },
@@ -192,7 +227,7 @@ export class BokehEngine {
           backing: `${this.canvas.width}x${this.canvas.height}`,
           // What's applied right now: tune() persists until a reload, so a run
           // records its own settings rather than trusting what was typed earlier.
-          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)}${this.frozen ? ' frozen' : ''}`,
+          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)} focus ${this.focusMode} sharpSigma ${this.sharpSigma}${this.frozen ? ' frozen' : ''}`,
           density: this.takeCensus()
         }
       },
@@ -209,14 +244,36 @@ export class BokehEngine {
   private takeCensus(): string {
     this.censusArt = measureContent(this.canvas).art
     const c = this.census
+    const sharp = this.sharpCensus
     this.census = new Array(ORB_PLAN.length + 1).fill(0)
+    this.sharpCensus = { seen: 0, all: 0 }
     this.nextCensusAt = this.elapsed
     const n = c ? c.reduce((a, b) => a + b, 0) : 0
     if (!c || n === 0) return 'visible orbs: sampling started, call stats() again later'
-    const pct = (v: number): string => `${((100 * v) / n).toFixed(1)}%`
+    const pct = (v: number, of: number): string => `${((100 * v) / of).toFixed(1)}%`
     const twoPlus = c.slice(2).reduce((a, b) => a + b, 0)
     const mean = c.reduce((a, v, i) => a + v * i, 0) / n
-    return `visible orbs over ${n} s: 0 ${pct(c[0])} · 1 ${pct(c[1])} · 2+ ${pct(twoPlus)} · mean ${mean.toFixed(1)}`
+    // KAMP-782: an in-focus orb behind the art is depth of field nobody sees.
+    const focus = sharp.all > 0 ? pct(sharp.seen, sharp.all) : 'n/a'
+    return `visible orbs over ${n} s: 0 ${pct(c[0], n)} · 1 ${pct(c[1], n)} · 2+ ${pct(twoPlus, n)} · mean ${mean.toFixed(1)} · in-focus orbs visible ${focus}`
+  }
+
+  // Can orb i be seen right now (in the pane, outside the edge band and the art)?
+  // Drawn position, pointer offset included: that's where the eye finds it.
+  private orbVisible(i: number): boolean {
+    const o = this.orbs[i]
+    if (!o || this.cssW === 0) return false
+    const { x, y } = orbCenter(o, this.elapsed, this.cssW, this.cssH, this.pointerX, this.pointerY)
+    const r = o.sizePct * Math.min(this.cssW, this.cssH) * 0.5
+    return visibleShare(x, y, r, this.cssW, this.cssH, this.focusArt) >= VISIBLE_SHARE
+  }
+
+  // How far orb i is drawn toward its sharp layer, under the current tune() mode.
+  private focusOf(i: number): number {
+    if (this.focusMode === 'off') return 0
+    if (this.focusMode === 'on')
+      return FOCUSABLE.indexOf(i) >= 0 && FOCUSABLE.indexOf(i) < MAX_SHARP ? 1 : 0
+    return this.rack.focus[i] ?? 0
   }
 
   // Rebuild the field from a fixed seed with the clock at zero, so two variants
@@ -224,6 +281,7 @@ export class BokehEngine {
   private reseed(seed: number): void {
     this.rng = seededRng(seed)
     this.orbs = makeField(this.rng)
+    this.rack = new RackFocus(ORB_PLAN.length, FOCUSABLE, this.rng)
     this.elapsed = 0
     this.firefly = null
     this.nextFireflyAt = this.fireflyGap()
@@ -334,6 +392,8 @@ export class BokehEngine {
     this.stop()
     this.sprites = []
     this.spriteGeom = []
+    this.sharpSprites = []
+    this.sharpGeom = []
     this.firefly = null
     this.ctx = null
   }
@@ -375,9 +435,21 @@ export class BokehEngine {
       this.spawnFirefly()
     }
     advanceField(this.orbs, dt)
+    // Rack focus runs on the animation clock (after the `frozen` check), so a
+    // freeze holds focus too and a hidden pane never racks.
+    if (this.cssW > 0 && this.elapsed >= this.nextArtAt) {
+      this.nextArtAt = this.elapsed + 1
+      this.focusArt = measureContent(this.canvas).art
+    }
+    this.rack.tick(dt, (i) => this.orbVisible(i))
     if (this.census && this.cssW > 0 && this.elapsed >= this.nextCensusAt) {
       this.nextCensusAt = this.elapsed + 1
       this.census[visibleOrbCount(this.orbs, this.elapsed, this.cssW, this.cssH, this.censusArt)]++
+      for (let i = 0; i < this.orbs.length; i++) {
+        if (this.focusOf(i) <= 0.5) continue
+        this.sharpCensus.all++
+        if (this.orbVisible(i)) this.sharpCensus.seen++
+      }
     }
   }
 
@@ -405,9 +477,27 @@ export class BokehEngine {
       if (!sprite || !geom) continue
       // Drawn from its pre-blurred sprite: scaled for breath and bloom, dimmed
       // from its baked peak alpha.
+      const peak = o.baseAlpha * ORB_ALPHA_PEAK
+      const dim = alphaScale(alpha, peak)
+      const focus = this.focusOf(i)
+      const sharp = focus > 0 ? this.sharpSprites[i] : null
+      const sharpGeom = this.sharpGeom[i]
+      // Soft under sharp (KAMP-782): the soft layer dims as the disc sharpens,
+      // by no more than keeps the centre from darkening mid-pull. The centres
+      // are the baked (clamped) alphas times `dim`: what actually lands.
+      const layers = focusAlphas(
+        focus,
+        Math.min(1, peak) * dim,
+        Math.min(1, peak * SHARP_GAIN) * dim
+      )
       const half = drawHalf(geom, radius, this.scale)
-      ctx.globalAlpha = alphaScale(alpha, o.baseAlpha * ORB_ALPHA_PEAK)
+      ctx.globalAlpha = dim * (sharp ? layers.soft : 1)
       ctx.drawImage(sprite, x - half, y - half, half * 2, half * 2)
+      if (sharp && sharpGeom) {
+        const sh = drawHalf(sharpGeom, radius * SHARP_RADIUS, this.scale)
+        ctx.globalAlpha = dim * layers.sharp
+        ctx.drawImage(sharp, x - sh, y - sh, sh * 2, sh * 2)
+      }
       ctx.globalAlpha = 1
     }
     ctx.globalCompositeOperation = 'source-over'
@@ -442,13 +532,56 @@ export class BokehEngine {
     return canvas
   }
 
+  // An in-focus accent (KAMP-782): a flat disc with a brighter rim, like a point
+  // of light through a real lens, with only a small blur on its edge. Baked at
+  // the orb's peak alpha (bloom + breath) scaled by the gains, since globalAlpha
+  // can only dim (KAMP-777); drawn at the same `dim` as the soft layer, the
+  // interior then lands at SHARP_GAIN × the orb's alpha, which focusAlphas() is
+  // told. Alphas clamp at 1: on a bright orb the rim can't outshine the disc.
+  private bakeSharp(geom: OrbSprite, c: RGB, peakAlpha: number): CanvasImageSource | null {
+    const side = geom.half * 2
+    const { canvas, ctx } = makeCanvas(side)
+    if (!ctx) return null
+    const cx = geom.half
+    const r = Math.max(0.5, geom.radius)
+    if (geom.sigma > 0) ctx.filter = `blur(${geom.sigma}px)`
+    const inner = Math.min(1, peakAlpha * SHARP_GAIN)
+    const rim = Math.min(1, inner * RIM_GAIN)
+    const rgba = (a: number): string => `rgba(${c.r},${c.g},${c.b},${a})`
+    const grad = ctx.createRadialGradient(cx, cx, 0, cx, cx, r)
+    grad.addColorStop(0, rgba(inner))
+    grad.addColorStop(RIM_STOPS[0], rgba(inner))
+    grad.addColorStop(RIM_STOPS[1], rgba(rim))
+    grad.addColorStop(RIM_STOPS[2], rgba(0))
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.arc(cx, cx, r, 0, Math.PI * 2)
+    ctx.fill()
+    return canvas
+  }
+
   // Bake the orb sprites if the geometry or the colours changed since last time.
   // In steady state this does nothing: colours only move during the 1 s crossfade.
   private bakeSprites(s: number, colors: RGB[]): void {
-    const key = bakeKey(s, this.scale, this.blurCss)
+    const key = `${bakeKey(s, this.scale, this.blurCss)}|${this.sharpSigma}`
     if (!this.bakeGate.shouldBake(key, colors)) return
+    // Every accent's sharp disc is baked here, eagerly, so a rack never stalls a
+    // frame baking one; the extra cost is a few small, barely blurred sprites.
+    this.sharpSprites = this.orbs.map((o, i) => {
+      const c = colors[o.colorIndex] ?? colors[0]
+      if (!FOCUSABLE.includes(i) || !c) return null
+      const geom = orbSprite(
+        o.sizePct * s * 0.5 * SHARP_RADIUS,
+        this.sharpSigma / this.scale,
+        this.scale
+      )
+      this.sharpGeom[i] = geom
+      return this.bakeSharp(geom, c, o.baseAlpha * ORB_ALPHA_PEAK)
+    })
     this.sprites = this.orbs.map((o, i) => {
-      const geom = orbSprite(o.sizePct * s * 0.5, this.blurCss, this.scale)
+      // Each orb's own depth of field (KAMP-782): `blurCss` is the reference
+      // softness (and the tune() knob); the orb scales it by its tier's range.
+      const geom = orbSprite(o.sizePct * s * 0.5, this.blurCss * o.blurMul, this.scale)
       this.spriteGeom[i] = geom
       const c = colors[o.colorIndex] ?? colors[0]
       return c

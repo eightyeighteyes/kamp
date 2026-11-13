@@ -30,15 +30,43 @@ export interface TierSpec {
   reach: number // base roam from centre, fraction of half the pane, per axis
   rate: number // walk clock multiplier: speed scales linearly with it
   parallax: number // cursor-parallax amplitude, fraction of S
+  blur: [number, number] // baked blur sigma, multiple of BOKEH_BLUR_CSS (KAMP-782)
 }
 
 // `parallax` is intentionally *inverted* from physical depth: hero (big) orbs move
 // least and the small accents move most, so the calm backdrop stays still while
 // the sparkle dances. It reads as atmosphere, not a literal 3D depth cue.
+//
+// `blur` (KAMP-782) gives the field depth of field: the small accents sit nearest
+// the focal plane and the heroes furthest from it. The ranges don't overlap, so a
+// smaller orb is always the sharper one, and each spans enough that no two orbs
+// share a blur level. Focus is not derived from parallax: the parallax is inverted
+// on purpose, so it implies no physical depth to match.
 export const TIERS: Record<Tier, TierSpec> = {
-  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], reach: 0.8, rate: 0.35, parallax: 0.02 },
-  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], reach: 1.1, rate: 0.35, parallax: 0.04 },
-  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], reach: 1.5, rate: 0.35, parallax: 0.056 }
+  hero: {
+    size: [0.55, 0.75],
+    alpha: [0.32, 0.4],
+    reach: 0.8,
+    rate: 0.35,
+    parallax: 0.02,
+    blur: [1.0, 1.3]
+  },
+  mid: {
+    size: [0.3, 0.45],
+    alpha: [0.4, 0.5],
+    reach: 1.1,
+    rate: 0.35,
+    parallax: 0.04,
+    blur: [0.7, 0.95]
+  },
+  accent: {
+    size: [0.12, 0.22],
+    alpha: [0.5, 0.56],
+    reach: 1.5,
+    rate: 0.35,
+    parallax: 0.056,
+    blur: [0.35, 0.6]
+  }
 }
 
 // DrunkWalk reflects hard at its bound (v -> -0.5v), which would read as an orb
@@ -55,7 +83,9 @@ const softBound = (u: number): number => Math.tanh(SOFT * u) / Math.tanh(SOFT)
 export const PREWARM_S = 600
 const STEP_S = 0.1 // DrunkWalk clamps its dt here; prewarm in steps no larger
 
-// 7 orbs, most-dominant palette slots to the big hero orbs.
+// 8 orbs, most-dominant palette slots to the big hero orbs. KAMP-782 added the
+// third accent so a rack focus picks among three small orbs, not a fixed pair;
+// slot 1 was otherwise only on a hero, so the accents span three colours.
 export const ORB_PLAN: readonly { tier: Tier; colorIndex: number }[] = [
   { tier: 'hero', colorIndex: 0 },
   { tier: 'hero', colorIndex: 1 },
@@ -63,7 +93,8 @@ export const ORB_PLAN: readonly { tier: Tier; colorIndex: number }[] = [
   { tier: 'mid', colorIndex: 3 },
   { tier: 'mid', colorIndex: 0 },
   { tier: 'accent', colorIndex: 4 },
-  { tier: 'accent', colorIndex: 2 }
+  { tier: 'accent', colorIndex: 2 },
+  { tier: 'accent', colorIndex: 1 }
 ]
 
 export const BLOOM_MAX_DELAY = 0.12 // seconds — per-orb bloom onset jitter
@@ -89,6 +120,7 @@ export interface Orb {
   colorIndex: number // stable palette slot (so recolor never flickers)
   parallax: number
   bloomDelay: number // per-orb bloom onset jitter (seconds), breaks lockstep
+  blurMul: number // baked blur sigma as a multiple of BOKEH_BLUR_CSS (KAMP-782)
 }
 
 export type Rng = () => number
@@ -117,7 +149,8 @@ export function makeOrb(plan: { tier: Tier; colorIndex: number }, rng: Rng): Orb
     baseAlpha: rand(rng, t.alpha[0], t.alpha[1]),
     colorIndex: plan.colorIndex,
     parallax: t.parallax,
-    bloomDelay: rand(rng, 0, BLOOM_MAX_DELAY)
+    bloomDelay: rand(rng, 0, BLOOM_MAX_DELAY),
+    blurMul: rand(rng, t.blur[0], t.blur[1])
   }
   // Prewarm in walk time (independent of rate), the walk's own mixing clock.
   for (let s = 0; s < PREWARM_S; s += STEP_S) advanceOrb(orb, STEP_S / orb.rate)

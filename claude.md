@@ -174,6 +174,15 @@ Bokeh "sometimes looked blank". An offline replica of its motion answered that i
 - **Reuse `DrunkWalk` unchanged: scale its clock, soften its bound.** `walk.tick(dt * rate)` changes the speed without touching Chapel's constants. Its hard reflection (`v → -0.5v`) reads as an abrupt mid-pane turn, so map the value through `tanh(2u)/tanh(2)`. That cut the worst frame-to-frame velocity change about 5×, and a test pins the bound. Prewarm in *walk* time so a new field doesn't open gathered on the art.
 - **Key a sprite cache on `PaletteCrossfade.current()`'s array identity.** It returns the same target array once settled and a fresh blend mid-fade, so `SpriteBakeGate` re-bakes exactly when needed. Test it against the real crossfade, not a mock.
 
+## Depth of field on a screen-blended field — KAMP-782
+
+Bokeh racks focus onto 1–2 of three accent orbs, drawn as a sharp disc over the soft sprite. Numbers are in `nowplaying/TUNING.md`.
+- **Soft under sharp needs a bound under `screen`, not a fixed dim.** The soft layer has to dim as the disc sharpens, or the orb reads as a brighter blob. But the centre's coverage `1 − (1 − a_s(1 − k·f))(1 − a_k·f)` only stays non-decreasing in f while `k ≤ a_k(1 − a_s)/a_s`. A fixed k darkens a bright (bloomed) orb's centre mid-pull. `focusAlphas()` caps k per draw. Feed it the alphas that actually land, which are the *clamped* baked alphas times the draw's `globalAlpha`, not the unclamped gain. Overstating `a_k` silently breaks the bound.
+- **A mutation harness needs a positive control.** The first pass reported 10/10 mutants caught. All of them were "caught" by an import error, because the scratch copy lacked a sibling (`rareSchedule.ts`) that `particleUtil.ts` imports. Copy the whole `shared/` directory, and run the *unmutated* copy first, which must pass. The real pass then found two misses.
+- **"Wait until it changes" lets a regression slip into the next event.** A test that ticked until the target set changed (with a 120 s cap) passed even when a rack re-picked the same orbs, because the *next* rack changed them. Bound the wait by the schedule (`≤ RACK_GAP[1]`), so every event has to do its job.
+- **Smootherstep lands exactly on its own, so a "snap on arrival" mutant changes nothing.** The real gap was that nothing pinned the ease's soft start and stop: a linear pull passed every test. Assert the first and last frame of a pull barely move.
+- **Accept "subtle" when the user does.** The effect measured free (8.8–9.0% GPU busy across off / auto / on) and the user accepted it as an improvement while noting it stays subtle. Don't chase more contrast in the same branch; that's a follow-up if wanted.
+
 ## Porting a Canvas 2D background to the WebGL base — KAMP-781
 
 Chapel moved from Canvas 2D to a `ShaderSpec` to get per-pixel texture. Its model (`chapelLayout.ts`) moved over unchanged, and the hand-rolled `ChapelCanvas` lifecycle was deleted.

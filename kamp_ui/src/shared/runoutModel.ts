@@ -18,6 +18,9 @@ import { clampDt, poissonGap, smoothstep } from './rareSchedule.ts'
 import { fnv1a } from './particleUtil.ts'
 import type { RunoutPlayback } from './runoutPlayback.ts'
 
+/** The playback fields the runout reads. */
+export type SideClock = Pick<RunoutPlayback, 'playing' | 'position' | 'duration' | 'endOfSide'>
+
 // --- tunables ------------------------------------------------------------------------
 export const GROOVES = 40
 const DT_MAX = 0.1 // s; a longer frame is clamped so nothing jumps
@@ -49,6 +52,9 @@ const RUNOUT_RATE = 1 / 3 // per s
 // When the window opens, the matrix number starts this far (in seconds at
 // NOMINAL) left of centre, so it reaches the middle about halfway through.
 const MATRIX_LEAD_S = RUNOUT_S / 2
+// Where a still frame rests the matrix number, as a fraction across the view.
+// The centre is usually behind the art; the left strip beside it reads.
+export const MATRIX_REST = 0.2
 // Dust: the rare moment. Spacing, the slowest platter it rides, and how far
 // outside the view it enters and leaves.
 const DUST_GAP_FLOOR_S = 20
@@ -69,7 +75,7 @@ export interface Dust {
 }
 
 /** How far into the runout the side is: 0 before the window, 1 once locked. */
-export function runoutTarget(p: RunoutPlayback): number {
+export function runoutTarget(p: SideClock): number {
   if (!p.endOfSide || p.duration <= 0) return 0
   const remaining = Math.max(0, p.duration - p.position)
   return smoothstep((RUNOUT_S - remaining) / RUNOUT_RAMP_S)
@@ -317,7 +323,7 @@ export class RunoutPlatter {
 
   // --- helpers -----------------------------------------------------------------------
 
-  private snapshot(): RunoutPlayback {
+  private snapshot(): SideClock {
     return {
       playing: this.playing,
       position: this.position,
@@ -340,7 +346,9 @@ export class RunoutPlatter {
     this.target = runoutTarget(this.snapshot())
     this.runout = this.target
     // A still frame shows the matrix number where it can be read.
-    if (this.target > 0) this.matrixAngle = this.viewCentre
+    if (this.target > 0) {
+      this.matrixAngle = this.viewMin + MATRIX_REST * (this.viewMax - this.viewMin)
+    }
   }
 
   private startBand(): void {

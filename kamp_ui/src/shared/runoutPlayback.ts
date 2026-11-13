@@ -29,6 +29,8 @@ export interface RunoutPlayback {
   duration: number // s; 0 while unknown
   /** The playing track is the last one on its side (see isEndOfSide). */
   endOfSide: boolean
+  /** The playing track's disc, for the matrix number's side letter; 0 when untagged. */
+  disc: number
 }
 
 /**
@@ -64,7 +66,8 @@ export function playbackOf(
     position: player.position,
     duration: player.duration,
     endOfSide:
-      known && isEndOfSide(player.current_track, player.next_track, queue?.shuffle ?? false)
+      known && isEndOfSide(player.current_track, player.next_track, queue?.shuffle ?? false),
+    disc: player.current_track?.disc_number ?? 0
   }
 }
 

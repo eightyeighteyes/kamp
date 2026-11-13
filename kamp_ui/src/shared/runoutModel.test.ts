@@ -5,6 +5,7 @@ import {
   GAP_S,
   GAP_W,
   GROOVES,
+  MATRIX_REST,
   NOMINAL,
   NUDGE_MAX,
   RUNOUT_RAMP_S,
@@ -22,6 +23,7 @@ const play = (o: Partial<RunoutPlayback> = {}): RunoutPlayback => ({
   position: 10,
   duration: 200,
   endOfSide: false,
+  disc: 1,
   ...o
 })
 
@@ -331,11 +333,11 @@ test('the matrix number rides the platter into view as the runout begins', () =>
   assert.ok(p.matrixAngle > a0, 'moves with the platter')
 })
 
-test('a still frame puts the matrix number in the middle of the view', () => {
+test('a still frame rests the matrix number in the strip left of the art', () => {
   const p = new RunoutPlatter(seededRng(1))
   p.setView(-2.4, -0.7)
   p.setPlayback(play({ endOfSide: true, position: 199 }), false)
-  assert.ok(Math.abs(p.matrixAngle - (-2.4 + -0.7) / 2) < 1e-9)
+  assert.ok(Math.abs(p.matrixAngle - (-2.4 + MATRIX_REST * 1.7)) < 1e-9)
 })
 
 // --- dust -----------------------------------------------------------------------------

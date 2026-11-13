@@ -42,7 +42,7 @@ test('playbackOf maps the player snapshot and the queue', () => {
     { playing: true, position: 30, duration: 200, current_track: t(1, 7), next_track: null },
     { shuffle: false }
   )
-  assert.deepEqual(p, { playing: true, position: 30, duration: 200, endOfSide: true })
+  assert.deepEqual(p, { playing: true, position: 30, duration: 200, endOfSide: true, disc: 1 })
 })
 
 test('playbackOf treats an unknown queue as not shuffled', () => {

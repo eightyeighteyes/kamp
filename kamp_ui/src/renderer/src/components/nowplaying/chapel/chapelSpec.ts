@@ -79,12 +79,14 @@ const float WASH_SCALE = 1.3;      // large clouds: layered washes
 const vec2 WASH2_SCALE = vec2(2.6, 3.4);
 const vec2 STREAK_SCALE = vec2(1.6, 14.0); // dry-brush: long in x, fine in y
 const vec2 EDGE_LO_SCALE = vec2(4.0, 6.0); // the outline's slow waver
-const vec2 EDGE_HI_SCALE = vec2(16.0, 24.0); // the fray
-const float EDGE_LO = 0.25;        // waver, in feathers
-const float EDGE_HI = 0.3;         // fray, in feathers
+const vec2 EDGE_HI_SCALE = vec2(40.0, 60.0); // the fray: fine, or it reads as scallops
+const float EDGE_LO = 0.15;        // waver, in feathers
+const float EDGE_HI = 0.1;         // fray, in feathers
 const float SCUMBLE = 0.75;        // how far the streaks break up the feathered edge
 const float LIFT = 0.12;           // inner light: the dense middle lifts toward white
-const float RIM = 0.3;             // the rim sits a little darker, as an under-layer
+// The rim's shade. Darkening it put a band below --bg around every field (an
+// outline, not an under-layer), so it is 0 until a lighter-hue rim is tried.
+const float RIM = 0.0;
 const float SEAM_STREAK = 0.6;     // how far brush streaks break up a seam's glow
 
 // Smooth 0..1 across [e - w/2, e + w/2], width floored in backing pixels.

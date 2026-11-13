@@ -379,7 +379,45 @@ export function fieldColors(colors: Rgb[], n = FIELD_COUNT): Rgb[] {
 
 // --- legibility --------------------------------------------------------------------------------
 
+// KAMP-781: how much a fully warmed field brightens (its alpha × 1 + this), and
+// the texture density's peak. The texture only thins the paint (scumble, dry
+// brush), never thickens it past FIELD_ALPHA, so it can't break the title bound.
+export const FIELD_WARM_GAIN = 0.45
+export const TEXTURE_PEAK = 1
+
+/**
+ * A field's opacity at one pixel: breath (-1..1), field warmth (0..1), texture
+ * density (0..TEXTURE_PEAK), and how far into the title band it is (0..1). The
+ * warmth fades out inside the band, so hovering the bottom field can't undo the
+ * title's dimming. The shader mirrors this formula.
+ */
+export function fieldAlpha(breath: number, warmth: number, density: number, band: number): number {
+  return (
+    FIELD_ALPHA *
+    (1 + ALPHA_BREATH * breath) *
+    (1 + FIELD_WARM_GAIN * warmth * (1 - band)) *
+    density
+  )
+}
+
 /** Worst-case field opacity left under the title once the dim band is applied. */
 export function titleBandAlpha(): number {
-  return FIELD_ALPHA * (1 + ALPHA_BREATH) * (1 - TITLE_DIM)
+  return fieldAlpha(1, 1, TEXTURE_PEAK, 1) * (1 - TITLE_DIM)
+}
+
+// --- track change -------------------------------------------------------------------------
+
+/**
+ * KAMP-781: what a frame does with the base's real-track-change count. The first
+ * frame (mount, a restore) only records it; an unchanged count (a resume, a
+ * repaint) does nothing; a change eases in while running and lands on a still
+ * frame, so a skip while the pane was hidden is already in place on return.
+ */
+export function retargetDecision(
+  prev: number | null,
+  now: number,
+  still: boolean
+): 'none' | 'animate' | 'land' {
+  if (prev === null || prev === now) return 'none'
+  return still ? 'land' : 'animate'
 }

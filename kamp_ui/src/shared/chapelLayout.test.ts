@@ -16,6 +16,10 @@ import {
   makeBreaths,
   randomOffsets,
   randomProportions,
+  retargetDecision,
+  fieldAlpha,
+  TEXTURE_PEAK,
+  TITLE_DIM,
   titleBandAlpha
 } from './chapelLayout.ts'
 
@@ -394,4 +398,38 @@ test('an empty palette yields no field colors (the engine uses the accent)', () 
 
 test('under the title, a field shows at most a quarter of its color over --bg', () => {
   assert.ok(titleBandAlpha() <= 0.25, `effective alpha ${titleBandAlpha()}`)
+})
+
+test('the bound holds at every breath, warmth and texture density (KAMP-781)', () => {
+  let worst = 0
+  for (let b = -1; b <= 1; b += 0.25) {
+    for (let warm = 0; warm <= 1; warm += 0.25) {
+      for (let d = 0; d <= TEXTURE_PEAK; d += TEXTURE_PEAK / 4) {
+        worst = Math.max(worst, fieldAlpha(b, warm, d, 1) * (1 - TITLE_DIM))
+      }
+    }
+  }
+  assert.ok(worst <= 0.25, `worst ${worst}`)
+  assert.ok(Math.abs(worst - titleBandAlpha()) < 1e-9, 'titleBandAlpha is the worst case')
+})
+
+test('field warmth visibly brightens a field outside the title band', () => {
+  assert.ok(fieldAlpha(0, 1, 1, 0) >= fieldAlpha(0, 0, 1, 0) * 1.3)
+})
+
+// --- retarget decision (KAMP-781) ------------------------------------------------------
+
+test('the first frame records the count and retargets nothing (mount, restore)', () => {
+  assert.equal(retargetDecision(null, 3, false), 'none')
+  assert.equal(retargetDecision(null, 3, true), 'none')
+})
+
+test('no change in the count retargets nothing (a resume, a repaint)', () => {
+  assert.equal(retargetDecision(3, 3, false), 'none')
+  assert.equal(retargetDecision(3, 3, true), 'none')
+})
+
+test('a real change while running eases; while stopped it lands', () => {
+  assert.equal(retargetDecision(3, 4, false), 'animate')
+  assert.equal(retargetDecision(3, 4, true), 'land')
 })

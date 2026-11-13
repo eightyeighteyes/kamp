@@ -72,21 +72,24 @@ const float TITLE_DIM = ${f(TITLE_DIM)};
 const vec3 WARM = vec3(${f(WARM.r / 255)}, ${f(WARM.g / 255)}, ${f(WARM.b / 255)});
 
 // Texture. Scales are per pane height. Rothko, not ribbons: the outline stays
-// nearly rectangular (a small slow waver plus a fine dry-brush fray), and the life
-// is inside the field, in large cloudy shifts of density and a soft inner light.
+// nearly rectangular, the edge's irregularity is in its opacity (scumble), and the
+// life is inside the field, in large cloudy shifts of density and a soft inner
+// light. Displacing the contour itself read as scallops when slow and as aliased
+// crinkle when fine, so only a small slow waver remains.
 const float TEX_FLOOR = 0.4;       // the thinnest the paint gets (density)
 const float WASH_SCALE = 1.3;      // large clouds: layered washes
 const vec2 WASH2_SCALE = vec2(2.6, 3.4);
 const vec2 STREAK_SCALE = vec2(1.6, 14.0); // dry-brush: long in x, fine in y
-const vec2 EDGE_LO_SCALE = vec2(4.0, 6.0); // the outline's slow waver
-const vec2 EDGE_HI_SCALE = vec2(40.0, 60.0); // the fray: fine, or it reads as scallops
-const float EDGE_LO = 0.15;        // waver, in feathers
-const float EDGE_HI = 0.1;         // fray, in feathers
+const vec2 EDGE_SCALE = vec2(4.0, 6.0); // the outline's slow waver
+const float EDGE_AMP = 0.15;       // waver, in feathers
 const float SCUMBLE = 0.75;        // how far the streaks break up the feathered edge
 const float LIFT = 0.12;           // inner light: the dense middle lifts toward white
-// The rim's shade. Darkening it put a band below --bg around every field (an
-// outline, not an under-layer), so it is 0 until a lighter-hue rim is tried.
-const float RIM = 0.0;
+// The bleed: each field's colour carries past its edge at low opacity, so it sits
+// in its ground instead of on near-black. Without it the eye invents a dark band
+// at every edge (a Mach band: measured, the pixels never drop below --bg).
+const float BLEED = 3.0;           // its width, in feathers
+const float BLEED_ALPHA = 0.22;    // its strength, of the field's own opacity
+const float GROUND = 0.06;         // --bg tinted this far toward the deepest field
 const float SEAM_STREAK = 0.6;     // how far brush streaks break up a seam's glow
 
 // Smooth 0..1 across [e - w/2, e + w/2], width floored in backing pixels.
@@ -108,7 +111,8 @@ void main() {
   // The title band (GL y-up: it covers everything below the title's top).
   float band = (1.0 - smoothstep(uBand.x, uBand.x + max(uBand.y, 3.0), p.y)) * uBand.z;
 
-  vec3 col = uBg;
+  // A coloured ground, faintly: the deepest field (sorted last) over --bg.
+  vec3 col = mix(uBg, uFieldCol[${FIELD_COUNT - 1}], GROUND);
   float fv = uFeather.x;
   float fh = uFeather.y;
   // Each field's edge waver here, in vertical px, so a seam's glow can follow the
@@ -117,21 +121,28 @@ void main() {
   for (int i = 0; i < ${FIELD_COUNT}; i++) {
     wvs[i] = 0.0;
     vec4 r = uField[i];
-    // Out as far as a seam glow reaches, so wvs is never 0 under a glow's fringe.
-    float reach = max(fv, fh) * (1.0 + EDGE_LO + EDGE_HI) + fv * ${f(GLOW_HALF_H)};
+    // Out past the bleed, and as far as a seam glow reaches, so wvs is never 0
+    // under a glow's fringe.
+    float reach = max(fv, fh) * (1.0 + EDGE_AMP + BLEED) + fv * ${f(GLOW_HALF_H)};
     if (p.x < r.x - reach || p.x > r.z + reach || p.y < r.y - reach || p.y > r.w + reach) continue;
     float fi = float(i);
     // Pane-height units, moved with the field's x offset only (see header).
     vec2 q = vec2(p.x - uFieldA[i].z, p.y) / H + vec2(fi * 7.31, fi * 3.17);
 
-    // A worked edge: a small slow waver and a fine fray, on every side.
-    float waver = (valueNoise(q * EDGE_LO_SCALE) - 0.5) * 2.0 * EDGE_LO
-                + (valueNoise(q * EDGE_HI_SCALE + 11.0) - 0.5) * 2.0 * EDGE_HI;
+    // A small slow waver on every side, so the outline isn't ruler-straight.
+    float waver = (valueNoise(q * EDGE_SCALE) - 0.5) * 2.0 * EDGE_AMP;
     float wv = waver * fv * uTexture;
     float wh = waver * fh * uTexture;
     wvs[i] = wv;
-    float cov = ramp(p.y - r.y + wv, fv) * ramp(r.w - p.y + wv, fv)
-              * ramp(p.x - r.x + wh, fh) * ramp(r.z - p.x + wh, fh);
+    float core = ramp(p.y - r.y + wv, fv) * ramp(r.w - p.y + wv, fv)
+               * ramp(p.x - r.x + wh, fh) * ramp(r.z - p.x + wh, fh);
+    // The bleed: the same rect, widened and far softer.
+    float bv = fv * BLEED;
+    float bh = fh * BLEED;
+    float wide = ramp(p.y - r.y + wv + 0.5 * bv, bv) * ramp(r.w - p.y + wv + 0.5 * bv, bv)
+               * ramp(p.x - r.x + wh + 0.5 * bh, bh) * ramp(r.z - p.x + wh + 0.5 * bh, bh);
+    // core + BLEED_ALPHA·(1 - core) never exceeds 1, so the title bound holds.
+    float cov = core + BLEED_ALPHA * wide * (1.0 - core) * uTexture;
     if (cov <= 0.0) continue;
 
     // Large cloudy washes and dry-brush streaks; they only thin the paint.
@@ -141,15 +152,13 @@ void main() {
     float tex = smoothstep(0.2, 0.8, 0.45 * wash + 0.3 * wash2 + 0.25 * streak);
     float density = mix(1.0, mix(TEX_FLOOR, 1.0, tex), uTexture);
     // Scumbled edge: the streaks break up the feather, more toward the outside.
-    cov *= mix(1.0, mix(1.0 - SCUMBLE, 1.0, streak), (1.0 - cov) * uTexture);
+    // This, not a displaced contour, is what makes the edge read as brushwork.
+    cov *= mix(1.0, mix(1.0 - SCUMBLE, 1.0, streak), (1.0 - core) * uTexture);
 
     // Colour, not alpha, so the title bound is untouched: the dense middle lifts
-    // toward white (light from within), the rim deepens (an under-layer). The lift
-    // stays out of the title band.
-    float inner = smoothstep(0.55, 1.0, cov) * tex * (1.0 - band);
-    float rim = 4.0 * cov * (1.0 - cov);
+    // toward white (light from within). The lift stays out of the title band.
+    float inner = smoothstep(0.55, 1.0, core) * tex * (1.0 - band);
     vec3 c = mix(uFieldCol[i], vec3(1.0), LIFT * inner * uTexture);
-    c *= 1.0 - RIM * rim * uTexture;
 
     // chapelLayout.fieldAlpha: warmth fades out inside the title band.
     float breath = uFieldA[i].x;

@@ -413,6 +413,11 @@ test('the bound holds at every breath, warmth and texture density (KAMP-781)', (
   assert.ok(Math.abs(worst - titleBandAlpha()) < 1e-9, 'titleBandAlpha is the worst case')
 })
 
+test('the texture thins the paint in proportion to its density', () => {
+  assert.ok(Math.abs(fieldAlpha(0, 0, 0.5, 0) - fieldAlpha(0, 0, 1, 0) / 2) < 1e-12)
+  assert.equal(fieldAlpha(0, 0, 0, 0), 0)
+})
+
 test('field warmth visibly brightens a field outside the title band', () => {
   assert.ok(fieldAlpha(0, 1, 1, 0) >= fieldAlpha(0, 0, 1, 0) * 1.3)
 })

@@ -276,7 +276,7 @@ export class FieldWarmth extends Warmth {
       const f = fields[i]
       if (x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h) {
         this.target[i] = 1
-        return
+        return // layoutFields never overlaps fields, so this is the only hit
       }
     }
   }

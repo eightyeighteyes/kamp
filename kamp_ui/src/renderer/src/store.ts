@@ -41,6 +41,12 @@ import {
   resolveNowPlayingAnimation
 } from '../../shared/nowPlayingAnimation'
 import type { NowPlayingAnimationId, NowPlayingOverrideId } from '../../shared/nowPlayingAnimation'
+import {
+  HIGHLIGHT_ENABLED_KEY,
+  HIGHLIGHT_STYLE_KEY,
+  resolveHighlightStyle
+} from '../../shared/newArrivalHighlight'
+import type { HighlightChoice, HighlightStyle } from '../../shared/newArrivalHighlight'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 import { jsonEqual } from './utils/jsonEqual'
 
@@ -114,7 +120,7 @@ type PlayerStore = {
   recentlyAddedDays: number
   highlightEnabled: boolean
   highlightCutoffSecs: number
-  highlightStyle: string
+  highlightStyle: HighlightStyle
   // KAMP-561/766: which ambient animation plays behind the Now Playing art.
   nowPlayingAnimation: NowPlayingAnimationId
   // KAMP-780: diagnostics-only background shown instead of nowPlayingAnimation.
@@ -271,11 +277,10 @@ type PlayerStore = {
   showFlashToast: (msg: string, tone?: 'error') => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
-  setHighlightEnabled: (enabled: boolean) => void
+  setNewArrivalHighlight: (choice: HighlightChoice) => void
   setNowPlayingAnimation: (id: NowPlayingAnimationId) => void
   setNowPlayingOverride: (id: NowPlayingOverrideId | null) => void
   setNowPlayingArtVisible: (visible: boolean) => void
-  setHighlightStyle: (style: string) => void
   markHighlightPlayed: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
   setTopTracksCount: (n: number) => void
@@ -570,7 +575,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:recently-added-days')
     return saved ? parseInt(saved) : 30
   })(),
-  highlightEnabled: localStorage.getItem('kamp:highlight-enabled') !== 'false',
+  highlightEnabled: localStorage.getItem(HIGHLIGHT_ENABLED_KEY) !== 'false',
   nowPlayingAnimation: resolveNowPlayingAnimation(
     localStorage.getItem(NOW_PLAYING_ANIMATION_KEY),
     localStorage.getItem(LEGACY_GLOW_KEY)
@@ -579,7 +584,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   // Only an explicit 'false' hides the art, so an unset key keeps the default.
   nowPlayingArtVisible: localStorage.getItem('kamp:nowplaying-art-visible') !== 'false',
   highlightCutoffSecs: Date.now() / 1000 - 5 * 86400,
-  highlightStyle: localStorage.getItem('kamp:highlight-style') ?? 'shiny',
+  highlightStyle: resolveHighlightStyle(localStorage.getItem(HIGHLIGHT_STYLE_KEY)),
   playedHighlights: new Map<string, number>(),
   topAlbumsCount: (() => {
     const saved = localStorage.getItem('kamp:top-albums-count')
@@ -1149,9 +1154,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ recentlyAddedDays: n })
   },
 
-  setHighlightEnabled: (enabled) => {
-    localStorage.setItem('kamp:highlight-enabled', String(enabled))
-    set({ highlightEnabled: enabled })
+  setNewArrivalHighlight: (choice) => {
+    // 'off' flips only the switch and leaves the style key on a real style, so a
+    // downgraded build that re-ticks its checkbox gets a style it can render
+    // (see shared/newArrivalHighlight.ts).
+    if (choice === 'off') {
+      localStorage.setItem(HIGHLIGHT_ENABLED_KEY, 'false')
+      set({ highlightEnabled: false })
+      return
+    }
+    localStorage.setItem(HIGHLIGHT_ENABLED_KEY, 'true')
+    localStorage.setItem(HIGHLIGHT_STYLE_KEY, choice)
+    set({ highlightEnabled: true, highlightStyle: choice })
   },
 
   setNowPlayingAnimation: (id) => {
@@ -1166,11 +1180,6 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setNowPlayingArtVisible: (visible) => {
     localStorage.setItem('kamp:nowplaying-art-visible', String(visible))
     set({ nowPlayingArtVisible: visible })
-  },
-
-  setHighlightStyle: (style) => {
-    localStorage.setItem('kamp:highlight-style', style)
-    set({ highlightStyle: style })
   },
 
   markHighlightPlayed: (album) => {

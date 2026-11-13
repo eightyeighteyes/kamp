@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import type { Album } from '../api/client'
+import type { HighlightStyle } from '../../../shared/newArrivalHighlight'
 
 export interface StarParticle {
   id: number
@@ -40,7 +41,7 @@ const STATIC_BORDER_FRAMES = [
 
 export interface NewArrivalHighlight {
   isNew: boolean
-  highlightStyle: string
+  highlightStyle: HighlightStyle
   isMounting: boolean
   starParticles: StarParticle[]
   sparkParticles: SparkParticle[]

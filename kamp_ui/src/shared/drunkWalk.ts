@@ -5,14 +5,14 @@
 // random kick to the value) jitters frame to frame. This one kicks the *velocity*,
 // damps it, and pulls the value gently back toward the centre: a damped,
 // mean-reverting second-order walk. The path is smooth, never periodic, and
-// spends most of its time within about half its bound; a hard reflection at the
-// bound catches the rare excursion. With these constants, the value's spread is
-// about 0.25 of the bound and its speed about 0.05 of the bound per second.
+// stays near the centre more than chance would (see its test); a hard reflection at the
+// bound catches excursions. PULL_S 20 is a loose pull, tuned by eye: the value
+// roams most of its range, at about 0.05 of the bound per second.
 
 import { clampDt } from './rareSchedule.ts'
 
 const VEL_TAU_S = 4 // how long a drift keeps its direction
-const PULL_S = 5 // how strongly it is drawn back to the centre
+const PULL_S = 20 // how strongly it is drawn back to the centre
 const SIGMA = 0.032 // velocity kick, in bounds per s^1.5
 const DT_MAX = 0.1 // a stalled frame is clamped, never one giant step
 

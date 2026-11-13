@@ -94,6 +94,10 @@ export class RunoutEngine {
   private cssH = 0
   private scale = 1
   private resScale = RES_SCALE
+  // Dev-only measurement knobs (see devTarget); the constants ship.
+  private alphaLevels = ALPHA_LEVELS
+  private segments = SEGMENTS
+  private groovesOn = true
   private frameMs = 1000 / DEFAULT_FPS
   private bg: RGB = DEFAULT_BG
   private fallback: RGB[]
@@ -250,7 +254,10 @@ export class RunoutEngine {
 
   devTarget(): GLDevTarget {
     return {
-      tune: ({ scale, fps }) => {
+      tune: ({ scale, fps, grooves, segments, levels }) => {
+        if (grooves != null) this.groovesOn = grooves === 'on'
+        if (segments != null && segments >= 1) this.segments = Math.floor(segments)
+        if (levels != null && levels >= 1) this.alphaLevels = Math.floor(levels)
         if (scale != null && scale > 0) this.resScale = scale
         if (fps != null && fps > 0) this.frameMs = 1000 / fps
         this.resize()
@@ -330,7 +337,7 @@ export class RunoutEngine {
     ctx.globalAlpha = 1
     this.drawSheen(ctx)
     const tint = this.lamp.current()[2]
-    this.drawGrooves(ctx, tint)
+    if (this.groovesOn) this.drawGrooves(ctx, tint)
     this.drawBand(ctx, tint)
     this.drawRunout(ctx, tint)
     this.drawDust(ctx)
@@ -403,16 +410,16 @@ export class RunoutEngine {
     const w = this.cssW
     const h = this.cssH
     const art = this.art
-    for (let i = 0; i < ALPHA_LEVELS; i++) this.levels[i] = new Path2D()
+    for (let i = 0; i < this.alphaLevels; i++) this.levels[i] = new Path2D()
     const t0 = this.view0
-    const dt = (this.view1 - this.view0) / SEGMENTS
+    const dt = (this.view1 - this.view0) / this.segments
     // Turns whose spacing coordinate can land in view: x <= s, so up to the far edge.
     for (let k = -1; k <= GROOVES + 1; k++) {
       let prevLevel = -1
       let px = 0
       let py = 0
       let pPhi = 0
-      for (let j = 0; j <= SEGMENTS; j++) {
+      for (let j = 0; j <= this.segments; j++) {
         const theta = t0 + j * dt
         const phi = (((theta - p.angle) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
         const x = k + phi / (2 * Math.PI)
@@ -432,11 +439,11 @@ export class RunoutEngine {
             : this.segmentAlpha(p.seedAt(x), x, s, e, band, theta, lamp) *
               titleQuiet(this.title, aspect, mx / w, my / h, TITLE_QUIET, TITLE_FEATHER)
           const level = Math.min(
-            ALPHA_LEVELS - 1,
-            Math.floor((a / GROOVE_ALPHA_MAX) * ALPHA_LEVELS)
+            this.alphaLevels - 1,
+            Math.floor((a / GROOVE_ALPHA_MAX) * this.alphaLevels)
           )
           // Below half the first bin rounds to nothing: a fade reaches zero, not the floor.
-          if (a >= GROOVE_ALPHA_MAX / ALPHA_LEVELS / 2) {
+          if (a >= GROOVE_ALPHA_MAX / this.alphaLevels / 2) {
             const path = this.levels[level]
             if (level !== prevLevel) path.moveTo(px, py)
             path.lineTo(qx, qy)
@@ -451,8 +458,8 @@ export class RunoutEngine {
     ctx.lineCap = 'butt'
     ctx.lineWidth = Math.max(GROOVE_W_CSS, 1 / this.scale)
     ctx.strokeStyle = rgba(tint, 1)
-    for (let i = 0; i < ALPHA_LEVELS; i++) {
-      ctx.globalAlpha = GROOVE_ALPHA_MAX * ((i + 0.5) / ALPHA_LEVELS) // the middle of its bin
+    for (let i = 0; i < this.alphaLevels; i++) {
+      ctx.globalAlpha = GROOVE_ALPHA_MAX * ((i + 0.5) / this.alphaLevels) // the middle of its bin
       ctx.stroke(this.levels[i])
     }
     ctx.globalAlpha = 1

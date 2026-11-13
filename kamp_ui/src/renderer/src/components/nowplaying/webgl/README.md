@@ -49,6 +49,8 @@ The standard uniforms are set every frame:
 - `atRest`: the reduced-motion still. Draw the designed rest frame here. `still` alone is also true for a paused palette or theme repaint.
 - `resumed`: the first loop frame after `start()`. Drop any moment in flight from before the stop.
 - `trackSeq`: increments once per real track change while running. It never increments on mount, on a null transition or while stopped. Compare it with the last value you saw.
+- `trackChanges` (KAMP-781): counts every real track change, including while stopped, and a change while stopped repaints a still frame. Use it for state keyed to the track that must already be in place when the pane is next seen, such as a layout. Use `trackSeq` for delight moments.
+- `palette` (KAMP-781): the target palette, with the accent fallback applied, for a spec that runs its own crossfade (Chapel sorts per field and fades over 4 s). The array reference changes only when the palette does, so compare it by reference. Land your fade on a still frame (KAMP-779).
 - `artShown`: eased 0..1 art visibility (KAMP-769). It lands directly while stopped.
 - `pointerActive` and `pointerIdle` (seconds), for cursor effects and idle-gated rare moments.
 - `pointerAt`: the last real cursor position (KAMP-765). Unlike `uPointer` it is not eased and never recentres on leave. Anchor a cursor effect that fades out here, or it slides toward the centre as it fades.
@@ -67,6 +69,8 @@ The standard uniforms are set every frame:
 **Skip the pixels behind the art:** append `GLSL_ART_SKIP` (`artMask.ts`), call `setArtUniform(gl, quad, frame)` from `setUniforms`, and start `main()` with `if (behindArt(uv)) { gl_FragColor = vec4(uBg, 1.0); return; }`. The art is opaque, so those pixels are never seen, and with the art shown they are a large share of the pane. It keeps a margin of a backing pixel or so drawn, because the canvas is upscaled with bilinear filtering. Still frames always draw whole. As of KAMP-772 only Tannhäuser uses it.
 
 **Uniform-only maths belongs on the CPU.** Anything that is the same for every pixel (a light's position from a drift angle, say) costs one evaluation per pixel in the shader and one per frame in `setUniforms`. Pass the result as a uniform array.
+
+**Measurement knobs and the rare moment:** an optional `tune(opts, state)` receives every `__kampGL.tune` call (the base still handles `scale` and `fps`, then repaints), and an optional `forcePop(state)` backs `__kampGL.forcePop()`.
 
 **The spec must be a module-level constant.** The engine is built once per mount.
 

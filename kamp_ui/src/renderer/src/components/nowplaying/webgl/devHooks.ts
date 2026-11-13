@@ -29,6 +29,8 @@ export interface GLDevTarget {
    * onto that entry of its mode table, to review the figures one by one. `plate`
    * (Castalia) isolates the backdrop's cost: 'solid' is the flat --bg, 'static'
    * paints the gradient once and never again, 'live' is the shipped breathing one.
+   * `texture` (Chapel, KAMP-781) turns the fields' texture off: the effect-off
+   * variant for measuring its cost.
    */
   tune(opts: {
     scale?: number
@@ -37,6 +39,7 @@ export interface GLDevTarget {
     layers?: number
     mode?: number
     plate?: 'solid' | 'static' | 'live'
+    texture?: 'on' | 'off'
   }): void
   /** Draw rate since the previous call (verifies the frame cap), and backing size. */
   stats(): { fps: number; backing: string }

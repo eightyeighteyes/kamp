@@ -34,6 +34,7 @@ import {
   retargetDecision,
   type Breath
 } from '../../../../../shared/chapelLayout'
+import { DrunkWalk } from '../../../../../shared/drunkWalk'
 import { PaletteCrossfade } from '../../../../../shared/paletteCrossfade'
 import type { Rgb } from '../../../../../shared/paletteUniforms'
 import { GLSL_ART_SKIP, setArtUniform } from '../webgl/artMask'
@@ -53,6 +54,9 @@ const WARM: Rgb = { r: 255, g: 222, b: 184 } // glows lean toward warm white
 // feather on their own slow cycle. Below 1 on average: crisper than the first port.
 const SOFT_MIN = 0.35
 const SOFT_MAX = 1.0
+// Hue wander: each field's colour drifts a few degrees around the selected one on
+// its own drunkard's walk (shared/drunkWalk.ts), slow and never periodic.
+const HUE_WANDER_DEG = 6
 
 const f = (n: number): string => n.toFixed(4)
 
@@ -61,6 +65,7 @@ uniform vec4 uField[${FIELD_COUNT}];    // x0, y0, x1, y1 in backing px, GL y-up
 uniform vec3 uFieldCol[${FIELD_COUNT}];
 uniform vec3 uFieldA[${FIELD_COUNT}];   // breath -1..1, warmth 0..1, x offset (px)
 uniform float uFieldSoft[${FIELD_COUNT}]; // edge softness, a multiple of the feather
+uniform float uFieldHue[${FIELD_COUNT}];  // the field's wandering hue offset, radians
 uniform vec2 uFeather;                  // vertical, horizontal (px)
 uniform vec4 uSeam[${FIELD_COUNT - 1}]; // y, x0, x1 (px), glow alpha
 uniform vec3 uSeamCol[${FIELD_COUNT - 1}];
@@ -96,6 +101,17 @@ const float BLEED = 2.5;           // its width, in feathers
 const float BLEED_ALPHA = 0.22;    // its strength, of the field's own opacity
 const float GROUND = 0.06;         // --bg tinted this far toward the deepest field
 const float SEAM_STREAK = 0.6;     // how far brush streaks break up a seam's glow
+// Hue across a field: up to this many radians either side, from the second wash,
+// so thinner paint shows a slightly different hue. Static: no per-frame noise.
+const float HUE_SPATIAL = ${f((4 * Math.PI) / 180)};
+
+// Rotate a colour's hue around the grey axis (Rodrigues), keeping its luminance
+// roughly and its saturation exactly.
+vec3 hueRotate(vec3 c, float a) {
+  const vec3 k = vec3(0.57735027);
+  float ca = cos(a);
+  return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+}
 // Wandering softness. Each field's edge softness (a multiple of the feather)
 // varies along its edges, from a static noise, and the whole field's drifts on
 // its own slow cycle (uFieldSoft, from the CPU). Neither re-samples noise per
@@ -176,7 +192,10 @@ void main() {
     // Colour, not alpha, so the title bound is untouched: the dense middle lifts
     // toward white (light from within). The lift stays out of the title band.
     float inner = smoothstep(0.55, 1.0, core) * tex * (1.0 - band);
-    vec3 c = mix(uFieldCol[i], vec3(1.0), LIFT * inner * uTexture);
+    // A few degrees of hue: the field's own wander, plus a static shift across it.
+    float hue = (uFieldHue[i] + HUE_SPATIAL * (wash2 - 0.5) * 2.0) * uTexture;
+    vec3 base = clamp(hueRotate(uFieldCol[i], hue), 0.0, 1.0);
+    vec3 c = mix(base, vec3(1.0), LIFT * inner * uTexture);
 
     // chapelLayout.fieldAlpha: warmth fades out inside the title band.
     float breath = uFieldA[i].x;
@@ -228,6 +247,7 @@ export interface ChapelState {
   offsets: ProportionTween // the same tween, over sideways offsets
   breaths: Breath[]
   blurs: Breath[] // each field's wandering softness: its own slow cycle
+  hues: DrunkWalk[] // each field's wandering hue, in degrees
   seamWarmth: SeamWarmth
   fieldWarmth: FieldWarmth
   bloom: SeamBloom
@@ -246,6 +266,7 @@ const fieldBuf = new Float32Array(FIELD_COUNT * 4)
 const fieldColBuf = new Float32Array(FIELD_COUNT * 3)
 const fieldABuf = new Float32Array(FIELD_COUNT * 3)
 const fieldSoftBuf = new Float32Array(FIELD_COUNT)
+const fieldHueBuf = new Float32Array(FIELD_COUNT)
 const seamBuf = new Float32Array((FIELD_COUNT - 1) * 4)
 const seamColBuf = new Float32Array((FIELD_COUNT - 1) * 3)
 
@@ -266,6 +287,7 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
     offsets: new ProportionTween(randomOffsets(Math.random), RETARGET_MS),
     breaths: makeBreaths(Math.random),
     blurs: makeBreaths(Math.random),
+    hues: Array.from({ length: FIELD_COUNT }, () => new DrunkWalk(Math.random, HUE_WANDER_DEG)),
     seamWarmth: new SeamWarmth(FIELD_COUNT - 1),
     fieldWarmth: new FieldWarmth(FIELD_COUNT),
     bloom: new SeamBloom(Math.random),
@@ -316,6 +338,7 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
       fade?.tick(frame.dt * 1000)
       state.proportions.tick(frame.dt * 1000)
       state.offsets.tick(frame.dt * 1000)
+      if (!frame.atRest) for (const h of state.hues) h.tick(frame.dt)
     }
 
     const breaths = frame.atRest ? null : state.breaths
@@ -369,6 +392,9 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
       // The rest frame holds the middle of the range.
       const blur = frame.atRest || !state.blurs[i] ? 0 : breathAt(state.blurs[i], t)
       fieldSoftBuf[i] = SOFT_MIN + (SOFT_MAX - SOFT_MIN) * (0.5 + 0.5 * blur)
+      // The rest frame shows the selected colour itself.
+      const hueDeg = frame.atRest ? 0 : (state.hues[i]?.value ?? 0)
+      fieldHueBuf[i] = (hueDeg * Math.PI) / 180
     }
     for (let j = 0; j < FIELD_COUNT - 1; j++) {
       const c = mixRgb(mixRgb(colorAt(j), colorAt(j + 1), 0.5), WARM, 0.55)
@@ -381,6 +407,7 @@ export const CHAPEL_SPEC: ShaderSpec<void, ChapelState> = {
     gl.uniform3fv(quad.u('uFieldCol[0]'), fieldColBuf)
     gl.uniform3fv(quad.u('uFieldA[0]'), fieldABuf)
     gl.uniform1fv(quad.u('uFieldSoft[0]'), fieldSoftBuf)
+    gl.uniform1fv(quad.u('uFieldHue[0]'), fieldHueBuf)
     gl.uniform2f(quad.u('uFeather'), feather, featherX)
     gl.uniform4fv(quad.u('uSeam[0]'), seamBuf)
     gl.uniform3fv(quad.u('uSeamCol[0]'), seamColBuf)

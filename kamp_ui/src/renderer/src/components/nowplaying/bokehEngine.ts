@@ -22,6 +22,20 @@ import {
   orbSprite,
   type OrbSprite
 } from '../../../../shared/bokehSprites'
+import { PaletteCrossfade } from '../../../../shared/paletteCrossfade'
+import type { PaneRect } from '../../../../shared/particleUtil'
+import { measureContent } from './contentRects'
+import {
+  BLOOM_MAX_DELAY,
+  ORB_PLAN,
+  SpriteBakeGate,
+  advanceField,
+  makeField,
+  orbCenter,
+  visibleOrbCount,
+  type Orb,
+  type Rng
+} from '../../../../shared/bokehField'
 
 // --- tunables (the "5 knobs") ----------------------------------------------
 // Backing store fraction of (clamped) devicePixelRatio. Everything drawn is a smooth
@@ -35,7 +49,6 @@ const FRAME_MS = 33 // ~30fps cap — slow drift needs no more
 // ever gets, which is what a baked sprite holds (globalAlpha can only dim).
 const ORB_ALPHA_PEAK = 1 + 0.06 + 0.2
 const CROSSFADE_MS = 1000 // palette recolor duration on track change
-const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
 const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor parallax
 // Firefly motes (KAMP-627): a rare, single transient spark. Poisson inter-arrival
 // (floor + exponential(mean)) so the cadence never feels scheduled; idle-gated so it
@@ -56,103 +69,16 @@ const FIREFLY_CORE: RGB = { r: 255, g: 246, b: 230 } // warm off-white centre
 // so the light settles *after* the new colors land.
 const BLOOM_DURATION = 1.5 // seconds — total bloom lifetime
 const BLOOM_ATTACK = 0.3 // fraction of duration spent rising to peak (~0.45s)
-const BLOOM_MAX_DELAY = 0.12 // seconds — per-orb onset jitter, so the field never blooms in lockstep
 const BLOOM_RADIUS = 0.16 // peak orb-radius boost (fraction of base)
 const BLOOM_ALPHA = 0.2 // peak orb-alpha boost (kept low — brightness spikes read as a flash)
 const BLOOM_DONE = BLOOM_DURATION + BLOOM_MAX_DELAY // sentinel: no bloom active
 
-type Tier = 'hero' | 'mid' | 'accent'
-
-interface Orb {
-  bx: number // drifting base position, normalized [0,1] of width/height
-  by: number
-  vx: number // drift velocity, normalized units / second
-  vy: number
-  sizePct: number // diameter as a fraction of S = min(cssW, cssH)
-  ax: number // wobble amplitude, fraction of S
-  ay: number
-  px1: number // incommensurate wobble periods (seconds) — never a closed loop
-  px2: number
-  py1: number
-  py2: number
-  breathP: number // breathing period (seconds)
-  breathPhase: number
-  baseAlpha: number
-  colorIndex: number // stable palette slot (so recolor never flickers)
-  parallax: number // cursor-parallax amplitude, fraction of S
-  bloomDelay: number // per-orb bloom onset jitter (seconds), breaks lockstep
-}
-
-type Rng = () => number
-
 const rand = (rng: Rng, min: number, max: number): number => min + rng() * (max - min)
 
-// Tier -> [count, sizePct range, alpha range, cross-screen seconds range].
-// `parallax` is the per-tier cursor-parallax amplitude. Note the mapping is
-// intentionally *inverted* from physical depth: hero (big) orbs move least and the
-// small accents move most, so the calm backdrop stays still while the sparkle
-// dances. It reads as atmosphere, not a literal 3D depth cue.
-const TIERS: Record<
-  Tier,
-  {
-    size: [number, number]
-    alpha: [number, number]
-    cross: [number, number]
-    parallax: number
-  }
-> = {
-  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150], parallax: 0.02 },
-  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110], parallax: 0.04 },
-  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70], parallax: 0.056 }
-}
-
-// 7 orbs, most-dominant palette slots to the big hero orbs.
-const ORB_PLAN: { tier: Tier; colorIndex: number }[] = [
-  { tier: 'hero', colorIndex: 0 },
-  { tier: 'hero', colorIndex: 1 },
-  { tier: 'mid', colorIndex: 2 },
-  { tier: 'mid', colorIndex: 3 },
-  { tier: 'mid', colorIndex: 0 },
-  { tier: 'accent', colorIndex: 4 },
-  { tier: 'accent', colorIndex: 2 }
-]
-
-function makeOrb(plan: { tier: Tier; colorIndex: number }, rng: Rng): Orb {
-  const t = TIERS[plan.tier]
-  const cross = rand(rng, t.cross[0], t.cross[1])
-  const angle = rand(rng, 0, Math.PI * 2)
-  const speed = 1 / cross // ~1.0 normalized traversal over `cross` seconds
-  return {
-    bx: rand(rng, 0, 1),
-    by: rand(rng, 0, 1),
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    sizePct: rand(rng, t.size[0], t.size[1]),
-    ax: rand(rng, 0.05, 0.07),
-    ay: rand(rng, 0.05, 0.07),
-    px1: rand(rng, 15, 19),
-    px2: rand(rng, 27, 31),
-    py1: rand(rng, 18, 22),
-    py2: rand(rng, 29, 33),
-    breathP: rand(rng, 12, 20),
-    breathPhase: rand(rng, 0, Math.PI * 2),
-    baseAlpha: rand(rng, t.alpha[0], t.alpha[1]),
-    colorIndex: plan.colorIndex,
-    parallax: t.parallax,
-    bloomDelay: rand(rng, 0, BLOOM_MAX_DELAY)
-  }
-}
-
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 const smoothstep = (t: number): number => t * t * (3 - 2 * t)
 // Quintic ease with zero acceleration (not just velocity) at the ends — kills the faint
 // onset "snap" that betrays a triggered animation. Used for the bloom envelope.
 const smootherstep = (t: number): number => t * t * t * (t * (t * 6 - 15) + 10)
-const lerpRgb = (a: RGB, b: RGB, t: number): RGB => ({
-  r: Math.round(lerp(a.r, b.r, t)),
-  g: Math.round(lerp(a.g, b.g, t)),
-  b: Math.round(lerp(a.b, b.b, t))
-})
 
 // A transient firefly mote (KAMP-627). Position is derived from `age` each frame
 // (not integrated), so a stop/resume never desyncs it. Color is snapshotted at spawn.
@@ -176,7 +102,7 @@ interface Firefly {
 export class BokehEngine {
   private ctx: CanvasRenderingContext2D | null
   private rng: Rng = Math.random
-  private orbs: Orb[] = ORB_PLAN.map((p) => makeOrb(p, this.rng))
+  private orbs: Orb[] = makeField(this.rng)
   private cssW = 0
   private cssH = 0
   private scale = 1 // effective backing scale (reduced dpr)
@@ -191,18 +117,15 @@ export class BokehEngine {
 
   // Baked orb sprites, one per orb (each has its own radius and palette slot).
   // Re-baked when the geometry key changes, or the colours have moved since the
-  // last bake (only during a crossfade: paletteT stops at 1).
+  // last bake (only during a crossfade; SpriteBakeGate has the rule and its tests).
   private sprites: (CanvasImageSource | null)[] = []
   private spriteGeom: (OrbSprite | null)[] = []
-  private bakedKey = ''
-  private bakedGen = -1
-  private bakedT = -1
-  private paletteGen = 0
+  private bakeGate = new SpriteBakeGate()
 
-  // Palette crossfade state.
-  private from: RGB[]
-  private to: RGB[]
-  private paletteT = 1 // 0..1
+  // Palette crossfade (shared with the WebGL backgrounds). KAMP-779: a palette set
+  // while the loop is stopped lands at once, so the reduced-motion still frame
+  // shows the current track, not the previous one.
+  private palette: PaletteCrossfade
 
   // Cursor parallax. Target is set by pointer events (normalized [-1,1], 0 =
   // pane center); the rendered value eases toward it in advance(). Both start
@@ -220,6 +143,14 @@ export class BokehEngine {
   private lastPointerAt = 0 // elapsed at the last pane pointer activity
   private lastFireflyCorner = -1 // avoid spawning in the same corner twice running
 
+  // Density census for __kampGL.stats() (KAMP-779): one-second samples of how many
+  // orbs are visible, by count, since the last stats() call. Null — and free —
+  // until the first stats() call, so it never runs outside a measurement session.
+  // A single sample would miss a blank that shows up 10% of the time.
+  private census: number[] | null = null
+  private censusArt: PaneRect | null = null
+  private nextCensusAt = 0
+
   // Track-change bloom. Seconds since the last palette change; BLOOM_DONE = inactive.
   private bloomAge = BLOOM_DONE
 
@@ -234,8 +165,7 @@ export class BokehEngine {
     initial: Palette
   ) {
     this.ctx = canvas.getContext('2d')
-    this.from = initial.colors
-    this.to = initial.colors
+    this.palette = new PaletteCrossfade(initial.colors, CROSSFADE_MS)
     this.refreshBg()
     this.nextFireflyAt = this.fireflyGap()
   }
@@ -249,7 +179,7 @@ export class BokehEngine {
         if (blur != null && blur >= 0) this.blurCss = blur
         if (freeze != null) this.frozen = freeze
         if (seed != null) this.reseed(seed)
-        this.bakedKey = '' // force a re-bake at the new scale or blur
+        this.bakeGate.invalidate() // force a re-bake at the new scale or blur
         this.resize()
       },
       stats: () => {
@@ -262,7 +192,8 @@ export class BokehEngine {
           backing: `${this.canvas.width}x${this.canvas.height}`,
           // What's applied right now: tune() persists until a reload, so a run
           // records its own settings rather than trusting what was typed earlier.
-          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)}${this.frozen ? ' frozen' : ''}`
+          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)}${this.frozen ? ' frozen' : ''}`,
+          density: this.takeCensus()
         }
       },
       forcePop: () => {
@@ -272,11 +203,27 @@ export class BokehEngine {
     }
   }
 
+  // Report and reset the density census; the first call starts it. The art rect
+  // is re-measured on each call (a DOM read, so not per sample): the art is
+  // opaque, and an orb behind it counts for nothing.
+  private takeCensus(): string {
+    this.censusArt = measureContent(this.canvas).art
+    const c = this.census
+    this.census = new Array(ORB_PLAN.length + 1).fill(0)
+    this.nextCensusAt = this.elapsed
+    const n = c ? c.reduce((a, b) => a + b, 0) : 0
+    if (!c || n === 0) return 'visible orbs: sampling started, call stats() again later'
+    const pct = (v: number): string => `${((100 * v) / n).toFixed(1)}%`
+    const twoPlus = c.slice(2).reduce((a, b) => a + b, 0)
+    const mean = c.reduce((a, v, i) => a + v * i, 0) / n
+    return `visible orbs over ${n} s: 0 ${pct(c[0])} · 1 ${pct(c[1])} · 2+ ${pct(twoPlus)} · mean ${mean.toFixed(1)}`
+  }
+
   // Rebuild the field from a fixed seed with the clock at zero, so two variants
   // can be screenshotted at the same moment of the same layout.
   private reseed(seed: number): void {
     this.rng = seededRng(seed)
-    this.orbs = ORB_PLAN.map((p) => makeOrb(p, this.rng))
+    this.orbs = makeField(this.rng)
     this.elapsed = 0
     this.firefly = null
     this.nextFireflyAt = this.fireflyGap()
@@ -301,18 +248,14 @@ export class BokehEngine {
   }
 
   private currentColors(): RGB[] {
-    if (this.paletteT >= 1) return this.to
-    const t = smoothstep(this.paletteT)
-    return this.to.map((c, i) => lerpRgb(this.from[i] ?? c, c, t))
+    return this.palette.current()
   }
 
   setPalette(next: Palette): void {
-    // Snapshot the currently-interpolated colors so a track change mid-crossfade
-    // continues smoothly rather than snapping.
-    this.from = this.currentColors()
-    this.to = next.colors
-    this.paletteT = 0
-    this.paletteGen++
+    // Running: fade from whatever is on screen (a mid-fade skip never snaps).
+    // Stopped: land at once — nothing would advance the fade, and a resume after
+    // a hidden track change has nothing on screen to fade from.
+    this.palette.set(next.colors, this.rafId != null)
     // Trigger the bloom. If one is still in flight, re-arm from the peak (not 0) so a
     // rapid skip re-excites the field smoothly instead of stuttering back through the attack.
     this.bloomAge = this.bloomAge < BLOOM_DONE ? BLOOM_ATTACK * BLOOM_DURATION : 0
@@ -364,9 +307,9 @@ export class BokehEngine {
     this.resetPointer() // resume centered; no stale offset from a prior activation
     // Suppress a stale bloom on resume: the palette effect can fire setPalette while the
     // loop is stopped (it's keyed on the art URL, not visibility), so a track change during
-    // hidden/inactive would otherwise replay a late bloom here. The *crossfade* still replays
-    // (state-convergence — colors must reach their final value), but the bloom is a discrete
-    // "this just happened" event, so it should not fire late.
+    // hidden/inactive would otherwise replay a late bloom here. The bloom is a discrete
+    // "this just happened" event, so it should not fire late; the colors already landed
+    // when setPalette ran while stopped (KAMP-779).
     this.bloomAge = BLOOM_DONE
     this.rafId = requestAnimationFrame(this.tick)
   }
@@ -412,7 +355,7 @@ export class BokehEngine {
     if (document.hidden) return // belt-and-suspenders; the component also gates
     if (this.frozen) return
     this.elapsed += dt
-    if (this.paletteT < 1) this.paletteT = Math.min(1, this.paletteT + (dt * 1000) / CROSSFADE_MS)
+    this.palette.tick(dt * 1000)
     this.bloomAge = Math.min(BLOOM_DONE, this.bloomAge + dt)
     // Framerate-independent exponential lag toward the cursor target.
     const k = 1 - Math.exp(-dt / PARALLAX_TAU)
@@ -431,13 +374,10 @@ export class BokehEngine {
     ) {
       this.spawnFirefly()
     }
-    for (const o of this.orbs) {
-      o.bx += o.vx * dt
-      o.by += o.vy * dt
-      if (o.bx < -EDGE_MARGIN) o.bx += 1 + 2 * EDGE_MARGIN
-      else if (o.bx > 1 + EDGE_MARGIN) o.bx -= 1 + 2 * EDGE_MARGIN
-      if (o.by < -EDGE_MARGIN) o.by += 1 + 2 * EDGE_MARGIN
-      else if (o.by > 1 + EDGE_MARGIN) o.by -= 1 + 2 * EDGE_MARGIN
+    advanceField(this.orbs, dt)
+    if (this.census && this.cssW > 0 && this.elapsed >= this.nextCensusAt) {
+      this.nextCensusAt = this.elapsed + 1
+      this.census[visibleOrbCount(this.orbs, this.elapsed, this.cssW, this.cssH, this.censusArt)]++
     }
   }
 
@@ -453,15 +393,10 @@ export class BokehEngine {
     ctx.globalCompositeOperation = 'screen'
     for (let i = 0; i < this.orbs.length; i++) {
       const o = this.orbs[i]
-      const ox = o.ax * (Math.sin(this.elapsed / o.px1) + Math.sin(this.elapsed / o.px2))
-      const oy = o.ay * (Math.sin(this.elapsed / o.py1) + Math.sin(this.elapsed / o.py2))
       const breath = Math.sin(this.elapsed / o.breathP + o.breathPhase)
       // Track-change bloom: a brief per-orb swell (radius-led) on top of the breath.
       const bloom = this.bloomEnvelope(this.bloomAge - o.bloomDelay)
-      // Subtract the eased pointer offset so orbs drift *opposite* the cursor —
-      // the "peering through a deeper field" read, not dragging the field along.
-      const x = o.bx * w + ox * s - this.pointerX * o.parallax * s
-      const y = o.by * h + oy * s - this.pointerY * o.parallax * s
+      const { x, y } = orbCenter(o, this.elapsed, w, h, this.pointerX, this.pointerY)
       const radius = o.sizePct * s * 0.5 * (1 + 0.08 * breath + BLOOM_RADIUS * bloom)
       if (radius <= 0) continue
       const alpha = o.baseAlpha * (1 + 0.06 * breath + BLOOM_ALPHA * bloom)
@@ -511,11 +446,7 @@ export class BokehEngine {
   // In steady state this does nothing: colours only move during the 1 s crossfade.
   private bakeSprites(s: number, colors: RGB[]): void {
     const key = bakeKey(s, this.scale, this.blurCss)
-    if (key === this.bakedKey && this.paletteGen === this.bakedGen && this.paletteT === this.bakedT)
-      return
-    this.bakedKey = key
-    this.bakedGen = this.paletteGen
-    this.bakedT = this.paletteT
+    if (!this.bakeGate.shouldBake(key, colors)) return
     this.sprites = this.orbs.map((o, i) => {
       const geom = orbSprite(o.sizePct * s * 0.5, this.blurCss, this.scale)
       this.spriteGeom[i] = geom

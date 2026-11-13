@@ -71,14 +71,21 @@ const float WARM_GAIN = ${f(FIELD_WARM_GAIN)};
 const float TITLE_DIM = ${f(TITLE_DIM)};
 const vec3 WARM = vec3(${f(WARM.r / 255)}, ${f(WARM.g / 255)}, ${f(WARM.b / 255)});
 
-// Texture. Scales are per pane height. The floor is the thinnest the paint gets.
-const float TEX_FLOOR = 0.55;      // density never drops below this
-const float WASH_SCALE = 2.2;      // broad, uneven density: layered washes
-const vec2 STREAK_SCALE = vec2(1.4, 11.0); // dry-brush: long in x, fine in y
-const float MOTTLE_SCALE = 6.5;
-const float EDGE_SCALE = 3.0;      // how often an edge wavers along its length
-const float EDGE_AMP = 0.9;        // edge waver, in feathers
+// Texture. Scales are per pane height. Rothko, not ribbons: the outline stays
+// nearly rectangular (a small slow waver plus a fine dry-brush fray), and the life
+// is inside the field, in large cloudy shifts of density and a soft inner light.
+const float TEX_FLOOR = 0.4;       // the thinnest the paint gets (density)
+const float WASH_SCALE = 1.3;      // large clouds: layered washes
+const vec2 WASH2_SCALE = vec2(2.6, 3.4);
+const vec2 STREAK_SCALE = vec2(1.6, 14.0); // dry-brush: long in x, fine in y
+const vec2 EDGE_LO_SCALE = vec2(4.0, 6.0); // the outline's slow waver
+const vec2 EDGE_HI_SCALE = vec2(16.0, 24.0); // the fray
+const float EDGE_LO = 0.25;        // waver, in feathers
+const float EDGE_HI = 0.3;         // fray, in feathers
 const float SCUMBLE = 0.75;        // how far the streaks break up the feathered edge
+const float LIFT = 0.12;           // inner light: the dense middle lifts toward white
+const float RIM = 0.3;             // the rim sits a little darker, as an under-layer
+const float SEAM_STREAK = 0.6;     // how far brush streaks break up a seam's glow
 
 // Smooth 0..1 across [e - w/2, e + w/2], width floored in backing pixels.
 float ramp(float d, float w) {
@@ -102,50 +109,69 @@ void main() {
   vec3 col = uBg;
   float fv = uFeather.x;
   float fh = uFeather.y;
+  // Each field's edge waver here, in vertical px, so a seam's glow can follow the
+  // edges either side of it instead of running ruler-straight between them.
+  float wvs[${FIELD_COUNT}];
   for (int i = 0; i < ${FIELD_COUNT}; i++) {
+    wvs[i] = 0.0;
     vec4 r = uField[i];
-    float reach = max(fv, fh) * (1.0 + EDGE_AMP);
+    // Out as far as a seam glow reaches, so wvs is never 0 under a glow's fringe.
+    float reach = max(fv, fh) * (1.0 + EDGE_LO + EDGE_HI) + fv * ${f(GLOW_HALF_H)};
     if (p.x < r.x - reach || p.x > r.z + reach || p.y < r.y - reach || p.y > r.w + reach) continue;
     float fi = float(i);
     // Pane-height units, moved with the field's x offset only (see header).
     vec2 q = vec2(p.x - uFieldA[i].z, p.y) / H + vec2(fi * 7.31, fi * 3.17);
 
-    // A worked edge: every side wavers by the same slow noise, so the contour
-    // bulges and pinches instead of running ruler-straight.
-    float waver = (valueNoise(q * EDGE_SCALE) - 0.5) * 2.0
-                + 0.5 * (valueNoise(q * EDGE_SCALE * 2.3 + 11.0) - 0.5);
-    float wv = waver * EDGE_AMP * fv * uTexture;
-    float wh = waver * EDGE_AMP * fh * uTexture;
+    // A worked edge: a small slow waver and a fine fray, on every side.
+    float waver = (valueNoise(q * EDGE_LO_SCALE) - 0.5) * 2.0 * EDGE_LO
+                + (valueNoise(q * EDGE_HI_SCALE + 11.0) - 0.5) * 2.0 * EDGE_HI;
+    float wv = waver * fv * uTexture;
+    float wh = waver * fh * uTexture;
+    wvs[i] = wv;
     float cov = ramp(p.y - r.y + wv, fv) * ramp(r.w - p.y + wv, fv)
               * ramp(p.x - r.x + wh, fh) * ramp(r.z - p.x + wh, fh);
     if (cov <= 0.0) continue;
 
-    // Layered washes, dry-brush streaks and a fine mottle; all only thin the paint.
+    // Large cloudy washes and dry-brush streaks; they only thin the paint.
     float wash = valueNoise(q * WASH_SCALE);
+    float wash2 = valueNoise(q * WASH2_SCALE + 37.0);
     float streak = valueNoise(q * STREAK_SCALE + 5.0);
-    float mottle = valueNoise(q * MOTTLE_SCALE + 23.0);
-    float tex = clamp(0.5 * wash + 0.3 * streak + 0.2 * mottle, 0.0, 1.0);
+    float tex = smoothstep(0.2, 0.8, 0.45 * wash + 0.3 * wash2 + 0.25 * streak);
     float density = mix(1.0, mix(TEX_FLOOR, 1.0, tex), uTexture);
     // Scumbled edge: the streaks break up the feather, more toward the outside.
     cov *= mix(1.0, mix(1.0 - SCUMBLE, 1.0, streak), (1.0 - cov) * uTexture);
+
+    // Colour, not alpha, so the title bound is untouched: the dense middle lifts
+    // toward white (light from within), the rim deepens (an under-layer). The lift
+    // stays out of the title band.
+    float inner = smoothstep(0.55, 1.0, cov) * tex * (1.0 - band);
+    float rim = 4.0 * cov * (1.0 - cov);
+    vec3 c = mix(uFieldCol[i], vec3(1.0), LIFT * inner * uTexture);
+    c *= 1.0 - RIM * rim * uTexture;
 
     // chapelLayout.fieldAlpha: warmth fades out inside the title band.
     float breath = uFieldA[i].x;
     float warmth = uFieldA[i].y;
     float a = FIELD_ALPHA * (1.0 + ALPHA_BREATH * breath)
             * (1.0 + WARM_GAIN * warmth * (1.0 - band)) * density;
-    col = mix(col, uFieldCol[i], clamp(a * cov, 0.0, 1.0));
+    col = mix(col, c, clamp(a * cov, 0.0, 1.0));
   }
 
   // Seam glows: a band across the union of the two fields, feathered at both ends
-  // so a stagger never shows a hard end.
+  // so a stagger never shows a hard end. Its centre follows the midpoint of the
+  // two wavering edges, and brush streaks break it up like the fields' edges.
   float halfH = max(fv * ${f(GLOW_HALF_H)}, 3.0);
   for (int j = 0; j < ${FIELD_COUNT - 1}; j++) {
     vec4 s = uSeam[j];
     if (s.w <= 0.0) continue;
-    float v = max(0.0, 1.0 - abs(p.y - s.x) / halfH);
+    // GL y-up: field j's lower edge sits at r.y - wv, field j+1's upper at r.w + wv.
+    float y = s.x + 0.5 * (wvs[j + 1] - wvs[j]);
+    float v = max(0.0, 1.0 - abs(p.y - y) / halfH);
+    if (v <= 0.0) continue;
     float h = ramp(p.x - s.y, fh) * ramp(s.z - p.x, fh);
-    col = screen(col, uSeamCol[j], s.w * v * h);
+    float streak = valueNoise(p / H * STREAK_SCALE + 71.0);
+    float tx = mix(1.0, mix(1.0 - SEAM_STREAK, 1.0, streak), uTexture);
+    col = screen(col, uSeamCol[j], s.w * v * h * tx);
   }
 
   // The rare bloom: an ellipse along its seam, warm white at the core.

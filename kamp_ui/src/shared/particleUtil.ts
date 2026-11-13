@@ -26,6 +26,14 @@ export function pick(weights: readonly number[], u: number): number {
   return weights.length - 1
 }
 
+/**
+ * Padding, in the same px as `sigma`, that keeps a baked Gaussian blur from being
+ * clipped at a sprite's edge: three sigma holds all but ~0.1% of the tail.
+ */
+export function blurPad(sigma: number): number {
+  return sigma > 0 ? Math.ceil(3 * sigma) : 0
+}
+
 /** mulberry32: a deterministic RNG, for still frames that must not reshuffle. */
 export function seededRng(seed: number): () => number {
   let a = seed

@@ -14,6 +14,7 @@
 
 import type { RGB } from '../palette'
 import { makeCanvas, type SpriteContext } from '../sprites'
+import { blurPad } from '../../../../../shared/particleUtil'
 
 export interface FlakeSheet {
   /** [palette slot][layer] */
@@ -54,7 +55,7 @@ function snowTint(c: RGB): RGB {
  */
 export function bakeFlakeSheet(colors: RGB[], radiusPx: number[], blurPx: number[]): FlakeSheet {
   // 3 sigma of padding, so the blur is never clipped at the sprite's edge.
-  const half = radiusPx.map((r, l) => Math.max(1, Math.ceil(r + 3 * blurPx[l])))
+  const half = radiusPx.map((r, l) => Math.max(1, Math.ceil(r + blurPad(blurPx[l]))))
   const sprites = colors.map((raw) => {
     const c = snowTint(raw)
     return radiusPx.map((r, l) => {

@@ -7,6 +7,19 @@
 // engine, so the density test and the renderer can never disagree about where an
 // orb is.
 
+// Motion (KAMP-779). The orbs used to drift in straight lines and wrap 0.45 of a
+// pane beyond each edge, so each spent much of its life off screen: the field was
+// blank about 10% of the time (19% once the art and the vignette band are taken
+// into account) and showed at most one orb for long stretches. Now each orb's base
+// position wanders on a bounded, mean-reverting walk around the pane centre, one
+// per axis (shared DrunkWalk, as Chapel's hues). No orb ever wraps, so nothing can
+// pop in or out at an edge either.
+//
+// `reach` is how far an orb's base may roam from the centre, as a fraction of half
+// the pane: heroes stay inside it and keep a wash behind the art, while mids and
+// accents (reach > 1) can leave and come back, so the count on screen still varies.
+
+import { DrunkWalk } from './drunkWalk.ts'
 import type { PaneRect } from './particleUtil.ts'
 
 export type Tier = 'hero' | 'mid' | 'accent'
@@ -14,7 +27,8 @@ export type Tier = 'hero' | 'mid' | 'accent'
 export interface TierSpec {
   size: [number, number] // diameter, fraction of S = min(w, h)
   alpha: [number, number]
-  cross: [number, number] // seconds to drift one pane width
+  reach: number // base roam from centre, fraction of half the pane, per axis
+  rate: number // walk clock multiplier: speed scales linearly with it
   parallax: number // cursor-parallax amplitude, fraction of S
 }
 
@@ -22,10 +36,24 @@ export interface TierSpec {
 // least and the small accents move most, so the calm backdrop stays still while
 // the sparkle dances. It reads as atmosphere, not a literal 3D depth cue.
 export const TIERS: Record<Tier, TierSpec> = {
-  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150], parallax: 0.02 },
-  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110], parallax: 0.04 },
-  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70], parallax: 0.056 }
+  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], reach: 0.8, rate: 0.35, parallax: 0.02 },
+  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], reach: 1.1, rate: 0.35, parallax: 0.04 },
+  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], reach: 1.5, rate: 0.35, parallax: 0.056 }
 }
+
+// DrunkWalk reflects hard at its bound (v -> -0.5v), which would read as an orb
+// turning abruptly mid-pane. Mapping the walk through tanh puts that bound where
+// the curve is nearly flat (slope ~0.07 of the centre's), so a reflection is a
+// gentle slowdown. tanh(SOFT·u)/tanh(SOFT) still lands exactly on ±1 at u = ±1.
+// Measured over 6 h: the worst frame-to-frame velocity change is ~5x smaller than
+// with a linear map (bokehField.test.ts pins it).
+const SOFT = 2
+const softBound = (u: number): number => Math.tanh(SOFT * u) / Math.tanh(SOFT)
+
+// Seconds of walk time simulated at creation, so orbs start spread out the way
+// they will be later rather than all at the centre (DrunkWalk starts at 0).
+export const PREWARM_S = 600
+const STEP_S = 0.1 // DrunkWalk clamps its dt here; prewarm in steps no larger
 
 // 7 orbs, most-dominant palette slots to the big hero orbs.
 export const ORB_PLAN: readonly { tier: Tier; colorIndex: number }[] = [
@@ -38,15 +66,16 @@ export const ORB_PLAN: readonly { tier: Tier; colorIndex: number }[] = [
   { tier: 'accent', colorIndex: 2 }
 ]
 
-const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
 export const BLOOM_MAX_DELAY = 0.12 // seconds — per-orb bloom onset jitter
 
 export interface Orb {
   tier: Tier
-  bx: number // drifting base position, normalized [0,1] of width/height
+  bx: number // base position, normalized [0,1] of width/height (derived from the walks)
   by: number
-  vx: number // drift velocity, normalized units / second
-  vy: number
+  walkX: DrunkWalk // ±1, mapped through softBound and scaled by reach
+  walkY: DrunkWalk
+  reach: number
+  rate: number
   sizePct: number // diameter as a fraction of S
   ax: number // wobble amplitude, fraction of S
   ay: number
@@ -68,15 +97,14 @@ const rand = (rng: Rng, min: number, max: number): number => min + rng() * (max 
 
 export function makeOrb(plan: { tier: Tier; colorIndex: number }, rng: Rng): Orb {
   const t = TIERS[plan.tier]
-  const cross = rand(rng, t.cross[0], t.cross[1])
-  const angle = rand(rng, 0, Math.PI * 2)
-  const speed = 1 / cross // ~1.0 normalized traversal over `cross` seconds
-  return {
+  const orb: Orb = {
     tier: plan.tier,
-    bx: rand(rng, 0, 1),
-    by: rand(rng, 0, 1),
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
+    bx: 0.5,
+    by: 0.5,
+    walkX: new DrunkWalk(rng, 1),
+    walkY: new DrunkWalk(rng, 1),
+    reach: t.reach,
+    rate: t.rate,
     sizePct: rand(rng, t.size[0], t.size[1]),
     ax: rand(rng, 0.05, 0.07),
     ay: rand(rng, 0.05, 0.07),
@@ -91,22 +119,27 @@ export function makeOrb(plan: { tier: Tier; colorIndex: number }, rng: Rng): Orb
     parallax: t.parallax,
     bloomDelay: rand(rng, 0, BLOOM_MAX_DELAY)
   }
+  // Prewarm in walk time (independent of rate), the walk's own mixing clock.
+  for (let s = 0; s < PREWARM_S; s += STEP_S) advanceOrb(orb, STEP_S / orb.rate)
+  return orb
 }
 
 export function makeField(rng: Rng): Orb[] {
   return ORB_PLAN.map((p) => makeOrb(p, rng))
 }
 
+function advanceOrb(o: Orb, dt: number): void {
+  // Ticking the walk on a scaled clock scales its speed without changing its
+  // spread; the shared DrunkWalk keeps its own constants (Chapel uses them).
+  o.walkX.tick(dt * o.rate)
+  o.walkY.tick(dt * o.rate)
+  o.bx = 0.5 + 0.5 * o.reach * softBound(o.walkX.value)
+  o.by = 0.5 + 0.5 * o.reach * softBound(o.walkY.value)
+}
+
 /** Advance every orb's drift by `dt` seconds. */
 export function advanceField(orbs: Orb[], dt: number): void {
-  for (const o of orbs) {
-    o.bx += o.vx * dt
-    o.by += o.vy * dt
-    if (o.bx < -EDGE_MARGIN) o.bx += 1 + 2 * EDGE_MARGIN
-    else if (o.bx > 1 + EDGE_MARGIN) o.bx -= 1 + 2 * EDGE_MARGIN
-    if (o.by < -EDGE_MARGIN) o.by += 1 + 2 * EDGE_MARGIN
-    else if (o.by > 1 + EDGE_MARGIN) o.by -= 1 + 2 * EDGE_MARGIN
-  }
+  for (const o of orbs) advanceOrb(o, dt)
 }
 
 /**

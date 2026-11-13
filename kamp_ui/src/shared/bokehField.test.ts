@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  ORB_PLAN,
   SpriteBakeGate,
   TIERS,
   VISIBLE_SHARE,
@@ -27,7 +28,7 @@ const HOUR = 3600
 /** Share of one-second samples with each visible-orb count, over `seconds`. */
 function census(seed: number, seconds: number, art: PaneRect | null): number[] {
   const orbs = makeField(seededRng(seed))
-  const counts = new Array(8).fill(0)
+  const counts = new Array(ORB_PLAN.length + 1).fill(0)
   let elapsed = 0
   for (let s = 0; s < seconds; s++) {
     for (let i = 0; i < 1 / STEP; i++) {
@@ -175,9 +176,34 @@ test('the same seed rebuilds the same field (reproducible __kampGL screenshots)'
   advanceField(a, 0.1)
   advanceField(b, 0.1)
   assert.deepEqual(
-    a.map((o) => [o.bx, o.by, o.sizePct]),
-    b.map((o) => [o.bx, o.by, o.sizePct])
+    a.map((o) => [o.bx, o.by, o.sizePct, o.blurMul]),
+    b.map((o) => [o.bx, o.by, o.sizePct, o.blurMul])
   )
+})
+
+// KAMP-782: depth of field. Each orb carries its own blur, so the field reads as
+// a range of softness rather than one sheet. Small orbs sit nearest the focal
+// plane, big ones furthest from it.
+test('each orb blurs within its tier range, accents least and heroes most', () => {
+  const seen: Record<Tier, [number, number]> = {
+    hero: [Infinity, -Infinity],
+    mid: [Infinity, -Infinity],
+    accent: [Infinity, -Infinity]
+  }
+  for (let seed = 1; seed <= 50; seed++) {
+    for (const o of makeField(seededRng(seed))) {
+      const [lo, hi] = TIERS[o.tier].blur
+      assert.ok(o.blurMul >= lo && o.blurMul <= hi, `${o.tier} blur ${o.blurMul}`)
+      seen[o.tier][0] = Math.min(seen[o.tier][0], o.blurMul)
+      seen[o.tier][1] = Math.max(seen[o.tier][1], o.blurMul)
+    }
+  }
+  assert.ok(seen.accent[1] < seen.mid[0], 'every accent is sharper than every mid')
+  assert.ok(seen.mid[1] <= seen.hero[0], 'every mid is sharper than every hero')
+  // A spread within each tier too, so no two orbs share one blur level.
+  for (const t of ['hero', 'mid', 'accent'] as const) {
+    assert.ok(seen[t][1] - seen[t][0] > 0.1, `${t} blur has no spread`)
+  }
 })
 
 // The KAMP-779 report: at times the pane looked blank. Over an hour of seeded

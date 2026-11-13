@@ -448,7 +448,9 @@ export class BokehEngine {
     const key = bakeKey(s, this.scale, this.blurCss)
     if (!this.bakeGate.shouldBake(key, colors)) return
     this.sprites = this.orbs.map((o, i) => {
-      const geom = orbSprite(o.sizePct * s * 0.5, this.blurCss, this.scale)
+      // Each orb's own depth of field (KAMP-782): `blurCss` is the reference
+      // softness (and the tune() knob); the orb scales it by its tier's range.
+      const geom = orbSprite(o.sizePct * s * 0.5, this.blurCss * o.blurMul, this.scale)
       this.spriteGeom[i] = geom
       const c = colors[o.colorIndex] ?? colors[0]
       return c

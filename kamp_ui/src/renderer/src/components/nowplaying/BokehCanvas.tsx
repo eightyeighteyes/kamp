@@ -10,6 +10,7 @@ import { useStore } from '../../store'
 import { BokehEngine } from './bokehEngine'
 import { accentPalette, loadPalette } from './palette'
 import type { NowPlayingEngineProps } from './registry'
+import { registerGLTarget } from './webgl/devHooks'
 
 function accentHex(): string {
   return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#7c86e1'
@@ -49,7 +50,10 @@ export function BokehCanvas({ active, artUrl }: NowPlayingEngineProps): React.JS
     engine.resize()
     const ro = new ResizeObserver(() => engine.resize())
     ro.observe(canvas)
+    // KAMP-777: measurable from __kampGL like the other backgrounds.
+    const unregister = registerGLTarget(engine.devTarget())
     return () => {
+      unregister()
       ro.disconnect()
       engine.destroy()
       engineRef.current = null

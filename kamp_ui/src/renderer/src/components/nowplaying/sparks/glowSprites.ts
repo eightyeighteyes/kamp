@@ -12,6 +12,7 @@
 
 import type { RGB } from '../palette'
 import { makeCanvas } from '../sprites'
+import { blurPad } from '../../../../../shared/particleUtil'
 
 export interface GlowSheet {
   /** [palette slot][size bucket] */
@@ -35,7 +36,7 @@ const HALO_ALPHA = 0.35
  */
 export function bakeSheet(colors: RGB[], radiusPx: number[], blurPx: number): GlowSheet {
   // 3 sigma of padding, so the blurred halo is never clipped at the sprite's edge.
-  const pad = Math.ceil(3 * blurPx)
+  const pad = blurPad(blurPx)
   const half = radiusPx.map((r) => Math.max(1, Math.ceil(r * HALO_SCALE) + pad))
   const sprites = colors.map((c) =>
     radiusPx.map((r, b) => {

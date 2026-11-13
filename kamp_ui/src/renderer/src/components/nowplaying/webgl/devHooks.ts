@@ -31,6 +31,11 @@ export interface GLDevTarget {
    * paints the gradient once and never again, 'live' is the shipped breathing one.
    * `texture` (Chapel, KAMP-781) turns the fields' texture off: the effect-off
    * variant for measuring its cost.
+   *
+   * Bokeh (KAMP-777) reads `blur` as the orbs' baked Gaussian sigma in CSS px;
+   * `blur: 0` is the no-blur control. `seed` rebuilds the field from a fixed seed
+   * with the clock at zero, and `freeze` holds the clock, so two variants can be
+   * screenshotted identically.
    */
   tune(opts: {
     scale?: number
@@ -40,12 +45,14 @@ export interface GLDevTarget {
     mode?: number
     plate?: 'solid' | 'static' | 'live'
     texture?: 'on' | 'off'
+    seed?: number
+    freeze?: boolean
   }): void
   /** Draw rate since the previous call (verifies the frame cap), and backing size. */
-  stats(): { fps: number; backing: string }
+  stats(): { fps: number; backing: string; settings?: string }
   /**
    * Launch the rare moment now, for tuning: Sparks' high spark, Wintermute's close
-   * flake, Castalia's shimmer.
+   * flake, Castalia's shimmer, Bokeh's firefly.
    */
   forcePop?(): void
 }

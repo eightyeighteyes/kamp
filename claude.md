@@ -157,6 +157,14 @@ Castalia (grains settling onto Chladni figures) is the first background keyed on
 
 Runout (paused, branch `kamp-771-runout`) drew about 40 groove spirals as segments binned by alpha into 10 `Path2D` strokes. It measured 38.6% GPU busy, nearly twice the budget. The isolating variants gave the answer: one stroke instead of ten cut the grooves from ~25 points to ~4.5, 8 segments instead of 28 saved only ~5, and culling segments behind the art saved nothing. **Each full-pane stroked path costs about 2.3 GPU points whatever it contains**, apparently a pane-sized rasterisation pass per call. So "batch everything into a handful of strokes" is the expensive shape, not the cheap one: count stroke and fill *calls* that cover the pane, the way a shader counts pixels. Before tuning a stroke-heavy background, run one-call, fewer-segments and lower-scale variants first. They separate the three costs in one session.
 
+## Baking Bokeh's CSS blur into sprites — KAMP-777
+
+Bokeh's `filter: blur(28px)` on the canvas went from 66.3% to 8.3% GPU busy (None 3.2%) once each orb was drawn from a sprite blurred once, at `RES_SCALE` 0.25. Numbers are in `nowplaying/TUNING.md`.
+- **A blur whose sigma is fixed in CSS px can't be replaced by a hand-tuned gradient falloff.** The orbs scale with the pane and the sigma doesn't, so the blurred profile differs per orb and per pane size. "Keep both the peak and the area" is also impossible under a Gaussian. Bake a real blur at the real radius/sigma ratio (`shared/bokehSprites.ts`), and the look matches by construction. The Reality Checker caught this before any code was written.
+- **Bake at the brightest the sprite will ever be drawn, then dim it with `globalAlpha`.** `globalAlpha` can only dim. Breath and bloom push an orb's alpha above its base, so the sprite holds `base × (1 + breath + bloom)`. Restore `globalAlpha = 1` after every draw.
+- **An "effect off" variant may not *look* off.** At `blur: 0`, the user expected sharp spheres and saw soft ones, and suspected the switch was broken. The orbs are radial gradients that already fade to zero at the edge. The measurement settled it: the control matched KAMP-776's no-blur figure to within a point. Check the numbers against a known reference before doubting the switch.
+- **`__kampGL.tune()` settings persist until a reload, so a variant can silently inherit the last run's knobs.** A suggested `tune({ softness: 'baked' })` without `blur: 28` would have measured an unblurred bake after a `blur: 0` run. It didn't, only because the user reloaded in between. `stats()` can now return a `settings` string. Read it before each run, and always pass every knob a variant depends on.
+
 ## Porting a Canvas 2D background to the WebGL base — KAMP-781
 
 Chapel moved from Canvas 2D to a `ShaderSpec` to get per-pixel texture. Its model (`chapelLayout.ts`) moved over unchanged, and the hand-rolled `ChapelCanvas` lifecycle was deleted.

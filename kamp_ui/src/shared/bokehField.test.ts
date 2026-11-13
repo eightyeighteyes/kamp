@@ -181,6 +181,14 @@ test('the same seed rebuilds the same field (reproducible __kampGL screenshots)'
   )
 })
 
+test('three accents in distinct colours, so a rack focus has a real choice', () => {
+  // KAMP-782: focus goes to 1 or 2 accents chosen at random. With two, the
+  // choice was nearly fixed.
+  const accents = ORB_PLAN.filter((p) => p.tier === 'accent')
+  assert.equal(accents.length, 3)
+  assert.equal(new Set(accents.map((p) => p.colorIndex)).size, 3)
+})
+
 // KAMP-782: depth of field. Each orb carries its own blur, so the field reads as
 // a range of softness rather than one sheet. Small orbs sit nearest the focal
 // plane, big ones furthest from it.

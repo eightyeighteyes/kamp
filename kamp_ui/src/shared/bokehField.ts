@@ -83,7 +83,9 @@ const softBound = (u: number): number => Math.tanh(SOFT * u) / Math.tanh(SOFT)
 export const PREWARM_S = 600
 const STEP_S = 0.1 // DrunkWalk clamps its dt here; prewarm in steps no larger
 
-// 7 orbs, most-dominant palette slots to the big hero orbs.
+// 8 orbs, most-dominant palette slots to the big hero orbs. KAMP-782 added the
+// third accent so a rack focus picks among three small orbs, not a fixed pair;
+// slot 1 was otherwise only on a hero, so the accents span three colours.
 export const ORB_PLAN: readonly { tier: Tier; colorIndex: number }[] = [
   { tier: 'hero', colorIndex: 0 },
   { tier: 'hero', colorIndex: 1 },
@@ -91,7 +93,8 @@ export const ORB_PLAN: readonly { tier: Tier; colorIndex: number }[] = [
   { tier: 'mid', colorIndex: 3 },
   { tier: 'mid', colorIndex: 0 },
   { tier: 'accent', colorIndex: 4 },
-  { tier: 'accent', colorIndex: 2 }
+  { tier: 'accent', colorIndex: 2 },
+  { tier: 'accent', colorIndex: 1 }
 ]
 
 export const BLOOM_MAX_DELAY = 0.12 // seconds — per-orb bloom onset jitter

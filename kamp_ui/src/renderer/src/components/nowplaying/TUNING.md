@@ -22,31 +22,53 @@ Grouped by what you actually _see_.
 - `BOKEH_BLUR_CSS` (28) — Gaussian sigma in CSS px. **The single biggest aesthetic
   lever.** Higher = dreamier and more diffuse; lower = defined, more distinct "orbs."
   Useful range ~20–40.
-- `SOFTNESS` — how that blur is applied. `'css'` is the original `filter: blur()` over
-  the whole canvas, re-run by the compositor every frame (~50 of Bokeh's 65 GPU
-  points). `'baked'` draws each orb and the firefly from a sprite with the blur baked
-  in by the offscreen context's filter. Sprites re-bake only when the pane size,
-  backing scale or blur changes, or while a palette crossfade is moving.
-- The blur used to run _after_ the `screen` blend; baked, each orb is blurred before
-  it. Overlaps differ slightly. The vignette was never visibly affected.
-- The engine owns `canvas.style.filter`; there is no CSS rule for it. Positioning and
-  the KAMP-631 opaque backing live on the shared `.now-playing-backdrop` class.
+- The blur is **baked**: each orb and the firefly is drawn from a sprite blurred once
+  by the offscreen context's filter. Sprites re-bake only when the pane size, backing
+  scale or blur changes, or while a palette crossfade is moving. Until KAMP-777 it was
+  a CSS `filter: blur(28px)` over the whole canvas, re-run by the compositor every
+  frame.
+- The orbs are radial gradients that already fade to nothing at their edge, so even
+  `blur: 0` looks soft. The blur mostly shows on the small accent orbs.
+- The CSS blur ran _after_ the `screen` blend; baked, each orb is blurred before it.
+  Overlaps differ slightly. The vignette was never visibly affected.
+- There is no CSS filter on the canvas. Positioning and the KAMP-631 opaque backing
+  live on the shared `.now-playing-backdrop` class.
 
-### Measuring (KAMP-777)
+### Measurements (KAMP-777)
 
-With `KAMP_DIAGNOSTICS=1` and Bokeh selected, in DevTools:
+Intel Mac, integrated GPU, on AC, display pinned at 60 Hz, music playing, art hidden,
+60 × 1 s `powermetrics` samples per variant, all in one session. GPU busy:
+
+| Variant                         | GPU busy       | Net of None |
+| ------------------------------- | -------------- | ----------- |
+| None                            | 3.2% ± 0.7     | —           |
+| CSS blur (as shipped before)    | 66.3% ± 2.5    | 63.1        |
+| CSS path, blur 0 (control)      | 15.5% ± 0.9    | 12.3        |
+| Baked, scale 0.5                | 15.7% ± 3.2    | 12.6        |
+| **Baked, scale 0.25 (shipped)** | **8.3% ± 0.8** | **5.1**     |
+| Baked, scale 0.125              | 5.4% ± 0.6     | 2.2         |
+
+- **The baked blur is free per frame.** Baked at 0.5 costs the same as the no-blur
+  control at 0.5; the whole ~50-point saving was the CSS filter.
+- **Cost is linear in backing pixels**, as for the other Canvas 2D backgrounds:
+  halving the scale (a quarter of the pixels) roughly quarters the net cost.
+- 0.25 was chosen over 0.125 to leave resolution for KAMP-782's sharper orbs.
+- Package power and CPU figures are system-wide noise here, as always (KAMP-776/773).
+
+### Tuning from DevTools
+
+With `KAMP_DIAGNOSTICS=1` and Bokeh selected:
 
 ```js
-__kampGL.tune({ softness: 'css' }) // shipped
-__kampGL.tune({ softness: 'css', blur: 0 }) // no-blur control
-__kampGL.tune({ softness: 'baked', blur: 28 }) // baked, scale 0.5
-__kampGL.tune({ softness: 'baked', scale: 0.25 }) // baked, quarter
+__kampGL.tune({ blur: 0 }) // no-blur control
+__kampGL.tune({ scale: 0.125, blur: 28 }) // always pass blur explicitly
 __kampGL.tune({ seed: 1, freeze: true }) // identical frame for A/B shots
 __kampGL.forcePop() // firefly now
-__kampGL.stats() // fps + backing size
+__kampGL.stats() // fps, backing size, and the settings actually applied
 ```
 
-`tune()` is lost on reload; re-apply it before each run.
+`tune()` persists until a reload, which resets every knob; check `stats().settings`
+before each run.
 
 ## Motion feel — `bokehEngine.ts`
 
@@ -116,8 +138,8 @@ new colors are ~half arrived. A soft "inhale," never a flash; off under
 
 ## Performance — `bokehEngine.ts` (only if it ever feels heavy)
 
-- `RES_SCALE` (0.5) — backing-store resolution as a fraction of clamped DPR. Drop to
-  0.4 for cheaper and blurrier.
+- `RES_SCALE` (0.25) — backing-store resolution as a fraction of clamped DPR. Cost is
+  linear in pixels (see Measurements above); 0.125 is cheaper still but softer.
 - `MAX_DPR` (2) — caps the device-pixel-ratio the backing store honors.
 - The loop already pauses when the pane is hidden, the window is occluded, or
   reduced-motion is set, and the canvas is not mounted at all when another animation

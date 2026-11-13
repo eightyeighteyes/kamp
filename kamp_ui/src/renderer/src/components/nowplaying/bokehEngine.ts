@@ -5,10 +5,10 @@
 // handle; start()/stop() are idempotent. The backing store is rendered at reduced
 // resolution and CSS-upscaled.
 //
-// KAMP-777: two ways to soften the orbs, switchable from __kampGL for measuring.
-// 'css' is the original: a CSS `filter: blur()` over the whole canvas, re-run by
-// the compositor every frame (~50 of Bokeh's 65 GPU points). 'baked' draws each orb
-// from a sprite with the same blur baked in once (shared/bokehSprites.ts).
+// KAMP-777: each orb (and the firefly) is drawn from a sprite with its blur baked
+// in once (shared/bokehSprites.ts). The original CSS `filter: blur(28px)` over the
+// whole canvas was re-run by the compositor every frame: 66% GPU busy on an Intel
+// iGPU, against 8% for the sprites at RES_SCALE 0.25 (numbers in TUNING.md).
 
 import type { Palette, RGB } from './palette'
 import type { GLDevTarget } from './webgl/devHooks'
@@ -24,16 +24,16 @@ import {
 } from '../../../../shared/bokehSprites'
 
 // --- tunables (the "5 knobs") ----------------------------------------------
-const RES_SCALE = 0.5 // backing store fraction of (clamped) devicePixelRatio
+// Backing store fraction of (clamped) devicePixelRatio. Everything drawn is a smooth
+// blurred gradient, so bilinear upscaling hides the low resolution. Cost is linear in
+// pixels: 0.5 measured 15.7% GPU busy, 0.25 8.3%, 0.125 5.4% (KAMP-777). 0.25 leaves
+// headroom for KAMP-782's sharper orbs, which a lower scale would smear.
+const RES_SCALE = 0.25
 const MAX_DPR = 2
 const FRAME_MS = 33 // ~30fps cap — slow drift needs no more
-// How the orbs get their softness (see header). Defaults to the shipped look.
-type Softness = 'css' | 'baked'
-const SOFTNESS: Softness = 'css'
 // Breath (+6%) and bloom (+20%) on top of an orb's base alpha: the brightest it
 // ever gets, which is what a baked sprite holds (globalAlpha can only dim).
 const ORB_ALPHA_PEAK = 1 + 0.06 + 0.2
-const FIREFLY_ALPHA_PEAK = 1.15 // the firefly's breath
 const CROSSFADE_MS = 1000 // palette recolor duration on track change
 const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
 const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor parallax
@@ -48,7 +48,9 @@ const FIREFLY_LIFE: [number, number] = [10, 15] // seconds, fade-in -> drift -> 
 const FIREFLY_SIZE: [number, number] = [0.08, 0.12] // core radius, fraction of S
 const FIREFLY_TRAVEL = 0.07 // eased drift distance over life, fraction of S
 const FIREFLY_BOW = 0.012 // perpendicular path bow, fraction of S
-const FIREFLY_ALPHA = 0.8 // peak core alpha (kept modest; the canvas blur softens it)
+const FIREFLY_ALPHA = 0.8 // peak core alpha (kept modest; the baked blur softens it)
+const FIREFLY_PEAK = FIREFLY_ALPHA * 1.15 // brightest with its breath: what the sprite holds
+const FIREFLY_CORE: RGB = { r: 255, g: 246, b: 230 } // warm off-white centre
 // Track-change bloom (KAMP-628): a soft swell on each palette change. Radius-led so it
 // reads as the field "inhaling" rather than flashing; the tail outlasts the 1s crossfade
 // so the light settles *after* the new colors land.
@@ -166,7 +168,7 @@ interface Firefly {
   size: number // core radius, fraction of S
   color: RGB
   breathPhase: number
-  sprite: CanvasImageSource | null // baked softness path; null until baked
+  sprite: CanvasImageSource | null // null until baked
   spriteGeom: OrbSprite | null
   spriteKey: string // bakeKey the sprite was baked for
 }
@@ -182,7 +184,6 @@ export class BokehEngine {
   // Measurement knobs (__kampGL.tune, KAMP-777). Defaults are the shipped values.
   private resScale = RES_SCALE
   private frameMs = FRAME_MS
-  private softness: Softness = SOFTNESS
   private blurCss = BOKEH_BLUR_CSS
   private frozen = false // A/B screenshots: hold the clock still
   private draws = 0
@@ -237,27 +238,17 @@ export class BokehEngine {
     this.to = initial.colors
     this.refreshBg()
     this.nextFireflyAt = this.fireflyGap()
-    this.applyFilter()
   }
 
-  // The engine owns the canvas's CSS filter so __kampGL can switch it off. Only
-  // the 'css' path uses one; 'baked' carries its softness in the sprites.
-  private applyFilter(): void {
-    const on = this.softness === 'css' && this.blurCss > 0
-    this.canvas.style.filter = on ? `blur(${this.blurCss}px)` : 'none'
-  }
-
-  /** The __kampGL handle (KAMP-780), for measuring the softness variants. */
+  /** The __kampGL handle (KAMP-780), for measuring and tuning the softness. */
   devTarget(): GLDevTarget {
     return {
-      tune: ({ scale, fps, blur, softness, seed, freeze }) => {
+      tune: ({ scale, fps, blur, seed, freeze }) => {
         if (scale != null && scale > 0) this.resScale = scale
         if (fps != null && fps > 0) this.frameMs = 1000 / fps
         if (blur != null && blur >= 0) this.blurCss = blur
-        if (softness) this.softness = softness
         if (freeze != null) this.frozen = freeze
         if (seed != null) this.reseed(seed)
-        this.applyFilter()
         this.bakedKey = '' // force a re-bake at the new scale or blur
         this.resize()
       },
@@ -268,7 +259,10 @@ export class BokehEngine {
         this.drawsSince = now
         return {
           fps: Math.round(fps * 10) / 10,
-          backing: `${this.canvas.width}x${this.canvas.height}`
+          backing: `${this.canvas.width}x${this.canvas.height}`,
+          // What's applied right now: tune() persists until a reload, so a run
+          // records its own settings rather than trusting what was typed earlier.
+          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)}${this.frozen ? ' frozen' : ''}`
         }
       },
       forcePop: () => {
@@ -455,8 +449,7 @@ export class BokehEngine {
     const colors = this.currentColors()
 
     ctx.clearRect(0, 0, w, h)
-    const baked = this.softness === 'baked'
-    if (baked) this.bakeSprites(s, colors)
+    this.bakeSprites(s, colors)
     ctx.globalCompositeOperation = 'screen'
     for (let i = 0; i < this.orbs.length; i++) {
       const o = this.orbs[i]
@@ -474,22 +467,13 @@ export class BokehEngine {
       const alpha = o.baseAlpha * (1 + 0.06 * breath + BLOOM_ALPHA * bloom)
       const sprite = this.sprites[i]
       const geom = this.spriteGeom[i]
-      if (baked && sprite && geom) {
-        // Same orb, drawn from its pre-blurred sprite: scaled for breath and
-        // bloom, dimmed from its baked peak alpha.
-        const half = drawHalf(geom, radius, this.scale)
-        ctx.globalAlpha = alphaScale(alpha, o.baseAlpha * ORB_ALPHA_PEAK)
-        ctx.drawImage(sprite, x - half, y - half, half * 2, half * 2)
-        ctx.globalAlpha = 1
-        continue
-      }
-      const c = colors[o.colorIndex] ?? colors[0]
-      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius)
-      grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${alpha})`)
-      grad.addColorStop(0.4, `rgba(${c.r},${c.g},${c.b},${alpha * 0.55})`)
-      grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`)
-      ctx.fillStyle = grad
-      ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2)
+      if (!sprite || !geom) continue
+      // Drawn from its pre-blurred sprite: scaled for breath and bloom, dimmed
+      // from its baked peak alpha.
+      const half = drawHalf(geom, radius, this.scale)
+      ctx.globalAlpha = alphaScale(alpha, o.baseAlpha * ORB_ALPHA_PEAK)
+      ctx.drawImage(sprite, x - half, y - half, half * 2, half * 2)
+      ctx.globalAlpha = 1
     }
     ctx.globalCompositeOperation = 'source-over'
     this.drawVignette(ctx, w, h)
@@ -606,9 +590,8 @@ export class BokehEngine {
   }
 
   // A single warm mote drawn over the vignette with additive blend. The alpha
-  // envelope (slow emerge, long fade-out, gentle breath) is baked into the gradient
-  // stops on the 'css' path. The 'baked' path dims its sprite with globalAlpha and
-  // restores it to 1, which the orb/vignette passes assume.
+  // envelope (slow emerge, long fade-out, gentle breath) dims its sprite through
+  // globalAlpha, restored to 1 after, which the orb/vignette passes assume.
   private drawFirefly(ctx: CanvasRenderingContext2D, w: number, h: number, s: number): void {
     const f = this.firefly
     if (!f) return
@@ -625,36 +608,20 @@ export class BokehEngine {
     const x = f.x0 * w + (f.dirX * travel + f.perpX * bow) * s
     const y = f.y0 * h + (f.dirY * travel + f.perpY * bow) * s
     const radius = f.size * s
-    const c = f.color
-    if (this.softness === 'baked') {
-      // Baked once per spawn (and per geometry change): one blur a minute.
-      const key = bakeKey(s, this.scale, this.blurCss)
-      if (f.spriteKey !== key) {
-        f.spriteGeom = orbSprite(radius, this.blurCss, this.scale)
-        f.sprite = this.bakeOrb(f.spriteGeom, c, FIREFLY_ALPHA * FIREFLY_ALPHA_PEAK, [0.35, 0.7], {
-          r: 255,
-          g: 246,
-          b: 230
-        })
-        f.spriteKey = key
-      }
-      if (f.sprite && f.spriteGeom) {
-        const half = drawHalf(f.spriteGeom, radius, this.scale)
-        ctx.globalCompositeOperation = 'lighter'
-        ctx.globalAlpha = alphaScale(alpha, FIREFLY_ALPHA * FIREFLY_ALPHA_PEAK)
-        ctx.drawImage(f.sprite, x - half, y - half, half * 2, half * 2)
-        ctx.globalAlpha = 1
-        ctx.globalCompositeOperation = 'source-over'
-        return
-      }
+    // Baked once per spawn (and per geometry change): one blur a minute. The warm
+    // off-white core is the centre stop, so the colour reads as a glow, not a dot.
+    const key = bakeKey(s, this.scale, this.blurCss)
+    if (f.spriteKey !== key) {
+      f.spriteGeom = orbSprite(radius, this.blurCss, this.scale)
+      f.sprite = this.bakeOrb(f.spriteGeom, f.color, FIREFLY_PEAK, [0.35, 0.7], FIREFLY_CORE)
+      f.spriteKey = key
     }
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, radius)
-    grad.addColorStop(0, `rgba(255,246,230,${alpha})`) // warm off-white core
-    grad.addColorStop(0.35, `rgba(${c.r},${c.g},${c.b},${alpha * 0.7})`)
-    grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`)
+    if (!f.sprite || !f.spriteGeom) return
+    const half = drawHalf(f.spriteGeom, radius, this.scale)
     ctx.globalCompositeOperation = 'lighter'
-    ctx.fillStyle = grad
-    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2)
+    ctx.globalAlpha = alphaScale(alpha, FIREFLY_PEAK)
+    ctx.drawImage(f.sprite, x - half, y - half, half * 2, half * 2)
+    ctx.globalAlpha = 1
     ctx.globalCompositeOperation = 'source-over'
   }
 

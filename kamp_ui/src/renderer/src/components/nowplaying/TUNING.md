@@ -123,7 +123,24 @@ samples where an orb above 0.5 focus was actually seen.
 
 ### Measurements (KAMP-782)
 
-_Pending: GPU busy for `focus: 'off'`, `'on'` and `'auto'`, KAMP-776 method._
+Same rig and method as KAMP-777 (Intel Mac, integrated GPU, 60 Hz, music playing,
+art hidden, 60 × 1 s samples per variant, one session). GPU busy:
+
+| Variant                                | GPU busy         |
+| -------------------------------------- | ---------------- |
+| `focus: 'off'` (per-orb blur only)     | 8.77% ± 0.97     |
+| **`focus: 'auto'` (shipped)**          | **8.89% ± 1.17** |
+| `focus: 'on'` (two accents held sharp) | 9.00% ± 1.13     |
+
+- **Depth of field is free within the noise.** All three variants sit within about a
+  quarter of a standard deviation of each other. Holding two sharp discs on screen
+  all the time, the worst case, adds about 0.2 points.
+- **The wider hero blur costs nothing measurable.** `'off'` is 0.5 points above
+  KAMP-777's 8.3% ± 0.8. That is inside one standard deviation, measured in a
+  different session with no None control. The 3σ padding growth on the heroes is
+  real, but too small to see.
+- Package power and CPU swung by 10 W and 25 points between these runs, with the
+  GPU flat: system noise, as always (KAMP-776/773).
 
 ## Motion feel — `shared/bokehField.ts`, `bokehEngine.ts`
 

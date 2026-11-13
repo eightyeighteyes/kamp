@@ -23,12 +23,16 @@ import {
   type OrbSprite
 } from '../../../../shared/bokehSprites'
 import { PaletteCrossfade } from '../../../../shared/paletteCrossfade'
+import type { PaneRect } from '../../../../shared/particleUtil'
+import { measureContent } from './contentRects'
 import {
   BLOOM_MAX_DELAY,
+  ORB_PLAN,
   SpriteBakeGate,
   advanceField,
   makeField,
   orbCenter,
+  visibleOrbCount,
   type Orb,
   type Rng
 } from '../../../../shared/bokehField'
@@ -139,6 +143,14 @@ export class BokehEngine {
   private lastPointerAt = 0 // elapsed at the last pane pointer activity
   private lastFireflyCorner = -1 // avoid spawning in the same corner twice running
 
+  // Density census for __kampGL.stats() (KAMP-779): one-second samples of how many
+  // orbs are visible, by count, since the last stats() call. Null — and free —
+  // until the first stats() call, so it never runs outside a measurement session.
+  // A single sample would miss a blank that shows up 10% of the time.
+  private census: number[] | null = null
+  private censusArt: PaneRect | null = null
+  private nextCensusAt = 0
+
   // Track-change bloom. Seconds since the last palette change; BLOOM_DONE = inactive.
   private bloomAge = BLOOM_DONE
 
@@ -180,7 +192,8 @@ export class BokehEngine {
           backing: `${this.canvas.width}x${this.canvas.height}`,
           // What's applied right now: tune() persists until a reload, so a run
           // records its own settings rather than trusting what was typed earlier.
-          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)}${this.frozen ? ' frozen' : ''}`
+          settings: `scale ${this.resScale} blur ${this.blurCss} fps ${Math.round(1000 / this.frameMs)}${this.frozen ? ' frozen' : ''}`,
+          density: this.takeCensus()
         }
       },
       forcePop: () => {
@@ -188,6 +201,22 @@ export class BokehEngine {
         this.spawnFirefly()
       }
     }
+  }
+
+  // Report and reset the density census; the first call starts it. The art rect
+  // is re-measured on each call (a DOM read, so not per sample): the art is
+  // opaque, and an orb behind it counts for nothing.
+  private takeCensus(): string {
+    this.censusArt = measureContent(this.canvas).art
+    const c = this.census
+    this.census = new Array(ORB_PLAN.length + 1).fill(0)
+    this.nextCensusAt = this.elapsed
+    const n = c ? c.reduce((a, b) => a + b, 0) : 0
+    if (!c || n === 0) return 'visible orbs: sampling started, call stats() again later'
+    const pct = (v: number): string => `${((100 * v) / n).toFixed(1)}%`
+    const twoPlus = c.slice(2).reduce((a, b) => a + b, 0)
+    const mean = c.reduce((a, v, i) => a + v * i, 0) / n
+    return `visible orbs over ${n} s: 0 ${pct(c[0])} · 1 ${pct(c[1])} · 2+ ${pct(twoPlus)} · mean ${mean.toFixed(1)}`
   }
 
   // Rebuild the field from a fixed seed with the clock at zero, so two variants
@@ -346,6 +375,10 @@ export class BokehEngine {
       this.spawnFirefly()
     }
     advanceField(this.orbs, dt)
+    if (this.census && this.cssW > 0 && this.elapsed >= this.nextCensusAt) {
+      this.nextCensusAt = this.elapsed + 1
+      this.census[visibleOrbCount(this.orbs, this.elapsed, this.cssW, this.cssH, this.censusArt)]++
+    }
   }
 
   private draw(): void {

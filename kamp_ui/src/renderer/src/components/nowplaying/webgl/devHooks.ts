@@ -48,8 +48,12 @@ export interface GLDevTarget {
     seed?: number
     freeze?: boolean
   }): void
-  /** Draw rate since the previous call (verifies the frame cap), and backing size. */
-  stats(): { fps: number; backing: string; settings?: string }
+  /**
+   * Draw rate since the previous call (verifies the frame cap), and backing size.
+   * `density` (Bokeh, KAMP-779) is how many orbs were visible, sampled once a
+   * second since the previous call; the first call starts sampling.
+   */
+  stats(): { fps: number; backing: string; settings?: string; density?: string }
   /**
    * Launch the rare moment now, for tuning: Sparks' high spark, Wintermute's close
    * flake, Castalia's shimmer, Bokeh's firefly.

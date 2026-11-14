@@ -2921,3 +2921,43 @@ class TestMpvPlaybackEngine:
             {"request_id": 9999, "error": "success", "data": {"lavfi.r128.M": "-18.5"}}
         )
         assert received == []
+
+
+class TestDescribeMpvExit:
+    """The IPC-connect timeout must say whether mpv died and how (KAMP-715).
+
+    mpv.exe is GUI-subsystem on Windows and writes nothing to stderr, so the
+    exit code is the only signal that separates "mpv crashed at load" (e.g.
+    0xC0000135, a missing DLL) from "mpv is running but never made the pipe".
+    """
+
+    def _proc(
+        self, returncode: int | None, stderr: bytes = b"", pid: int = 4242
+    ) -> MagicMock:
+        proc = MagicMock()
+        proc.poll.return_value = returncode
+        proc.pid = pid
+        proc.stderr = io.BytesIO(stderr)
+        return proc
+
+    def test_still_running_names_the_pid(self) -> None:
+        detail = playback_module._describe_mpv_exit(self._proc(None))
+        assert "still running" in detail
+        assert "4242" in detail
+
+    def test_exited_reports_code_in_decimal_and_ntstatus_hex(self) -> None:
+        # Windows reports NTSTATUS crashes as negative signed ints in Python.
+        detail = playback_module._describe_mpv_exit(self._proc(-1073741515))
+        assert "-1073741515" in detail
+        assert "0xC0000135" in detail
+
+    def test_exited_includes_stderr_when_present(self) -> None:
+        detail = playback_module._describe_mpv_exit(
+            self._proc(1, stderr=b"Error parsing option ebur128\n")
+        )
+        assert "exited with code 1" in detail
+        assert "Error parsing option ebur128" in detail
+
+    def test_exited_without_stderr_says_so(self) -> None:
+        detail = playback_module._describe_mpv_exit(self._proc(0))
+        assert "no stderr" in detail

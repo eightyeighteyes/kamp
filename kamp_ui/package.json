@@ -49,5 +49,16 @@
     "react-dom": "^19.2.5",
     "typescript": "^6.0.3",
     "vite": "^7.3.8"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch@^10": "^11.0.1"
+    },
+    "app-builder-lib": {
+      "minimatch@^10": "^11.0.1"
+    },
+    "@electron/universal": {
+      "minimatch@^9": "^11.0.1"
+    }
   }
 }

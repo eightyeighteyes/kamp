@@ -829,14 +829,9 @@ class _WindowsNamedPipeTransport(_IPCTransport):
                 raise
             self._conn = PipeConnection(handle)
             return
-        detail = ""
-        if proc.poll() is not None and proc.stderr is not None:
-            stderr_bytes = proc.stderr.read()
-            if stderr_bytes:
-                detail = f": {stderr_bytes.decode(errors='replace').strip()}"
         raise RuntimeError(
             f"mpv IPC pipe at {self._pipe_name} did not become connectable "
-            f"within {timeout}s{detail}: {last_err!r}"
+            f"within {timeout}s ({_describe_mpv_exit(proc)}): {last_err!r}"
         )
 
     def sendall(self, data: bytes) -> None:  # pragma: no cover
@@ -1047,6 +1042,27 @@ _GAPLESS_GUARD_SECS: float = 10.0
 # Fade duration in seconds. Must match the duration= set on the @kampfade afade
 # filter in _start_mpv (the Lua re-arms start_time/type, not duration, at runtime).
 _FADE_SECS = 0.15
+
+
+def _describe_mpv_exit(proc: subprocess.Popen[bytes]) -> str:
+    """Say whether mpv is still alive and, if not, how it died.
+
+    Used in the IPC-connect timeout error. mpv.exe is GUI-subsystem on Windows
+    and writes nothing to stderr, so without the exit code a crash at load
+    (NTSTATUS 0xC0000135 = missing DLL) is indistinguishable from an mpv that
+    is running but never created its pipe (KAMP-715).
+    """
+    code = proc.poll()
+    if code is None:
+        return f"mpv still running, pid {proc.pid}"
+    # Windows surfaces NTSTATUS crash codes as negative signed ints; the
+    # unsigned hex is the form that is searchable.
+    detail = f"mpv exited with code {code} (0x{code & 0xFFFFFFFF:08X})"
+    stderr_bytes = proc.stderr.read() if proc.stderr is not None else b""
+    if stderr_bytes:
+        return f"{detail}: {stderr_bytes.decode(errors='replace').strip()}"
+    return f"{detail}, no stderr"
+
 
 # Lua script that drives click-free pause/stop/resume fades inside mpv's event loop.
 # See kamp_core/kamp_fade.lua for implementation and rationale.

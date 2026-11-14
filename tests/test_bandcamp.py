@@ -3128,8 +3128,15 @@ class TestSyncCollectionStream:
         already_have_tracks: bool = True,
         fake_tracks: list[Any] | None = None,
         existing_state: dict[str, str] | None = None,
-        apply_bandcamp_genres: bool = True,
+        apply_bandcamp_genres: bool | None = True,
     ) -> tuple[tuple[int, int], MagicMock]:
+        # None omits the kwarg, so a test can pin the function's own default
+        # rather than this helper's (KAMP-642).
+        genre_kwargs: dict[str, bool] = (
+            {}
+            if apply_bandcamp_genres is None
+            else {"apply_bandcamp_genres": apply_bandcamp_genres}
+        )
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
@@ -3153,7 +3160,7 @@ class TestSyncCollectionStream:
                 config,
                 watch_folder,
                 index,
-                apply_bandcamp_genres=apply_bandcamp_genres,
+                **genre_kwargs,
                 # The walk spaces album-page requests at the measured 1.5s
                 # (KAMP-729); tests must not actually wait it out.
                 sleep=lambda _seconds: None,
@@ -3386,9 +3393,48 @@ class TestSyncCollectionStream:
         index.set_collection_keywords.assert_called_once_with(
             "1", ["shoegaze", "dream pop"]
         )
-        # apply_bandcamp_genres defaults True — the tracks keep their genres.
+        # The helper passes apply_bandcamp_genres=True, so the tracks keep their genres.
         upserted = index.upsert_many.call_args[0][0]
         assert upserted[0].genres == ["shoegaze", "dream pop"]
+
+    def test_bandcamp_genres_default_off_when_caller_omits_flag(
+        self, tmp_path: Path
+    ) -> None:
+        # KAMP-642: the function's own default must match the config default
+        # (off), so a direct caller that forgets the flag doesn't spray
+        # free-text Bandcamp labels into the genre list. Labels are still cached.
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=["shoegaze", "dream pop"],
+        )
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=False,
+            fake_tracks=[track],
+            apply_bandcamp_genres=None,
+        )
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+        upserted = index.upsert_many.call_args[0][0]
+        assert upserted[0].genres == []
 
     def test_disabled_bandcamp_genres_caches_but_strips_from_tracks(
         self, tmp_path: Path

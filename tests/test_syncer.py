@@ -1013,7 +1013,7 @@ class TestStreamMode:
             status_callback: object = None,
             art_cache_dir: object = None,
             batch_indexed_callback: object = None,
-            apply_bandcamp_genres: bool = True,
+            apply_bandcamp_genres: bool = False,
             **_kwargs: object,
         ) -> tuple[int, int, list[tuple[str, str]]]:
             # **_kwargs so this fake survives new optional parameters on the

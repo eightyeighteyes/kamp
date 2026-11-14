@@ -970,8 +970,9 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
             'indexdb',
             'serviceworkers',
             'cachestorage',
-            'shadercache',
-            'websql'
+            'shadercache'
+            // 'websql' is gone: Chromium removed WebSQL, and Electron 45 dropped
+            // it from the storages type (KAMP-715).
           ]
         })
         await loginSession.clearCache()

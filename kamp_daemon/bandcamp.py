@@ -732,7 +732,9 @@ def sync_collection_stream(
     status_callback: Callable[[str], None] | None = None,
     art_cache_dir: Path | None = None,
     batch_indexed_callback: Callable[[], None] | None = None,
-    apply_bandcamp_genres: bool = True,
+    # Off by default to match tagging.bandcamp_genres (KAMP-642): artist labels
+    # are free text, so applying them must be an explicit opt-in.
+    apply_bandcamp_genres: bool = False,
     stop_event: Any | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[int, int, list[tuple[str, str]]]:

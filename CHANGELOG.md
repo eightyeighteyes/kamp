@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.28.0](https://github.com/eightyeighteyes/kamp/compare/v1.27.0...v1.28.0) (2026-11-15)
+
+
+### Features
+
+* **KAMP-743:** diagnose why session writes fall back to plaintext ([eac8f4e](https://github.com/eightyeighteyes/kamp/commit/eac8f4edc29646e1dac132812bd26212b4a7635a))
+* **KAMP-765:** Borealis, an aurora Now Playing background ([54f6d57](https://github.com/eightyeighteyes/kamp/commit/54f6d574305276d2758dbfc04a73cd154321f3f3))
+* **KAMP-766:** pick the Now Playing animation from a registry ([3b5568e](https://github.com/eightyeighteyes/kamp/commit/3b5568e905d52feb94215582525a92473e015c05))
+* **KAMP-767:** Sparks, a campfire-sparks Now Playing background ([d290c2f](https://github.com/eightyeighteyes/kamp/commit/d290c2f98cdd79221c53309e08f2033ef7ea14a7))
+* **KAMP-768:** Wintermute, a snowfall Now Playing background ([ff23d15](https://github.com/eightyeighteyes/kamp/commit/ff23d150627c1b2b7a7c38a2c6e396d4e0aea464))
+* **KAMP-769:** let the user hide the album art in Now Playing ([2cf05bd](https://github.com/eightyeighteyes/kamp/commit/2cf05bd45859b031dc3bf0e4baefe3eb435e4ae4))
+* **KAMP-770:** one New Arrival Highlight picker, with off pinned first ([8f26d8b](https://github.com/eightyeighteyes/kamp/commit/8f26d8b8372a8812c149e0216ae982bd9ee4e84a))
+* **KAMP-772:** Tannhäuser, condensation on a rainy-night window ([becb4e9](https://github.com/eightyeighteyes/kamp/commit/becb4e928aced910a8a7b9b9f80f18977528fdfc))
+* **KAMP-773:** Castalia, sand settling into a resonant figure for each album ([a9701a3](https://github.com/eightyeighteyes/kamp/commit/a9701a39a94db027b08e275e7e5496a21114d653))
+* **KAMP-774:** Halation, a film-grain Now Playing background ([f028e4f](https://github.com/eightyeighteyes/kamp/commit/f028e4f4208e7a0ec0df570f9c97c44f9afcaf73))
+* **KAMP-775:** Chapel, a Now Playing background of slowly breathing color fields ([640c8a1](https://github.com/eightyeighteyes/kamp/commit/640c8a177bca8c632f6b38add669f16ea94e8fb3))
+* **KAMP-781:** Chapel — texture, tension and stronger cursor response ([10fd636](https://github.com/eightyeighteyes/kamp/commit/10fd6368f3469407d0fe48f84a8b0eaea63e4118))
+* **KAMP-782:** Bokeh depth of field — per-orb blur and rack focus onto the accents ([d8ea676](https://github.com/eightyeighteyes/kamp/commit/d8ea676c13bf2db5d3905bd0da7a4c67e6985972))
+
+
+### Bug Fixes
+
+* **KAMP-642:** default sync_collection_stream's apply_bandcamp_genres to off ([6f5ced4](https://github.com/eightyeighteyes/kamp/commit/6f5ced4e49840195f09d21bf72de54b56517f3df))
+* **KAMP-744:** keep the Bandcamp cookie jar out of extension iframes' reach ([9032748](https://github.com/eightyeighteyes/kamp/commit/90327488781c50596fef0b49f1d1bd3424a24fd5))
+* **KAMP-745:** move Bandcamp authentication to a dedicated session partition ([d5db336](https://github.com/eightyeighteyes/kamp/commit/d5db336008cee7c3dd17f31255673381012eb637))
+* **KAMP-746:** persist only the Bandcamp cookies authentication needs ([fd4f61c](https://github.com/eightyeighteyes/kamp/commit/fd4f61c43f56073df984bc7c8c40d3f47862a0d3))
+* **KAMP-747:** confine the Bandcamp login window's navigation ([86ce88c](https://github.com/eightyeighteyes/kamp/commit/86ce88c88f6ed9e786ad739378306e20888b9a95))
+* **KAMP-748:** erase removed credentials from the DB files, not just the row ([3ba8a12](https://github.com/eightyeighteyes/kamp/commit/3ba8a12abdca3165d952666a8cb8b99e3c792c3b))
+* **KAMP-749:** fall back to the Login Keychain when the helper cannot run ([f0d8aec](https://github.com/eightyeighteyes/kamp/commit/f0d8aec5cc71bcbd715c02a5833b3fee112b516a))
+* **KAMP-750:** fail closed instead of storing credentials as plaintext ([49becae](https://github.com/eightyeighteyes/kamp/commit/49becaed73d884587f95536f558914e65fc9127f))
+* **KAMP-753:** ship the keychain helper as a provisioned bundle so the Data Protection Keychain works ([5bdb8c4](https://github.com/eightyeighteyes/kamp/commit/5bdb8c4f8d605450ef42118b571bd251fe7e2894))
+* **KAMP-755:** move plaintext credential rows into the keychain at startup ([d2a7675](https://github.com/eightyeighteyes/kamp/commit/d2a76750c9ec513bb1e1e9564073a784a2a85163))
+* **KAMP-759:** keep the album's known release date on Bandcamp downloads ([d6f46ff](https://github.com/eightyeighteyes/kamp/commit/d6f46ff8d718f4c4583680088786aa10ca4a5c56))
+* **KAMP-779:** keep the Bokeh background consistently populated ([0f310e1](https://github.com/eightyeighteyes/kamp/commit/0f310e1fbb285cd49dacc81d19512e678285586f))
+* **KAMP-783:** Now Playing animation picker is lowercase and alphabetical, with off pinned first ([0d984b3](https://github.com/eightyeighteyes/kamp/commit/0d984b3ec8a1e1b7301f4730d7b4ea5d6cdbcd55))
+
+
+### Performance Improvements
+
+* **KAMP-777:** bake Bokeh's blur into sprites (66% -&gt; 8% GPU busy) ([0e9f477](https://github.com/eightyeighteyes/kamp/commit/0e9f4778564ff321f49963fe6978ed429922e1a5))
+
+
+### Dependencies
+
+* **KAMP-715:** upgrade Electron 41 -&gt; 45 ([545541a](https://github.com/eightyeighteyes/kamp/commit/545541a14d2d5af4c846727d91f53c363a628fca))
+* **KAMP-761:** resolve Dependabot and npm audit alerts ([f02bbca](https://github.com/eightyeighteyes/kamp/commit/f02bbca17536f3afc8c71224e4d17e940fc70946))
+
+
+### Documentation
+
+* **KAMP-776:** WebGL Now Playing backgrounds spike findings ([4244aa6](https://github.com/eightyeighteyes/kamp/commit/4244aa6e83a36b31bc3e9b9c7ac18fac44fc2729))
+
 ## [1.27.0](https://github.com/eightyeighteyes/kamp/compare/v1.26.1...v1.27.0) (2026-10-24)
 
 

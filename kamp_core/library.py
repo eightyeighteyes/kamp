@@ -1217,6 +1217,11 @@ class DownloadOverrides:
     # files' genre tags at ingest so the local files carry them (the scan then
     # round-trips them to track_genres). Empty when none were cached.
     genres: list[str] = field(default_factory=list)
+    # KAMP-759: the album's known release date (usually a full ISO date from the
+    # stream sync). Bandcamp's download files carry the year only, so without
+    # this the pipeline would keep the year and a later rescan would overwrite
+    # the precise date. Empty when no stream row exists.
+    release_date: str = ""
 
 
 @dataclass
@@ -9834,16 +9839,27 @@ class LibraryIndex:
 
             titles = _collect("display_title")
             artists = _collect("display_artist")
+            # KAMP-759: read the date from the stream tracks, not
+            # albums.release_date. patch_release_date_for_remote_album updates
+            # tracks without refreshing the album aggregate, so the album row
+            # can still hold the year a backfill has since replaced.
+            date_row = self._conn.execute(
+                "SELECT MAX(release_date) FROM tracks"
+                f" WHERE album_id = ? AND {_eff_source('tracks')} = 'bandcamp'",
+                (album["id"],),
+            ).fetchone()
             return DownloadOverrides(
                 album_artist=album["display_album_artist"] or album["album_artist"],
                 album=album["display_album"] or album["album"],
                 titles=titles,
                 artists=artists,
                 genres=genres,
+                release_date=(date_row[0] or "") if date_row else "",
             )
 
         # No synced album row (downloaded without syncing streaming rows): fall
-        # back to the collection ledger, which the downloader always wrote.
+        # back to the collection ledger, which the downloader always wrote. It
+        # stores no release date, so the file keeps its own (KAMP-759 scope cut).
         bc = self._conn.execute(
             "SELECT band_name, item_title FROM bandcamp_collection"
             " WHERE sale_item_id = ?",

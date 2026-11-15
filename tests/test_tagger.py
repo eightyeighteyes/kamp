@@ -2028,6 +2028,38 @@ class TestWriteTagsFromTrackMetadata:
         assert "TXXX:MusicBrainz Album Id" in tags
         assert "TXXX:MusicBrainz Recording Id" in tags
 
+    @pytest.mark.parametrize(
+        ("name", "patch_target", "key"),
+        [
+            ("t.m4a", "kamp_daemon.tagger.mutagen.mp4.MP4", "\xa9day"),
+            ("t.flac", "kamp_daemon.tagger.mutagen.flac.FLAC", "DATE"),
+            ("t.ogg", "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", "DATE"),
+        ],
+    )
+    def test_writes_full_release_date_verbatim(
+        self, tmp_path: Path, name: str, patch_target: str, key: str
+    ) -> None:
+        # KAMP-759: a download's full date must not be shortened to a year by
+        # any format writer.
+        f = tmp_path / name
+        f.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch(patch_target, return_value=mock_audio):
+            write_tags_from_track_metadata(
+                f, _make_track(release_date="2026-07-21"), total_tracks=1
+            )
+        assert mock_audio.tags[key] == ["2026-07-21"]
+
+    def test_writes_mp3_full_release_date(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        write_tags_from_track_metadata(
+            mp3, _make_track(release_date="2026-07-21"), total_tracks=1
+        )
+        assert str(id3.ID3(str(mp3))["TDRC"]) == "2026-07-21"
+
     def test_writes_mp3_no_year(self, tmp_path: Path) -> None:
         mp3 = tmp_path / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)

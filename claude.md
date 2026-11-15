@@ -22,6 +22,7 @@
 - Before opening a PR, run all CI steps (testing, linting, type checks, etc) locally
 - Before opening a PR, scan through README.md to make sure it's still valid (nothing it says has drifted from what the application does)
 - When merging a branch, squash commits.
+- Title every PR, and every commit on a single-commit branch, as a conventional commit with the ticket as scope: `feat(KAMP-NNN): …`, `fix(KAMP-NNN): …`, `perf`, `deps` (runtime dependency), or a hidden type (`chore`, `ci`, `build`, `docs`, `refactor`, `test`). Release-please builds the version and changelog from these subjects alone. `pr-title.yml` enforces it.
 - Task lifecycle: task management is done through Jira. When work begins on a task, move it to In Progress. When the user confirms it is tested and complete, squash merge the PR and move the task to Done.
 - Prefer running single tests, and not the whole test suite, for performance; use `--no-cov` when running a single file to skip the coverage threshold check (e.g. `poetry run pytest tests/test_foo.py -v --no-cov`)
 - Update documentation (README.md) after new features are validated
@@ -71,6 +72,16 @@ minimatch's DoS fix (11.0.1) has no 9.x/10.x backport, and three parents still a
 - **Run `npm install` once after editing `overrides`, then read the lockfile diff.** It should touch only the overridden entries and their new deps. A wider diff is the KAMP-617 cascade: revert it.
 - **For an in-range transitive bump (nanoid, zod), edit the lock's `version`/`resolved`/`integrity` by hand,** with values from `npm view <pkg>@<ver> dist.integrity`. This is exactly what Dependabot does and needs no re-resolution. Check first that the new version has no dependencies of its own, then let `npm ci` verify the hash.
 - **An override that reaches electron-builder needs a packaged-contents diff, not a green build.** app-builder-lib's file filter runs on minimatch and reads `Minimatch#set`, and electron-builder exits 0 when files go missing. Package `CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:unpack` before and after, list the bundle tree plus `@electron/asar`'s `listPackage(app.asar)`, and diff. Explain every byte that changes: here `app.asar` grew by exactly the size of the `overrides` block in the packed `package.json`.
+
+## Release-please skips anything without a conventional prefix — KAMP-784
+After 2026-08-10, squash merges were titled `KAMP-NNN: …` instead of `feat(KAMP-NNN): …`. Release-please ignored all of them, and three months of work went unreleased while the workflow stayed green.
+- **A green release-please run proves nothing.** It succeeds and logs `No user facing commits found since <sha> - skipping`. If no release PR is open after a `feat`/`fix` merge, read that line in the run log before anything else.
+- **A stale release PR hides the gap.** 1.27.0's PR was opened in August from the last prefixed commits and merged in October. Its notes listed 4 changes and silently dropped the 49 merged in between. Diff a release PR's entries against `git log <last tag>..main` before merging it.
+- **Fix past PRs with `BEGIN_COMMIT_OVERRIDE`, not new commits.** Release-please reads a merged PR's body on every run, so a block like `BEGIN_COMMIT_OVERRIDE\nfeat(KAMP-765): Borealis…\nEND_COMMIT_OVERRIDE` reclassifies that squash commit. A `Release-As:` commit would force a version but leave the changelog empty. Notes for a release that already shipped can only be fixed by hand, in `CHANGELOG.md` and with `gh release edit`.
+- **The title check must also validate the commit.** `squash_merge_commit_title` is `COMMIT_OR_PR_TITLE`, so a single-commit PR is squashed under its *commit* subject and the PR title is ignored. `pr-title.yml` sets `validateSingleCommit` for this reason. Dependabot carries `commit-message.prefix` for the same check.
+- **Pick the type for the changelog reader.** `feat`, `fix`, `perf` and `deps` are visible. A spike write-up (`docs`), an engine with no user-facing change yet (`refactor`), and CI or dev-tool bumps (`ci`/`chore`) stay hidden. One `feat` since the last tag makes a minor bump.
+- **This file is tracked as `claude.md`.** On the case-insensitive macOS filesystem, `git add CLAUDE.md` matches nothing and says nothing, so the commit silently leaves the lessons out. Stage it as `claude.md` and check `git show --stat` after committing.
+- A one-off `Something went wrong while executing your query` failure in a release-please run is a transient GitHub GraphQL error. The next push retries it, so don't investigate it.
 
 ## Mutagen
 - **Never use `mutagen.File(path)` for MP3s** — use `mutagen.id3.ID3(str(path))` directly. `mutagen.File` parses the full MPEG audio stream and raises on files with minimal/fake audio data (common in tests).

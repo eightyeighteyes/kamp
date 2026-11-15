@@ -1,4 +1,6 @@
 version: 2
+# Conventional prefixes so Dependabot's titles pass pr-title.yml and runtime
+# bumps reach release-please's Dependencies section (KAMP-784).
 updates:
   - package-ecosystem: "pip"
     directory: "/"
@@ -6,6 +8,9 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "chore"
 
   - package-ecosystem: "npm"
     directory: "/kamp_ui"
@@ -13,6 +18,9 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "chore"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -20,3 +28,5 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    commit-message:
+      prefix: "ci"

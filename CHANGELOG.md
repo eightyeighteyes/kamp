@@ -10,16 +10,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.27.0](https://github.com/eightyeighteyes/kamp/compare/v1.26.1...v1.27.0) (2026-10-24)
 
 
+> Release-please generated only the KAMP-645, KAMP-646, KAMP-661 and KAMP-674 entries and the release chore. KAMP-784 backfilled the rest: their squash merges lacked a conventional-commit prefix, so release-please skipped them.
+
 ### ⚠ BREAKING CHANGES
 
 * **KAMP-674:** remove 'pass' from the Crate ([#761](https://github.com/eightyeighteyes/kamp/issues/761))
+
 
 ### Features
 
 * **KAMP-645:** discovery groundwork — schema v61, seed profile, provider ABC ([#744](https://github.com/eightyeighteyes/kamp/issues/744)) ([f97c81c](https://github.com/eightyeighteyes/kamp/commit/f97c81ce2f37f8fa52ddb3588882919433f137a6))
 * **KAMP-646:** Bandcamp rate-limit governor + calibrated crate budget ([#746](https://github.com/eightyeighteyes/kamp/issues/746)) ([1b68335](https://github.com/eightyeighteyes/kamp/commit/1b68335728928e4fe14e8912f4a3f9583f4ab0a8))
+* **KAMP-657:** keep the surplus, fill a thin crate from it ([#776](https://github.com/eightyeighteyes/kamp/issues/776)) ([ac24bb7](https://github.com/eightyeighteyes/kamp/commit/ac24bb722a744a3833b602c9632fb9b194f63196))
+* **KAMP-658:** four more ways to dig ([#772](https://github.com/eightyeighteyes/kamp/issues/772)) ([fcda653](https://github.com/eightyeighteyes/kamp/commit/fcda65372e4f23f6a7bfea14473efd5dfe148dcf))
 * **KAMP-661:** let the crate's reachable pool grow with use ([#764](https://github.com/eightyeighteyes/kamp/issues/764)) ([44b6caa](https://github.com/eightyeighteyes/kamp/commit/44b6caab1103be640f22dcf0421497b708014256))
+* **KAMP-663:** end-of-crate ceremony — the closing beat, and a way out ([#778](https://github.com/eightyeighteyes/kamp/issues/778)) ([e327e4b](https://github.com/eightyeighteyes/kamp/commit/e327e4b0e573f22072254ebdc25519dd469485f5))
+* **KAMP-664:** clerk note copy pass — variation, and claims the library can support ([#777](https://github.com/eightyeighteyes/kamp/issues/777)) ([b4ca36e](https://github.com/eightyeighteyes/kamp/commit/b4ca36e0602323eeabca47e0334ab2f7d1b68536))
+* **KAMP-665:** spread a crate across seeds instead of leaning on one ([#765](https://github.com/eightyeighteyes/kamp/issues/765)) ([25fa610](https://github.com/eightyeighteyes/kamp/commit/25fa6108dad84acfceba18abb828b31afe4e22d6))
 * **KAMP-674:** remove 'pass' from the Crate ([#761](https://github.com/eightyeighteyes/kamp/issues/761)) ([54dcb71](https://github.com/eightyeighteyes/kamp/commit/54dcb71f17a689cef1bbd8d1fa768b36c15589ca))
+* **KAMP-675:** make the installer DMG read as putting a record on a turntable ([#809](https://github.com/eightyeighteyes/kamp/issues/809)) ([d142d80](https://github.com/eightyeighteyes/kamp/commit/d142d80f8b06895c9e3006512fd0cebd7c59848e))
+* **KAMP-676:** restore the window's maximized and fullscreen state ([#801](https://github.com/eightyeighteyes/kamp/issues/801)) ([4b397cb](https://github.com/eightyeighteyes/kamp/commit/4b397cb59b218551c964d7d6a1dfec7e647a34f6))
+* **KAMP-678:** always show the deck's transport, and keep the record on it ([#769](https://github.com/eightyeighteyes/kamp/issues/769)) ([e3366ef](https://github.com/eightyeighteyes/kamp/commit/e3366ef0efef81677acf94a73231d4ff3de496a1))
+* **KAMP-679:** double-click, drag or Enter to put a record on the deck ([#770](https://github.com/eightyeighteyes/kamp/issues/770)) ([d443326](https://github.com/eightyeighteyes/kamp/commit/d443326cd8fd6076530f5467d9f928e0fac572c6))
+* **KAMP-683:** fewer cards that only know your genre, more that name a record ([#779](https://github.com/eightyeighteyes/kamp/issues/779)) ([d4ad7b2](https://github.com/eightyeighteyes/kamp/commit/d4ad7b223650fdd12f6eb58bd5b8d5aff6b50037))
+* **KAMP-689:** one record per artist, and one per seed ([#782](https://github.com/eightyeighteyes/kamp/issues/782)) ([054803b](https://github.com/eightyeighteyes/kamp/commit/054803b2ee0ce00fbe5ea7d0de03f64a0080d879))
+* **KAMP-690:** give the thin criteria something to rotate through ([#783](https://github.com/eightyeighteyes/kamp/issues/783)) ([65d0571](https://github.com/eightyeighteyes/kamp/commit/65d0571ec7edc4b6848e12c60c26a1c100a38760))
+* **KAMP-693:** a better transition state while digging the next crate ([#786](https://github.com/eightyeighteyes/kamp/issues/786)) ([5399b37](https://github.com/eightyeighteyes/kamp/commit/5399b37c5f684d590aecf3c7012d521a5fd86cb0))
+* **KAMP-699:** drop the "that's the crate" line, always offer the way out ([#788](https://github.com/eightyeighteyes/kamp/issues/788)) ([60ba10d](https://github.com/eightyeighteyes/kamp/commit/60ba10dd1b720ced8916033c3d47f1253f1aa1b6))
+* **KAMP-702:** take the divider card out of the bin ([#789](https://github.com/eightyeighteyes/kamp/issues/789)) ([6da420c](https://github.com/eightyeighteyes/kamp/commit/6da420c57e15115d1773b83a4d228121ff97d19b))
+* **KAMP-716:** measure before guessing — per-process diagnostics sampling ([#794](https://github.com/eightyeighteyes/kamp/issues/794)) ([0de7325](https://github.com/eightyeighteyes/kamp/commit/0de73254a4f23b0bb2dd9fe32b6a2021f9540d1a))
+* **KAMP-735:** let the record on the deck breathe instead of sitting at a flat fade ([#813](https://github.com/eightyeighteyes/kamp/issues/813)) ([240b3f4](https://github.com/eightyeighteyes/kamp/commit/240b3f4698086f48111139aae0e98109abb1bd79))
+
+
+### Bug Fixes
+
+* **KAMP-670:** don't hand someone a record they cannot hear ([#780](https://github.com/eightyeighteyes/kamp/issues/780)) ([8ef025a](https://github.com/eightyeighteyes/kamp/commit/8ef025a404c80b3041a670cb59145a5d6380356b))
+* **KAMP-673:** a stale preview re-signs itself instead of going quiet ([#781](https://github.com/eightyeighteyes/kamp/issues/781)) ([622c8e5](https://github.com/eightyeighteyes/kamp/commit/622c8e5e675efca5cf12632a036ec23c33592468))
+* **KAMP-682:** treat tralbum_id as the release identity so a re-purchase doesn't duplicate ([#802](https://github.com/eightyeighteyes/kamp/issues/802)) ([14bb280](https://github.com/eightyeighteyes/kamp/commit/14bb280770ee604504e6d7989822a73a0741a6f8))
+* **KAMP-685:** no focus ring from the mouse, by construction rather than by blur ([#784](https://github.com/eightyeighteyes/kamp/issues/784)) ([50f93bf](https://github.com/eightyeighteyes/kamp/commit/50f93bf06589c763b00743c903c8e9e497811fe8))
+* **KAMP-686:** seeking the deck moves playback but the bar reports the previous position ([#785](https://github.com/eightyeighteyes/kamp/issues/785)) ([7df8a73](https://github.com/eightyeighteyes/kamp/commit/7df8a73931f3f0cf50932b3fbac44555faba814f))
+* **KAMP-717:** bound the WebSocket telemetry sink (hardening — not the leak) ([#798](https://github.com/eightyeighteyes/kamp/issues/798)) ([2779cb3](https://github.com/eightyeighteyes/kamp/commit/2779cb307fd663b27f848f850d1bd54662a205ed))
+* **KAMP-718:** the demuxer cache is not what grows — plus the stall bug it exposed ([#796](https://github.com/eightyeighteyes/kamp/issues/796)) ([f7691a3](https://github.com/eightyeighteyes/kamp/commit/f7691a3b828abf11879947aa8fe4bc37fc24ec89))
+* **KAMP-719:** measure the footprint macOS actually charges us, not ps rss ([#797](https://github.com/eightyeighteyes/kamp/issues/797)) ([91211ad](https://github.com/eightyeighteyes/kamp/commit/91211ad38585222d035e0815a4abb4b086c7e58b))
+* **KAMP-720:** retire a thread's SQLite connection when the thread dies ([#799](https://github.com/eightyeighteyes/kamp/issues/799)) ([afb9247](https://github.com/eightyeighteyes/kamp/commit/afb924730c12106fa7d761cda0c2c4fa14aad8b8))
+* **KAMP-726:** one thread owns Bandcamp sync, and reload() no longer restarts it ([#803](https://github.com/eightyeighteyes/kamp/issues/803)) ([da55d39](https://github.com/eightyeighteyes/kamp/commit/da55d39f1ce2806163ae973e0919c6ebefc748cd))
+* **KAMP-728:** serialise Bandcamp sync so a manual press cannot stack on a running one ([#804](https://github.com/eightyeighteyes/kamp/issues/804)) ([31f6b8b](https://github.com/eightyeighteyes/kamp/commit/31f6b8b3329db03cc6bacf9f280ffe52453a00ca))
+* **KAMP-729:** stop the stream sync running above Bandcamp's measured rate ceiling ([#805](https://github.com/eightyeighteyes/kamp/issues/805)) ([1437e1e](https://github.com/eightyeighteyes/kamp/commit/1437e1e96209da6156e6b39bba085e49eebbca3f))
+* **KAMP-736:** pause the record you can hear, not the queue you cannot ([#814](https://github.com/eightyeighteyes/kamp/issues/814)) ([cba8c15](https://github.com/eightyeighteyes/kamp/commit/cba8c157ca76eeb50a77813f580d71c4318358bf))
+* **KAMP-737:** mark_collection_synced must not assert columns it does not own ([#824](https://github.com/eightyeighteyes/kamp/issues/824)) ([77f0cd0](https://github.com/eightyeighteyes/kamp/commit/77f0cd00e841d073e29154ee5b766efa2d5c1c72))
+* **KAMP-738:** show a private release kamp cannot index, instead of dropping it ([#825](https://github.com/eightyeighteyes/kamp/issues/825)) ([ff8dea9](https://github.com/eightyeighteyes/kamp/commit/ff8dea9c22dfe375baf7b1a8c070ea0ac2bd756d))
+
+
+### Performance Improvements
+
+* **KAMP-666:** persist the Bandcamp wishlist instead of re-walking it every launch ([#808](https://github.com/eightyeighteyes/kamp/issues/808)) ([947fd5f](https://github.com/eightyeighteyes/kamp/commit/947fd5f425eb0c3a4ab1ae2c1c0d9afcf4a9ab60))
+* **KAMP-680:** extract album art once — daemon memory roughly halved ([#795](https://github.com/eightyeighteyes/kamp/issues/795)) ([6068210](https://github.com/eightyeighteyes/kamp/commit/6068210d202ccf69ecdc89e774b3309698b330bf))
+* **KAMP-684:** stop kamp burning CPU while idle ([#767](https://github.com/eightyeighteyes/kamp/issues/767)) ([3ebb3ff](https://github.com/eightyeighteyes/kamp/commit/3ebb3ffd1c942f2d2b5cc2463719af5046978ba7))
+* **KAMP-698:** halve the time a crate takes to dig ([#787](https://github.com/eightyeighteyes/kamp/issues/787)) ([0b3a380](https://github.com/eightyeighteyes/kamp/commit/0b3a38046063d0400863bdd978ad5cc4754eda96))
+* **KAMP-730:** deliver library.changed once, and coalesce the reloads it triggers ([#806](https://github.com/eightyeighteyes/kamp/issues/806)) ([cdce9a0](https://github.com/eightyeighteyes/kamp/commit/cdce9a025537430400b55836b435b0b745310b87))
+
+
+### Dependencies
+
+* **KAMP-707:** cryptography 48.0.1 -> 50.0.2 ([#817](https://github.com/eightyeighteyes/kamp/issues/817)) ([ebac7a7](https://github.com/eightyeighteyes/kamp/commit/ebac7a7656933659ee851835e44bb978c148838e))
+* **KAMP-708:** fastapi 0.139.0 -> 0.141.1, uvicorn 0.51.0 -> 0.52.4 ([#818](https://github.com/eightyeighteyes/kamp/issues/818)) ([25db5e7](https://github.com/eightyeighteyes/kamp/commit/25db5e7f8282f4481c84e53744efad3987791318))
+* **KAMP-709:** pylast, types-requests, urllib3, anyio ([#819](https://github.com/eightyeighteyes/kamp/issues/819)) ([cd4dca5](https://github.com/eightyeighteyes/kamp/commit/cd4dca5913944e1e82ed75f8532035bc62963715))
+* **KAMP-710:** npm transitive security cluster (audit 12 -> 5) ([#820](https://github.com/eightyeighteyes/kamp/issues/820)) ([736b7c0](https://github.com/eightyeighteyes/kamp/commit/736b7c0e8b6538627301861a7edb9ab5504280ba))
+* **KAMP-711:** prettier 3.8.3 -> 3.9.6, @tanstack/react-virtual 3.14.2 -> 3.14.8 ([#821](https://github.com/eightyeighteyes/kamp/issues/821)) ([e8ed042](https://github.com/eightyeighteyes/kamp/commit/e8ed042b5f6ed6bc2c49baea251c83584373a4fa))
+* **KAMP-740:** httpx2 and httpcore2 2.3.0 -> 2.16.0 ([#829](https://github.com/eightyeighteyes/kamp/issues/829)) ([f347b44](https://github.com/eightyeighteyes/kamp/commit/f347b441cb863daf0b0aadfd412ed604f8d0f2ee))
+* **KAMP-741:** pillow 12.3.0 -> 13.0.0 ([#830](https://github.com/eightyeighteyes/kamp/issues/830)) ([e6a5206](https://github.com/eightyeighteyes/kamp/commit/e6a52062c9fc1b18f9e1f40f8e7ffd2a895d9bf6))
 
 
 ### Miscellaneous Chores

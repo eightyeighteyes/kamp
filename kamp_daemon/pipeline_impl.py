@@ -337,6 +337,29 @@ def run(
                 index.close()
 
 
+def _effective_release_date(file_date: str, known_date: str) -> str:
+    """Pick the release date to write onto a Bandcamp download (KAMP-759).
+
+    Bandcamp's download files carry the year only, while the stream sync stored
+    the full date. The bug was that the date changed after download, so the date
+    Kamp already knows wins, including a user edit with a different year. There
+    is no "edited" flag to tell an edit from a synced value. The file's date is
+    kept only when nothing is known, or when it extends the known date (it is
+    the same date at a finer precision).
+    """
+    if not known_date:
+        return file_date
+    if file_date.startswith(known_date) and len(file_date) > len(known_date):
+        return file_date
+    if file_date and file_date != known_date and not known_date.startswith(file_date):
+        logger.debug(
+            "Download release date %r disagrees with known %r; using known",
+            file_date,
+            known_date,
+        )
+    return known_date
+
+
 def _tag_known_bandcamp(
     audio_files: list[Path],
     provenance: "PendingIngest",
@@ -386,6 +409,11 @@ def _tag_known_bandcamp(
             edited_artist = overrides.artists.get(track.track_number)
             if edited_artist:
                 track.artist = edited_artist
+            # KAMP-759: keep the album's known (full) date instead of the
+            # file's year-only one, or a later rescan downgrades the album.
+            track.release_date = _effective_release_date(
+                track.release_date, overrides.release_date
+            )
         track.release_mbid = mbid
         track.release_group_mbid = rg_mbid
         write_tags_from_track_metadata(audio_file, track, total_tracks=total)

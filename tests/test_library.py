@@ -15453,6 +15453,38 @@ class TestDownloadOverrides:
         index.close()
         assert ov.artists == {}
 
+    def test_release_date_from_stream_tracks(self, tmp_path: Path) -> None:
+        # KAMP-759: the download pipeline stamps the album's known full date
+        # onto the files, which Bandcamp ships year-only.
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("S1", mode="local", band_name="A", item_title="B")
+        t = _prov_stream_track("S1", "A", "B", n=1)
+        t.release_date = "2026-07-21"
+        index.upsert_many([t])
+        ov = index.download_overrides_for_sale_item("S1")
+        index.close()
+        assert ov.release_date == "2026-07-21"
+
+    def test_release_date_ignores_stale_album_row(self, tmp_path: Path) -> None:
+        # patch_release_date_for_remote_album updates tracks, not the album
+        # aggregate, so the albums row can lag; read the tracks.
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("S1", mode="local", band_name="A", item_title="B")
+        index.upsert_many([_prov_stream_track("S1", "A", "B", n=1)])
+        index._conn.execute("UPDATE albums SET release_date = '2026'")
+        index.patch_release_date_for_remote_album("S1", "2026-07-21")
+        ov = index.download_overrides_for_sale_item("S1")
+        index.close()
+        assert ov.release_date == "2026-07-21"
+
+    def test_release_date_empty_on_collection_fallback(self, tmp_path: Path) -> None:
+        # bandcamp_collection stores no date, so the ledger fallback has none.
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("S1", mode="local", band_name="A", item_title="B")
+        ov = index.download_overrides_for_sale_item("S1")
+        index.close()
+        assert ov.release_date == ""
+
     def test_ambiguous_artist_track_number_is_dropped(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_collection_item("S1", mode="local", band_name="A", item_title="B")

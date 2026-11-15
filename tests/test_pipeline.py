@@ -24,6 +24,7 @@ from kamp_daemon.mover import MoveError
 from kamp_daemon.pipeline_impl import (
     _fetch_and_embed_via_extension,
     _mb_tags_conflict,
+    _effective_release_date,
     _quarantine,
     run,
 )
@@ -1081,7 +1082,12 @@ class TestFetchAndEmbedViaExtension:
 
 
 def _make_bandcamp_mp3(
-    path: Path, artist: str, album: str, title: str, track: int
+    path: Path,
+    artist: str,
+    album: str,
+    title: str,
+    track: int,
+    date: str = "",
 ) -> None:
     path.write_bytes(b"\xff\xfb" * 64)
     tags = id3.ID3()
@@ -1090,6 +1096,8 @@ def _make_bandcamp_mp3(
     tags["TALB"] = id3.TALB(encoding=3, text=album)
     tags["TIT2"] = id3.TIT2(encoding=3, text=title)
     tags["TRCK"] = id3.TRCK(encoding=3, text=str(track))
+    if date:
+        tags["TDRC"] = id3.TDRC(encoding=3, text=date)
     tags.save(str(path))
 
 
@@ -1377,3 +1385,163 @@ class TestKnownBandcampBranch:
         idx = LibraryIndex(db)
         assert idx.pending_ingest_for_path(str(empty)) is None
         idx.close()
+
+
+# ---------------------------------------------------------------------------
+# KAMP-759: a download keeps the release date we already know for the album
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveReleaseDate:
+    @pytest.mark.parametrize(
+        ("file_date", "known", "expected"),
+        [
+            # Bandcamp's download files carry the year only; the stream row
+            # has the full date. The bug: the year won.
+            ("2026", "2026-07-21", "2026-07-21"),
+            ("", "2026-07-21", "2026-07-21"),
+            # Nothing known (no synced stream row): keep the file's date.
+            ("2026", "", "2026"),
+            ("", "", ""),
+            # The file is strictly more precise than what we know: keep it.
+            ("2026-07-21", "2026", "2026-07-21"),
+            ("2026-07-21T00:00:00", "2026-07-21", "2026-07-21T00:00:00"),
+            # Disagreement (a user edit, or the page's original release vs a
+            # reissue year in the file): the known date wins, since the bug is
+            # "the date changed after download".
+            ("2019", "2026-07-21", "2026-07-21"),
+            ("2026-01-01", "2026-07-21", "2026-07-21"),
+            ("2026-07-21", "2025", "2025"),
+        ],
+    )
+    def test_merge(self, file_date: str, known: str, expected: str) -> None:
+        assert _effective_release_date(file_date, known) == expected
+
+
+class TestKnownBandcampReleaseDate:
+    def _seed(self, db_path: Path, sid: str, date: str, n_tracks: int = 2) -> None:
+        from kamp_core.library import LibraryIndex, Track
+
+        idx = LibraryIndex(db_path)
+        idx.upsert_collection_item(
+            sid, mode="local", band_name="Artist X", item_title="Album Y"
+        )
+        idx.upsert_many(
+            [
+                Track(
+                    file_path=Path(f"bandcamp://{sid}/{n}"),
+                    title=f"Track {n}",
+                    artist="Artist X",
+                    album_artist="Artist X",
+                    album="Album Y",
+                    release_date=date,
+                    track_number=n,
+                    disc_number=1,
+                    ext="",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+                for n in range(1, n_tracks + 1)
+            ]
+        )
+        idx.close()
+
+    def _ingest(
+        self, config: Config, db: Path, sid: str, files: list[tuple[str, int]]
+    ) -> list[Path]:
+        from kamp_core.library import LibraryIndex
+
+        extracted = config.paths.watch_folder / "album"
+        extracted.mkdir()
+        for name, n in files:
+            # Bandcamp's own download files carry a year-only date (KAMP-759).
+            _make_bandcamp_mp3(
+                extracted / name, "Artist X", "Album Y", f"Track {n}", n, "2026"
+            )
+        idx = LibraryIndex(db)
+        idx.add_pending_ingest(str(extracted), sid, "T1")
+        idx.close()
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.side_effect = Exception("no network")
+            run(extracted, config, index_path=db)
+        return sorted(config.paths.library.rglob("*.mp3"))
+
+    def test_full_date_survives_ingest_and_rescan(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        import os
+
+        from kamp_core.library import LibraryIndex, LibraryScanner
+
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed(db, "S1", "2026-07-21")
+
+        moved = self._ingest(config, db, "S1", [("01.mp3", 1), ("02.mp3", 2)])
+        assert len(moved) == 2
+        for p in moved:
+            assert str(id3.ID3(str(p))["TDRC"]) == "2026-07-21"
+
+        idx = LibraryIndex(db)
+        scanner = LibraryScanner(idx)
+        scanner.scan(config.paths.library)
+        # The downgrade happened on the *second* read of a file already known
+        # to the index (the first scan merges into the stream row, which keeps
+        # its date), so force a re-read by bumping the mtime.
+        for p in moved:
+            st = p.stat()
+            os.utime(p, (st.st_atime, st.st_mtime + 10))
+        scanner.scan(config.paths.library)
+        dates = {
+            r[0]
+            for r in idx._conn.execute("SELECT release_date FROM tracks_with_stats")
+        }
+        album_dates = {
+            r[0] for r in idx._conn.execute("SELECT release_date FROM albums")
+        }
+        idx.close()
+        assert dates == {"2026-07-21"}
+        assert album_dates == {"2026-07-21"}
+
+    def test_single_gets_full_date(self, tmp_path: Path, config: Config) -> None:
+        # The single path renumbers track 0 → 1; the date must still apply.
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed(db, "SG", "2026-07-21", n_tracks=1)
+        moved = self._ingest(config, db, "SG", [("Gush.mp3", 0)])
+        assert len(moved) == 1
+        assert str(id3.ID3(str(moved[0]))["TDRC"]) == "2026-07-21"
+
+    def test_date_applied_with_bandcamp_genres_disabled(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # The genres toggle mutates the overrides object; it must not drop the date.
+        config.tagging.bandcamp_genres = False
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed(db, "S1", "2026-07-21", n_tracks=1)
+        moved = self._ingest(config, db, "S1", [("01.mp3", 1)])
+        assert str(id3.ID3(str(moved[0]))["TDRC"]) == "2026-07-21"
+
+    def test_no_stream_row_keeps_file_date(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # Downloaded before any stream sync created the album row: nothing is
+        # known, so the file's own (year-only) date stands. Known scope cut.
+        from kamp_core.library import LibraryIndex
+
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        idx = LibraryIndex(db)
+        idx.upsert_collection_item(
+            "S9", mode="local", band_name="Artist X", item_title="Album Y"
+        )
+        idx.close()
+        moved = self._ingest(config, db, "S9", [("01.mp3", 1)])
+        assert str(id3.ID3(str(moved[0]))["TDRC"]) == "2026"
